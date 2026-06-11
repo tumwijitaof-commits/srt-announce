@@ -131,13 +131,19 @@ HTML_PAGE = """
         }
 
         function playAudio(tabIndex) {
-            mobilePlayer.play().catch(()=>{}); 
+            // หยุดเสียงเก่าทันที ไม่ให้ไปรบกวนของใหม่
+            mobilePlayer.pause();
+            mobilePlayer.currentTime = 0; 
 
             let statusBox = document.getElementById('statusBox');
             statusBox.style.display = "block";
-            statusBox.innerText = "⏳ ระบบกำลังสร้างเสียงจากเซิร์ฟเวอร์...";
+            statusBox.innerText = "⏳ กำลังดึงเสียงพี่นิวัฒน์...";
             statusBox.style.color = "#ff9800";
             
+            // เล่นกระดิ่งทันทีที่กดปุ่ม!
+            mobilePlayer.src = '/audio/chime.mp3';
+            mobilePlayer.play().catch(()=>{});
+
             let payload = {
                 tab_index: tabIndex,
                 num: document.getElementById('num').value,
@@ -158,12 +164,24 @@ HTML_PAGE = """
             }).then(response => response.json())
             .then(data => {
                 if(data.status === "success") {
-                    statusBox.innerText = "🔊 ส่งเสียงมาที่มือถือเรียบร้อย!";
+                    statusBox.innerText = "🔊 กำลังกระจายเสียงประกาศ!";
                     statusBox.style.color = "#4CAF50";
 
                     let announceUrl = '/audio/temp_announce.mp3?t=' + new Date().getTime(); 
-                    mobilePlayer.src = announceUrl;
-                    mobilePlayer.play();
+                    
+                    // ระบบเนียนๆ: เช็คว่ากระดิ่งเล่นจบหรือยัง
+                    if (!mobilePlayer.paused && mobilePlayer.src.includes('chime.mp3')) {
+                        // ถ้ากระดิ่งยังดังอยู่ ให้รอจนจบหลอดแล้วค่อยพูดต่อ
+                        mobilePlayer.onended = () => {
+                            mobilePlayer.src = announceUrl;
+                            mobilePlayer.play();
+                            mobilePlayer.onended = null;
+                        };
+                    } else {
+                        // ถ้ากระดิ่งจบไปแล้ว ก็เล่นเสียงพูดได้เลย
+                        mobilePlayer.src = announceUrl;
+                        mobilePlayer.play();
+                    }
 
                     setTimeout(() => { statusBox.style.display = "none"; }, 7000);
                 }
@@ -208,17 +226,14 @@ def announce():
     elif idx == 3:
         text = f"โปรดทราบอีกสักครู่ ขบวนรถ วิ่งผ่านสถานี ในบริเวณชานชะลาที่ {platform} เพื่อความปลอดภัยของผู้โดยสาร กรุณายืนหลังเส้นสีเหลืองขอบชานชะลา และไม่เดินข้ามผ่านไป-มา ระหว่างชานชะลาที่ {platform} ขอบคุณครับ"
     elif idx == 4:
-        # แก้ไขข้อความปุ่ม 4 ตามที่ต้องการเป๊ะๆ ครับ
         text = f"โปรดทราบที่นี่สถานี{current} ที่นี่สถานี{current} ผู้โดยสารก่อนลงจากขบวนรถโปรดตรวจสอบสิ่งของและสัมภาระของท่านที่นำติดตัวมา นำลงจากขบวนรถให้ครบถ้วน ถูกต้องด้วยครับ ขบวนรถที่จอดเทียบในชานชะลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถเที่ยวนี้แล้ว กรุณานำสิ่งของและสัมภาระของท่านขึ้นบนขบวนรถ และจัดหาที่นั่งให้เป็นที่เรียบร้อย ขบวนรถเที่ยวนี้เมื่อออกจากสถานีคลองบางพระ แล้วจะหยุดรับ ส่งผู้โดยสารที่สถานี{next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึงสถานี{current} ได้ในเวลาโดยประมาณ {delay} น. ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ ขบวนที่ {t_num} เข้าเทียบในชานชะลาที่ {platform} ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวังด้วยครับ ขอบคุณครับ"
     elif idx == 7:
-        # ปุ่ม 8 ห้ามสูบบุหรี่
         text = "โปรดทราบ ขอความร่วมมือผู้โดยสารทุกท่าน ห้ามสูบบุหรี่บนชานชะลา บริเวณสถานี และบนขบวนรถ เพื่อสุขภาพอนามัยที่ดีของส่วนรวม ขอบคุณครับ"
     elif idx == 8:
-        # ปุ่ม 9 ประกาศตามข้อความที่พิมพ์
         text = custom_text if custom_text.strip() != "" else "โปรดพิมพ์ข้อความที่ต้องการประกาศในช่องด้านบนด้วยครับ"
 
     filename = "temp_announce.mp3"
