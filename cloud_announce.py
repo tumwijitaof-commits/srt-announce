@@ -41,13 +41,13 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบประกาศสถานีคลองบางพระ (Cloud)</title>
+    <title>ระบบประกาศสถานีคลองบางพระ</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; padding: 15px; margin: 0; }
         .container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }
         h2 { text-align: center; color: #1a73e8; font-size: 22px; }
         label { font-weight: bold; margin-top: 10px; display: block; font-size: 14px; }
-        select, input { width: 100%; padding: 12px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; font-size: 16px; }
+        select, input, textarea { width: 100%; padding: 12px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; font-size: 16px; }
         .btn { width: 100%; padding: 15px; margin-top: 10px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; color: white; transition: 0.2s; }
         .btn-play { background-color: #4CAF50; }
         .btn-play:active { background-color: #45a049; transform: scale(0.98); }
@@ -83,7 +83,10 @@ HTML_PAGE = """
         <label>คาดว่าจะถึงเวลา (สำหรับหมวด 6):</label>
         <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
 
-        <button class="btn btn-clear" onclick="clearData()">🧹 ล้างข้อมูล</button>
+        <label style="color:#d32f2f;">📝 พิมพ์ข้อความประกาศเอง (สำหรับปุ่ม 9):</label>
+        <textarea id="custom_text" rows="3" placeholder="พิมพ์ข้อความที่ต้องการให้พี่นิวัฒน์พูดตรงนี้เลยครับ..."></textarea>
+
+        <button class="btn btn-clear" onclick="clearData()">🧹 ล้างข้อมูลหน้าจอ</button>
         <hr>
 
         <button class="btn btn-play" onclick="playAudio(0)">1. ขอทาง/ขายตั๋ว</button>
@@ -93,6 +96,8 @@ HTML_PAGE = """
         <button class="btn btn-play" onclick="playAudio(4)">5. รถจอดรับส่ง/ออก</button>
         <button class="btn btn-play" style="background-color:#ff9800;" onclick="playAudio(5)">6. รถล่าช้า</button>
         <button class="btn btn-play" style="background-color:#2196F3;" onclick="playAudio(6)">7. ระวังคนลงรถ</button>
+        <button class="btn btn-play" style="background-color:#E91E63;" onclick="playAudio(7)">🚭 8. ห้ามสูบบุหรี่</button>
+        <button class="btn btn-play" style="background-color:#9C27B0;" onclick="playAudio(8)">🎙️ 9. ประกาศตามข้อความที่พิมพ์เอง</button>
 
         <div class="status" id="statusBox">🔊 กำลังประมวลผลเสียง...</div>
     </div>
@@ -122,6 +127,7 @@ HTML_PAGE = """
             document.getElementById('platform').value = "";
             document.getElementById('next_station').value = "";
             document.getElementById('delay_time').value = "";
+            document.getElementById('custom_text').value = "";
         }
 
         function playAudio(tabIndex) {
@@ -141,7 +147,8 @@ HTML_PAGE = """
                 platform: document.getElementById('platform').value,
                 current: document.getElementById('current').value,
                 next: document.getElementById('next_station').value,
-                delay: document.getElementById('delay_time').value
+                delay: document.getElementById('delay_time').value,
+                custom_text: document.getElementById('custom_text').value
             };
 
             fetch('/announce', {
@@ -189,6 +196,7 @@ def announce():
     current = data.get('current', '')
     next_st = data.get('next', '')
     delay = data.get('delay', '')
+    custom_text = data.get('custom_text', '')
 
     text = ""
     if idx == 0:
@@ -200,20 +208,25 @@ def announce():
     elif idx == 3:
         text = f"โปรดทราบอีกสักครู่ ขบวนรถ วิ่งผ่านสถานี ในบริเวณชานชะลาที่ {platform} เพื่อความปลอดภัยของผู้โดยสาร กรุณายืนหลังเส้นสีเหลืองขอบชานชะลา และไม่เดินข้ามผ่านไป-มา ระหว่างชานชะลาที่ {platform} ขอบคุณครับ"
     elif idx == 4:
-        text = f"โปรดทราบที่นี่สถานี{current} ที่นี่สถานี{current} ผู้โดยสารก่อนลงจากขบวนรถโปรดตรวจสอบสิ่งของและสัมภาระของท่านที่นำติดตัวมา นำลงจากขบวนรถให้ครบถ้วน ถูกต้องด้วยครับ ขบวนรถที่จอดเทียบในชานชะลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถเที่ยวนี้แล้ว กรุณานำสิ่งของและสัมภาระของท่านขึ้นบนขบวนรถ และจัดหาที่นั่งให้เป็นที่เรียบร้อย ขบวนรถเที่ยวนี้เมื่อออกจากสถานีนี้แล้วจะหยุดรับ-ส่งผู้โดยสารที่สถานี{next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+        # แก้ไขข้อความปุ่ม 4 ตามที่ต้องการเป๊ะๆ ครับ
+        text = f"โปรดทราบที่นี่สถานี{current} ที่นี่สถานี{current} ผู้โดยสารก่อนลงจากขบวนรถโปรดตรวจสอบสิ่งของและสัมภาระของท่านที่นำติดตัวมา นำลงจากขบวนรถให้ครบถ้วน ถูกต้องด้วยครับ ขบวนรถที่จอดเทียบในชานชะลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถเที่ยวนี้แล้ว กรุณานำสิ่งของและสัมภาระของท่านขึ้นบนขบวนรถ และจัดหาที่นั่งให้เป็นที่เรียบร้อย ขบวนรถเที่ยวนี้เมื่อออกจากสถานีคลองบางพระ แล้วจะหยุดรับ ส่งผู้โดยสารที่สถานี{next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
-        text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึงสถานี{current} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
+        text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึงสถานี{current} ได้ในเวลาโดยประมาณ {delay} น. ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ ขบวนที่ {t_num} เข้าเทียบในชานชะลาที่ {platform} ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวังด้วยครับ ขอบคุณครับ"
+    elif idx == 7:
+        # ปุ่ม 8 ห้ามสูบบุหรี่
+        text = "โปรดทราบ ขอความร่วมมือผู้โดยสารทุกท่าน ห้ามสูบบุหรี่บนชานชะลา บริเวณสถานี และบนขบวนรถ เพื่อสุขภาพอนามัยที่ดีของส่วนรวม ขอบคุณครับ"
+    elif idx == 8:
+        # ปุ่ม 9 ประกาศตามข้อความที่พิมพ์
+        text = custom_text if custom_text.strip() != "" else "โปรดพิมพ์ข้อความที่ต้องการประกาศในช่องด้านบนด้วยครับ"
 
     filename = "temp_announce.mp3"
     
-    # ลบไฟล์เก่าถ้ามี
     if os.path.exists(filename):
         try: os.remove(filename)
         except: pass
         
-    # สร้างไฟล์เสียงใหม่ด้วย edge-tts
     try:
         subprocess.run(
             ["edge-tts", "--voice", "th-TH-NiwatNeural", "--rate=-10%", "--text", text, "--write-media", filename], 
@@ -224,7 +237,6 @@ def announce():
 
     return {"status": "success"}
 
-# ตัวนี้สำคัญมากสำหรับขึ้น Cloud
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
