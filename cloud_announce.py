@@ -83,6 +83,14 @@ HTML_PAGE = """
         <label>คาดว่าจะถึงเวลา (สำหรับหมวด 6):</label>
         <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
 
+        <hr>
+        <label style="color:#009688;">🚆 ประเภทรถวิ่งผ่าน (สำหรับปุ่ม 10):</label>
+        <select id="train_type">
+            <option value="สินค้า">สินค้า</option>
+            <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
+            <option value="พิเศษ">พิเศษ</option>
+        </select>
+
         <label style="color:#d32f2f;">📝 พิมพ์ข้อความประกาศเอง (สำหรับปุ่ม 9):</label>
         <textarea id="custom_text" rows="3" placeholder="พิมพ์ข้อความที่ต้องการให้พี่นิวัฒน์พูดตรงนี้เลยครับ..."></textarea>
 
@@ -92,12 +100,13 @@ HTML_PAGE = """
         <button class="btn btn-play" onclick="playAudio(0)">1. ขอทาง/ขายตั๋ว</button>
         <button class="btn btn-play" onclick="playAudio(1)">2. รอรับโดยสาร</button>
         <button class="btn btn-play" onclick="playAudio(2)">3. รถเข้าจอด</button>
-        <button class="btn btn-play" onclick="playAudio(3)">4. รถผ่าน</button>
+        <button class="btn btn-play" onclick="playAudio(3)">4. รถผ่าน (ขบวนปกติ)</button>
         <button class="btn btn-play" onclick="playAudio(4)">5. รถจอดรับส่ง/ออก</button>
         <button class="btn btn-play" style="background-color:#ff9800;" onclick="playAudio(5)">6. รถล่าช้า</button>
         <button class="btn btn-play" style="background-color:#2196F3;" onclick="playAudio(6)">7. ระวังคนลงรถ</button>
         <button class="btn btn-play" style="background-color:#E91E63;" onclick="playAudio(7)">🚭 8. ห้ามสูบบุหรี่</button>
         <button class="btn btn-play" style="background-color:#9C27B0;" onclick="playAudio(8)">🎙️ 9. ประกาศตามข้อความที่พิมพ์เอง</button>
+        <button class="btn btn-play" style="background-color:#607D8B;" onclick="playAudio(9)">🚆 10. รถสินค้า/พิเศษ ผ่านสถานี</button>
 
         <div class="status" id="statusBox">🔊 กำลังประมวลผลเสียง...</div>
     </div>
@@ -154,7 +163,8 @@ HTML_PAGE = """
                 current: document.getElementById('current').value,
                 next: document.getElementById('next_station').value,
                 delay: document.getElementById('delay_time').value,
-                custom_text: document.getElementById('custom_text').value
+                custom_text: document.getElementById('custom_text').value,
+                train_type: document.getElementById('train_type').value
             };
 
             fetch('/announce', {
@@ -215,6 +225,7 @@ def announce():
     next_st = data.get('next', '')
     delay = data.get('delay', '')
     custom_text = data.get('custom_text', '')
+    train_type = data.get('train_type', 'สินค้า') # รับค่าประเภทขบวนรถ
 
     text = ""
     if idx == 0:
@@ -235,6 +246,9 @@ def announce():
         text = "โปรดทราบ ขอความร่วมมือผู้โดยสารทุกท่าน ห้ามสูบบุหรี่บนชานชะลา บริเวณสถานี และบนขบวนรถ เพื่อสุขภาพอนามัยที่ดีของส่วนรวม ขอบคุณครับ"
     elif idx == 8:
         text = custom_text if custom_text.strip() != "" else "โปรดพิมพ์ข้อความที่ต้องการประกาศในช่องด้านบนด้วยครับ"
+    elif idx == 9:
+        # ปุ่ม 10 ขบวนรถ สินค้า/ด่วนพิเศษ/พิเศษ ผ่านสถานี
+        text = f"โปรดทราบอีกสักครู่ ขบวนรถ{train_type} วิ่งผ่านสถานี ในบริเวณชานชะลาที่ {platform} เพื่อความปลอดภัยของผู้โดยสาร กรุณายืนหลังเส้นสีเหลืองขอบชานชะลา และไม่เดินข้ามผ่านไป-มา ระหว่างชานชะลาที่ {platform} ขอบคุณครับ"
 
     filename = "temp_announce.mp3"
     
