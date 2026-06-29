@@ -14,6 +14,7 @@ AUDIO_DIR.mkdir(exist_ok=True)
 VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-NiwatNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "-10%")
 STATION_NAME = "คลองบางพระ"
+CHIME_FILENAME = "chime.mp3"
 
 # ------------------------------------------------------------
 # ฐานข้อมูลตารางเดินรถ สถานีคลองบางพระ
@@ -550,6 +551,38 @@ HTML_PAGE = r"""
             });
         }
 
+        function playOriginalChime() {
+            return new Promise(async (resolve) => {
+                const chime = new Audio("/audio/chime.mp3?v=" + new Date().getTime());
+                const maxWaitMs = 2400; // กันไฟล์เสียงเตือนมีช่วงเงียบท้ายไฟล์นานเกินไป
+                let finished = false;
+
+                function finish() {
+                    if (finished) return;
+                    finished = true;
+                    chime.pause();
+                    chime.currentTime = 0;
+                    resolve();
+                }
+
+                chime.preload = "auto";
+                chime.addEventListener("ended", finish, { once: true });
+                chime.addEventListener("error", async () => {
+                    await playWarningTone();
+                    finish();
+                }, { once: true });
+
+                try {
+                    chime.load();
+                    await chime.play();
+                    setTimeout(finish, maxWaitMs);
+                } catch (e) {
+                    await playWarningTone();
+                    finish();
+                }
+            });
+        }
+
         async function playAnnouncement(tabIndex) {
             if (isBusy) return;
             isBusy = true;
@@ -577,7 +610,7 @@ HTML_PAGE = r"""
                 currentAudio = audio;
 
                 setStatus("เสียงเตือน...", "work");
-                await playWarningTone();
+                await playOriginalChime();
 
                 // จุดสำคัญ: โหลดไฟล์ประกาศไว้ก่อนแล้ว จึงต่อเสียงทันทีหลังเสียงเตือน
                 setStatus("กำลังประกาศ", "ok");
@@ -638,6 +671,28 @@ def clean_space(text):
     return " ".join((text or "").split())
 
 
+# คำอ่านสำหรับส่งให้ระบบ TTS เท่านั้น
+# ข้อความที่แสดงบนหน้าเว็บยังคงเป็นคำทางการเหมือนเดิม
+PRONUNCIATION_FIXES = {
+    "คลองบางพระ": "คลอง บางพระ",
+    "คลองแขวงกลั่น": "คลอง แขวง กลั่น",
+    "คลองเปรง": "คลอง เปรง",
+    "ชุมทางฉะเชิงเทรา": "ชุมทาง ฉะเชิงเทรา",
+    "ด่านพรมแดนบ้านคลองลึก": "ด่านพรมแดน บ้านคลองลึก",
+    "กบินทร์บุรี": "กะบินบุรี",
+    "จุกเสม็ด": "จุก สะเม็ด",
+    "รับส่ง": "รับ ส่ง",
+    "ไปมา": "ไป มา",
+}
+
+
+def prepare_tts_text(text):
+    tts_text = text or ""
+    for official_word, spoken_word in PRONUNCIATION_FIXES.items():
+        tts_text = tts_text.replace(official_word, spoken_word)
+    return clean_space(tts_text)
+
+
 def build_announcement(data):
     idx = int(data.get("tab_index", -1))
 
@@ -667,7 +722,7 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
     elif idx == 4:
-        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารที่มีตั๋วโดยสารกับขบวนรถเที่ยวนี้แล้ว กรุณานำสิ่งของและสัมภาระของท่านขึ้นบนขบวนรถ และจัดหาที่นั่งให้เรียบร้อย ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)}  ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
@@ -706,6 +761,11 @@ def index():
 
 @app.route("/audio/<path:filename>")
 def serve_audio(filename):
+    # ไฟล์เสียงเตือนเดิม ให้วาง chime.mp3 ไว้โฟลเดอร์เดียวกับไฟล์ Python
+    if filename == CHIME_FILENAME:
+        return send_from_directory(BASE_DIR, CHIME_FILENAME, mimetype="audio/mpeg", as_attachment=False)
+
+    # ไฟล์เสียงประกาศที่ระบบสร้างใหม่ จะอยู่ในโฟลเดอร์ audio_generated
     return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False)
 
 
@@ -724,6 +784,7 @@ def announce():
 
     filename = f"announce_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
     output_path = AUDIO_DIR / filename
+    tts_text = prepare_tts_text(text)
 
     try:
         subprocess.run(
@@ -731,7 +792,7 @@ def announce():
                 "edge-tts",
                 "--voice", VOICE_NAME,
                 "--rate", TTS_RATE,
-                "--text", text,
+                "--text", tts_text,
                 "--write-media", str(output_path),
             ],
             check=True,
