@@ -1,4 +1,3 @@
-Plaintext
 Flask
 edge-tts
-
+gunicorn
