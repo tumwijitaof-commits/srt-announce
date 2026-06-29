@@ -1,41 +1,68 @@
-from flask import Flask, request, render_template_string, send_file
+from flask import Flask, request, render_template_string, send_from_directory, jsonify
+from pathlib import Path
 import os
 import subprocess
 import json
 import time
+import uuid
 
 app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+AUDIO_DIR = BASE_DIR / "audio_generated"
+AUDIO_DIR.mkdir(exist_ok=True)
 
-# --- ฐานข้อมูลตารางเดินรถ ---
-TRAINS = {
-    "--- ขบวนขาเข้า กรุงเทพ (หัวลำโพง) ---": None,
-    "384 (05:30) ฉะเชิงเทรา - กรุงเทพ": {"num": "384", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "5 นาฬิกา 30 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "380 (05:55) ฉะเชิงเทรา - กรุงเทพ": {"num": "380", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "5 นาฬิกา 55 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "372 (06:30) ปราจีนบุรี - กรุงเทพ": {"num": "372", "origin": "ปราจีนบุรี", "dest": "กรุงเทพ", "time": "6 นาฬิกา 30 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "388 (07:12) ฉะเชิงเทรา - กรุงเทพ": {"num": "388", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "7 นาฬิกา 12 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "278 (08:41) กบินทร์บุรี - กรุงเทพ": {"num": "278", "origin": "กบินทร์บุรี", "dest": "กรุงเทพ", "time": "8 นาฬิกา 41 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "280 (10:33) คลองลึก - กรุงเทพ": {"num": "280", "origin": "ด่านพรมแดนบ้านคลองลึก", "dest": "กรุงเทพ", "time": "10 นาฬิกา 33 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "368 (12:44) ฉะเชิงเทรา - กรุงเทพ": {"num": "368", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "12 นาฬิกา 44 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "390 (14:12) ฉะเชิงเทรา - กรุงเทพ": {"num": "390", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "14 นาฬิกา 12 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "282 (15:42) กบินทร์บุรี - กรุงเทพ": {"num": "282", "origin": "กบินทร์บุรี", "dest": "กรุงเทพ", "time": "15 นาฬิกา 42 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "284 (16:33) จุกเสม็ด - กรุงเทพ": {"num": "284", "origin": "จุกเสม็ด", "dest": "กรุงเทพ", "time": "16 นาฬิกา 33 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    "276 (19:00) คลองลึก - กรุงเทพ": {"num": "276", "origin": "ด่านพรมแดนบ้านคลองลึก", "dest": "กรุงเทพ", "time": "19 นาฬิกา", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
-    
-    "--- ขบวนขาออก ไปทางตะวันออก ---": None,
-    "275 (07:28) กรุงเทพ - คลองลึก": {"num": "275", "origin": "กรุงเทพ", "dest": "ด่านพรมแดนบ้านคลองลึก", "time": "7 นาฬิกา 28 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "283 (08:46) กรุงเทพ - จุกเสม็ด": {"num": "283", "origin": "กรุงเทพ", "dest": "จุกเสม็ด", "time": "8 นาฬิกา 46 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "281 (09:23) กรุงเทพ - กบินทร์บุรี": {"num": "281", "origin": "กรุงเทพ", "dest": "กบินทร์บุรี", "time": "9 นาฬิกา 23 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
-    "367 (11:35) กรุงเทพ - ฉะเชิงเทรา": {"num": "367", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "11 นาฬิกา 35 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "389 (13:23) กรุงเทพ - ฉะเชิงเทรา": {"num": "389", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "13 นาฬิกา 23 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "279 (14:08) กรุงเทพ - คลองลึก": {"num": "279", "origin": "กรุงเทพ", "dest": "ด่านพรมแดนบ้านคลองลึก", "time": "14 นาฬิกา 8 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
-    "277 (16:37) กรุงเทพ - กบินทร์บุรี": {"num": "277", "origin": "กรุงเทพ", "dest": "กบินทร์บุรี", "time": "16 นาฬิกา 37 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "379 (17:57) กรุงเทพ - ฉะเชิงเทรา": {"num": "379", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "17 นาฬิกา 57 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "391 (18:17) กรุงเทพ - ฉะเชิงเทรา": {"num": "391", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "18 นาฬิกา 17 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "371 (19:11) กรุงเทพ - ปราจีนบุรี": {"num": "371", "origin": "กรุงเทพ", "dest": "ปราจีนบุรี", "time": "19 นาฬิกา 11 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    "383 (20:25) กรุงเทพ - ฉะเชิงเทรา": {"num": "383", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "20 นาฬิกา 25 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-}
+VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-NiwatNeural")
+TTS_RATE = os.environ.get("TTS_RATE", "-10%")
+STATION_NAME = "คลองบางพระ"
 
-HTML_PAGE = """
+# ------------------------------------------------------------
+# ฐานข้อมูลตารางเดินรถ สถานีคลองบางพระ
+# ------------------------------------------------------------
+INBOUND_TRAINS = [
+    {"label": "384 (05:30) ฉะเชิงเทรา - กรุงเทพ", "num": "384", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "5 นาฬิกา 30 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "380 (05:55) ฉะเชิงเทรา - กรุงเทพ", "num": "380", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "5 นาฬิกา 55 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "372 (06:30) ปราจีนบุรี - กรุงเทพ", "num": "372", "origin": "ปราจีนบุรี", "dest": "กรุงเทพ", "time": "6 นาฬิกา 30 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "388 (07:12) ฉะเชิงเทรา - กรุงเทพ", "num": "388", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "7 นาฬิกา 12 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "278 (08:41) กบินทร์บุรี - กรุงเทพ", "num": "278", "origin": "กบินทร์บุรี", "dest": "กรุงเทพ", "time": "8 นาฬิกา 41 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "280 (10:33) คลองลึก - กรุงเทพ", "num": "280", "origin": "ด่านพรมแดนบ้านคลองลึก", "dest": "กรุงเทพ", "time": "10 นาฬิกา 33 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "368 (12:44) ฉะเชิงเทรา - กรุงเทพ", "num": "368", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "12 นาฬิกา 44 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "390 (14:12) ฉะเชิงเทรา - กรุงเทพ", "num": "390", "origin": "ชุมทางฉะเชิงเทรา", "dest": "กรุงเทพ", "time": "14 นาฬิกา 12 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "282 (15:42) กบินทร์บุรี - กรุงเทพ", "num": "282", "origin": "กบินทร์บุรี", "dest": "กรุงเทพ", "time": "15 นาฬิกา 42 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "284 (16:33) จุกเสม็ด - กรุงเทพ", "num": "284", "origin": "จุกเสม็ด", "dest": "กรุงเทพ", "time": "16 นาฬิกา 33 นาที", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+    {"label": "276 (19:00) คลองลึก - กรุงเทพ", "num": "276", "origin": "ด่านพรมแดนบ้านคลองลึก", "dest": "กรุงเทพ", "time": "19 นาฬิกา", "next": "ป้ายหยุดรถคลองแขวงกลั่น และ สถานีคลองเปรง"},
+]
+
+OUTBOUND_TRAINS = [
+    {"label": "275 (07:28) กรุงเทพ - คลองลึก", "num": "275", "origin": "กรุงเทพ", "dest": "ด่านพรมแดนบ้านคลองลึก", "time": "7 นาฬิกา 28 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "283 (08:46) กรุงเทพ - จุกเสม็ด", "num": "283", "origin": "กรุงเทพ", "dest": "จุกเสม็ด", "time": "8 นาฬิกา 46 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "281 (09:23) กรุงเทพ - กบินทร์บุรี", "num": "281", "origin": "กรุงเทพ", "dest": "กบินทร์บุรี", "time": "9 นาฬิกา 23 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "367 (11:35) กรุงเทพ - ฉะเชิงเทรา", "num": "367", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "11 นาฬิกา 35 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "389 (13:23) กรุงเทพ - ฉะเชิงเทรา", "num": "389", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "13 นาฬิกา 23 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "279 (14:08) กรุงเทพ - คลองลึก", "num": "279", "origin": "กรุงเทพ", "dest": "ด่านพรมแดนบ้านคลองลึก", "time": "14 นาฬิกา 8 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "277 (16:37) กรุงเทพ - กบินทร์บุรี", "num": "277", "origin": "กรุงเทพ", "dest": "กบินทร์บุรี", "time": "16 นาฬิกา 37 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "379 (17:57) กรุงเทพ - ฉะเชิงเทรา", "num": "379", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "17 นาฬิกา 57 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "391 (18:17) กรุงเทพ - ฉะเชิงเทรา", "num": "391", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "18 นาฬิกา 17 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "371 (19:11) กรุงเทพ - ปราจีนบุรี", "num": "371", "origin": "กรุงเทพ", "dest": "ปราจีนบุรี", "time": "19 นาฬิกา 11 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "383 (20:25) กรุงเทพ - ฉะเชิงเทรา", "num": "383", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "20 นาฬิกา 25 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
+]
+
+TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
+
+ANNOUNCEMENT_BUTTONS = [
+    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ก่อนรถเข้า"},
+    {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
+    {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
+    {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
+    {"idx": 4, "title": "รถจอดรับส่ง / ออก", "hint": "ประกาศสถานีถัดไปและให้ขึ้นรถ", "group": "รถเข้า-ออก"},
+    {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
+    {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
+    {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
+    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "เลือกประเภทรถวิ่งผ่าน", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 10, "title": "รถเข้าพร้อมกัน 2 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1 และ 2", "group": "เหตุการณ์พิเศษ"},
+]
+
+HTML_PAGE = r"""
 <!DOCTYPE html>
 <html lang="th">
 <head>
@@ -43,271 +70,704 @@ HTML_PAGE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ระบบประกาศสถานีคลองบางพระ</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; padding: 15px; margin: 0; }
-        .container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }
-        h2 { text-align: center; color: #1a73e8; font-size: 22px; }
-        .train-box { border: 2px solid #ccc; padding: 15px; border-radius: 8px; margin-bottom: 15px; background: #fafafa; }
-        .train-box-2 { border: 2px dashed #9E9E9E; background: #fffde7; }
-        label { font-weight: bold; margin-top: 10px; display: block; font-size: 14px; color: #333; }
-        select, input, textarea { width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; font-size: 15px; }
-        .btn { width: 100%; padding: 15px; margin-top: 10px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; color: white; transition: 0.2s; }
-        .btn-play { background-color: #4CAF50; }
-        .btn-play:active { background-color: #45a049; transform: scale(0.98); }
-        .btn-clear { background-color: #f44336; margin-bottom: 10px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .status { text-align: center; margin-top: 15px; color: #1a73e8; font-weight: bold; display: none; padding: 10px; border-radius: 5px; background: #e8f0fe;}
-        .section-title { color: #d32f2f; margin-top: 0; font-size: 18px; text-align: center; }
+        :root {
+            --srt-maroon: #800000;
+            --srt-maroon-dark: #5d0000;
+            --srt-gold: #c9a227;
+            --paper: #fffaf0;
+            --ink: #221b1b;
+            --muted: #6f6262;
+            --line: #e8ddca;
+            --success: #1b7f45;
+            --danger: #b3261e;
+            --blue: #0b57d0;
+            --shadow: 0 14px 36px rgba(65, 0, 0, 0.12);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            color: var(--ink);
+            font-family: "Sarabun", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(201,162,39,0.20), transparent 30%),
+                linear-gradient(135deg, #fff8ea 0%, #f5efe3 48%, #efe2ce 100%);
+            min-height: 100vh;
+            padding: 18px;
+        }
+        .app-shell { max-width: 1180px; margin: 0 auto; }
+        .official-header {
+            color: white;
+            background: linear-gradient(135deg, var(--srt-maroon-dark), var(--srt-maroon));
+            border: 1px solid rgba(201,162,39,0.65);
+            border-radius: 24px;
+            padding: 22px;
+            box-shadow: var(--shadow);
+            position: sticky;
+            top: 12px;
+            z-index: 10;
+        }
+        .header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .seal {
+            width: 58px;
+            height: 58px;
+            border-radius: 18px;
+            background: linear-gradient(135deg, #fff4c2, var(--srt-gold));
+            color: var(--srt-maroon);
+            display: grid;
+            place-items: center;
+            font-size: 30px;
+            box-shadow: inset 0 0 0 3px rgba(255,255,255,0.35);
+            flex: 0 0 auto;
+        }
+        h1 { margin: 0; font-size: clamp(22px, 3vw, 32px); line-height: 1.2; }
+        .sub { margin: 5px 0 0; opacity: 0.92; font-size: 14px; }
+        .status-pill {
+            background: rgba(255,255,255,0.13);
+            border: 1px solid rgba(255,255,255,0.27);
+            border-radius: 999px;
+            padding: 10px 14px;
+            font-weight: 700;
+            min-width: 220px;
+            text-align: center;
+        }
+        .main-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
+            gap: 18px;
+            margin-top: 18px;
+            align-items: start;
+        }
+        .card {
+            background: rgba(255,255,255,0.92);
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        .card-title {
+            margin: 0;
+            padding: 15px 18px;
+            color: var(--srt-maroon-dark);
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, #fffdf8, #fff7e8);
+            font-size: 18px;
+        }
+        .card-body { padding: 18px; }
+        label {
+            display: block;
+            font-weight: 800;
+            margin: 12px 0 6px;
+            color: #352828;
+        }
+        select, input, textarea {
+            width: 100%;
+            border: 1px solid #d6c7b0;
+            border-radius: 14px;
+            padding: 12px 13px;
+            background: white;
+            color: var(--ink);
+            font-size: 15px;
+            outline: none;
+            transition: border 0.15s, box-shadow 0.15s;
+            font-family: inherit;
+        }
+        select:focus, input:focus, textarea:focus {
+            border-color: var(--srt-gold);
+            box-shadow: 0 0 0 4px rgba(201,162,39,0.18);
+        }
+        textarea { min-height: 84px; resize: vertical; }
+        .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+        .helper { color: var(--muted); font-size: 13px; margin-top: 7px; line-height: 1.45; }
+        .train-card-2 {
+            border: 1px dashed rgba(128,0,0,0.35);
+            border-radius: 18px;
+            padding: 15px;
+            background: #fffaf0;
+            margin-top: 14px;
+        }
+        .action-groups { display: grid; gap: 14px; }
+        .group-title {
+            margin: 4px 0 8px;
+            color: var(--srt-maroon);
+            font-size: 15px;
+            border-left: 5px solid var(--srt-gold);
+            padding-left: 10px;
+        }
+        .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        button {
+            border: 0;
+            font-family: inherit;
+            cursor: pointer;
+            transition: transform 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease;
+        }
+        button:active { transform: translateY(1px) scale(0.99); }
+        button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+        .announce-btn {
+            text-align: left;
+            border-radius: 16px;
+            padding: 14px;
+            background: linear-gradient(135deg, #ffffff, #fff7e7);
+            border: 1px solid #eadcc4;
+            color: var(--ink);
+            min-height: 82px;
+            box-shadow: 0 6px 16px rgba(68,0,0,0.06);
+        }
+        .announce-btn:hover { box-shadow: 0 10px 22px rgba(68,0,0,0.12); }
+        .announce-btn strong { display: block; color: var(--srt-maroon-dark); font-size: 16px; }
+        .announce-btn span { display: block; color: var(--muted); font-size: 12.5px; margin-top: 3px; line-height: 1.35; }
+        .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+        .secondary, .stop {
+            border-radius: 14px;
+            padding: 13px;
+            font-weight: 900;
+            color: white;
+        }
+        .secondary { background: var(--srt-maroon); }
+        .stop { background: var(--danger); }
+        .preview-box {
+            margin-top: 14px;
+            border-radius: 18px;
+            padding: 14px;
+            background: #fff8e8;
+            border: 1px solid #eadcc4;
+            color: #473535;
+            font-size: 14px;
+            line-height: 1.65;
+            min-height: 88px;
+        }
+        .preview-box b { color: var(--srt-maroon); }
+        .notice {
+            margin-top: 12px;
+            background: #f4efe4;
+            border: 1px solid #e2d7c4;
+            border-radius: 16px;
+            padding: 12px;
+            color: #5d5149;
+            font-size: 13px;
+            line-height: 1.55;
+        }
+        .loading-bar {
+            height: 5px;
+            width: 100%;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.20);
+            overflow: hidden;
+            margin-top: 13px;
+            display: none;
+        }
+        .loading-bar.active { display: block; }
+        .loading-bar::after {
+            content: "";
+            display: block;
+            height: 100%;
+            width: 38%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, transparent, #fff4b2, transparent);
+            animation: move 1s linear infinite;
+        }
+        @keyframes move { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
+        @media (max-width: 900px) {
+            body { padding: 10px; }
+            .official-header { position: static; border-radius: 20px; }
+            .main-grid { grid-template-columns: 1fr; }
+            .button-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 560px) {
+            .field-grid, .toolbar { grid-template-columns: 1fr; }
+            .seal { width: 48px; height: 48px; font-size: 25px; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h2>📢 ประกาศสถานีคลองบางพระ (ออนไลน์)</h2>
-        
-        <!-- ข้อมูลขบวนที่ 1 -->
-        <div class="train-box">
-            <h3 class="section-title" style="color: #1a73e8;">🚂 ข้อมูลขบวนที่ 1</h3>
-            <label>เลือกรถขบวนที่ 1:</label>
-            <select id="train_select" onchange="autoFill(1)">
-                <option value="">-- เลือกขบวน --</option>
-                {% for key in trains.keys() %}
-                    <option value="{{ key }}">{{ key }}</option>
-                {% endfor %}
-            </select>
-
-            <div class="grid">
-                <div><label>ขบวนที่:</label><input type="text" id="num"></div>
-                <div><label>เวลา:</label><input type="text" id="time"></div>
-                <div><label>ต้นทาง:</label><input type="text" id="origin"></div>
-                <div><label>ปลายทาง:</label><input type="text" id="dest"></div>
-                <div><label>ชานชะลาที่:</label><input type="text" id="platform"></div>
-                <div><label>สถานีปัจจุบัน:</label><input type="text" id="current" value="คลองบางพระ"></div>
+    <main class="app-shell">
+        <section class="official-header">
+            <div class="header-top">
+                <div class="brand">
+                    <div class="seal">🚆</div>
+                    <div>
+                        <h1>ระบบประกาศสถานีคลองบางพระ</h1>
+                        <p class="sub">แบบฟอร์มประกาศเสียงอัตโนมัติ | สถานีคลองบางพระ</p>
+                    </div>
+                </div>
+                <div class="status-pill" id="statusText">พร้อมใช้งาน</div>
             </div>
-            
-            <label>สถานีต่อไป (สำหรับหมวด 5 และ 11):</label>
-            <input type="text" id="next_station">
-            
-            <label>คาดว่าจะถึงเวลา (สำหรับหมวด 6):</label>
-            <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
-        </div>
+            <div class="loading-bar" id="loadingBar"></div>
+        </section>
 
-        <!-- ข้อมูลขบวนที่ 2 (ซ่อนไว้สำหรับปุ่ม 11) -->
-        <div class="train-box train-box-2">
-            <h3 class="section-title" style="color: #F57F17;">🚂 ข้อมูลขบวนที่ 2 (เฉพาะรถเข้าพร้อมกัน)</h3>
-            <label>เลือกรถขบวนที่ 2:</label>
-            <select id="train_select_2" onchange="autoFill(2)">
-                <option value="">-- เลือกขบวน --</option>
-                {% for key in trains.keys() %}
-                    <option value="{{ key }}">{{ key }}</option>
-                {% endfor %}
-            </select>
+        <section class="main-grid">
+            <div class="card">
+                <h2 class="card-title">1) เลือกข้อมูลขบวนรถ</h2>
+                <div class="card-body">
+                    <label>เลือกขบวนที่ 1</label>
+                    <select id="train_select" onchange="autoFill(1)">
+                        <option value="">-- เลือกขบวนรถ --</option>
+                        <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
+                        {% for train in inbound %}
+                            <option value="{{ train.label }}">{{ train.label }}</option>
+                        {% endfor %}
+                        </optgroup>
+                        <optgroup label="ขาออก ไปทางตะวันออก">
+                        {% for train in outbound %}
+                            <option value="{{ train.label }}">{{ train.label }}</option>
+                        {% endfor %}
+                        </optgroup>
+                    </select>
 
-            <div class="grid">
-                <div><label>ขบวนที่:</label><input type="text" id="num_2"></div>
-                <div><label>เวลา:</label><input type="text" id="time_2"></div>
-                <div><label>ต้นทาง:</label><input type="text" id="origin_2"></div>
-                <div><label>ปลายทาง:</label><input type="text" id="dest_2"></div>
-                <div><label>ชานชะลาที่ 2:</label><input type="text" id="platform_2"></div>
-                <div><label>สถานีต่อไปขบวนที่ 2:</label><input type="text" id="next_station_2"></div>
+                    <div class="field-grid">
+                        <div><label>ขบวนที่</label><input type="text" id="num" placeholder="เช่น 383"></div>
+                        <div><label>เวลา</label><input type="text" id="time" placeholder="เช่น 20 นาฬิกา 25 นาที"></div>
+                        <div><label>ต้นทาง</label><input type="text" id="origin"></div>
+                        <div><label>ปลายทาง</label><input type="text" id="dest"></div>
+                        <div><label>ชานชาลาที่</label><input type="text" id="platform" placeholder="เช่น 1"></div>
+                        <div><label>สถานีปัจจุบัน</label><input type="text" id="current" value="คลองบางพระ"></div>
+                    </div>
+
+                    <label>สถานีต่อไป</label>
+                    <input type="text" id="next_station" placeholder="ใช้กับประกาศรถออก / รถเข้าพร้อมกัน">
+
+                    <label>คาดว่าจะถึงเวลา</label>
+                    <input type="text" id="delay_time" placeholder="ใช้กับรถล่าช้า เช่น 19 นาฬิกา 30 นาที">
+
+                    <div class="train-card-2">
+                        <b style="color:var(--srt-maroon);">ข้อมูลขบวนที่ 2</b>
+                        <div class="helper">ใช้เฉพาะปุ่ม “รถเข้าพร้อมกัน 2 ขบวน”</div>
+                        <label>เลือกขบวนที่ 2</label>
+                        <select id="train_select_2" onchange="autoFill(2)">
+                            <option value="">-- เลือกขบวนรถ --</option>
+                            <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
+                            {% for train in inbound %}
+                                <option value="{{ train.label }}">{{ train.label }}</option>
+                            {% endfor %}
+                            </optgroup>
+                            <optgroup label="ขาออก ไปทางตะวันออก">
+                            {% for train in outbound %}
+                                <option value="{{ train.label }}">{{ train.label }}</option>
+                            {% endfor %}
+                            </optgroup>
+                        </select>
+
+                        <div class="field-grid">
+                            <div><label>ขบวนที่ 2</label><input type="text" id="num_2"></div>
+                            <div><label>เวลา 2</label><input type="text" id="time_2"></div>
+                            <div><label>ต้นทาง 2</label><input type="text" id="origin_2"></div>
+                            <div><label>ปลายทาง 2</label><input type="text" id="dest_2"></div>
+                            <div><label>ชานชาลาที่ 2</label><input type="text" id="platform_2"></div>
+                            <div><label>สถานีต่อไป 2</label><input type="text" id="next_station_2"></div>
+                        </div>
+                    </div>
+
+                    <label>ประเภทรถวิ่งผ่าน</label>
+                    <select id="train_type">
+                        <option value="สินค้า">สินค้า</option>
+                        <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
+                        <option value="พิเศษ">พิเศษ</option>
+                        <option value="รถจักรเปล่า">รถจักรเปล่า</option>
+                    </select>
+
+                    <label>พิมพ์ข้อความประกาศเอง</label>
+                    <textarea id="custom_text" placeholder="พิมพ์ข้อความที่ต้องการประกาศเองตรงนี้"></textarea>
+
+                    <div class="toolbar">
+                        <button class="secondary" onclick="clearData()">ล้างข้อมูล</button>
+                        <button class="stop" onclick="stopAudio()">หยุดเสียง</button>
+                    </div>
+                </div>
             </div>
-        </div>
 
-        <label style="color:#009688;">🚆 ประเภทรถวิ่งผ่าน (สำหรับปุ่ม 10):</label>
-        <select id="train_type">
-            <option value="สินค้า">สินค้า</option>
-            <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
-            <option value="พิเศษ">พิเศษ</option>
-        </select>
+            <div class="card">
+                <h2 class="card-title">2) เลือกประเภทประกาศ</h2>
+                <div class="card-body">
+                    <div class="action-groups">
+                        {% for group, buttons in grouped_buttons.items() %}
+                        <div>
+                            <h3 class="group-title">{{ group }}</h3>
+                            <div class="button-grid">
+                                {% for button in buttons %}
+                                <button class="announce-btn" onclick="playAnnouncement({{ button.idx }})">
+                                    <strong>{{ button.title }}</strong>
+                                    <span>{{ button.hint }}</span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
 
-        <label style="color:#d32f2f;">📝 พิมพ์ข้อความประกาศเอง (สำหรับปุ่ม 9):</label>
-        <textarea id="custom_text" rows="2" placeholder="พิมพ์ข้อความที่ต้องการให้พี่นิวัฒน์พูดตรงนี้เลยครับ..."></textarea>
+                    <div class="preview-box" id="previewBox">
+                        <b>ตัวอย่างข้อความประกาศ:</b><br>
+                        กดปุ่มประกาศเพื่อสร้างเสียง ระบบจะสร้างไฟล์เสียงให้เสร็จก่อน แล้วเล่นเสียงเตือนสั้น ๆ ต่อด้วยเสียงประกาศทันที
+                    </div>
 
-        <button class="btn btn-clear" onclick="clearData()">🧹 ล้างข้อมูลหน้าจอ</button>
-        <hr>
-
-        <button class="btn btn-play" onclick="playAudio(0)">1. ขอทาง/ขายตั๋ว</button>
-        <button class="btn btn-play" onclick="playAudio(1)">2. รอรับโดยสาร</button>
-        <button class="btn btn-play" onclick="playAudio(2)">3. รถเข้าจอด</button>
-        <button class="btn btn-play" onclick="playAudio(3)">4. รถผ่าน (ขบวนปกติ)</button>
-        <button class="btn btn-play" onclick="playAudio(4)">5. รถจอดรับส่ง/ออก</button>
-        <button class="btn btn-play" style="background-color:#ff9800;" onclick="playAudio(5)">6. รถล่าช้า</button>
-        <button class="btn btn-play" style="background-color:#2196F3;" onclick="playAudio(6)">7. ระวังคนลงรถ</button>
-        <button class="btn btn-play" style="background-color:#E91E63;" onclick="playAudio(7)">🚭 8. ห้ามสูบบุหรี่</button>
-        <button class="btn btn-play" style="background-color:#9C27B0;" onclick="playAudio(8)">🎙️ 9. ประกาศตามข้อความที่พิมพ์เอง</button>
-        <button class="btn btn-play" style="background-color:#607D8B;" onclick="playAudio(9)">🚆 10. รถสินค้า/พิเศษ ผ่านสถานี</button>
-        <button class="btn btn-play" style="background-color:#d32f2f; font-size: 18px;" onclick="playAudio(10)">🚨 11. รถเข้าพร้อมกัน 2 ขบวน</button>
-
-        <div class="status" id="statusBox">🔊 กำลังประมวลผลเสียง...</div>
-    </div>
+                    <div class="notice">
+                        หมายเหตุ: ระบบนี้ใช้เสียง <b>{{ voice_name }}</b> ผ่าน edge-tts และสร้างไฟล์เสียงแยกทุกครั้ง เพื่อลดปัญหาไฟล์เก่าค้างหรือกดพร้อมกันแล้วเสียงชนกัน
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
 
     <script>
         const trainData = {{ trains_json | safe }};
-        let mobilePlayer = new Audio(); 
-        
+        let currentAudio = null;
+        let isBusy = false;
+        let sharedAudioContext = null;
+
+        function byId(id) { return document.getElementById(id); }
+        function value(id) { return (byId(id)?.value || "").trim(); }
+
+        function setStatus(text, type = "normal") {
+            const el = byId("statusText");
+            el.innerText = text;
+            if (type === "ok") el.style.background = "rgba(27,127,69,0.92)";
+            else if (type === "error") el.style.background = "rgba(179,38,30,0.92)";
+            else if (type === "work") el.style.background = "rgba(201,162,39,0.96)";
+            else el.style.background = "rgba(255,255,255,0.13)";
+        }
+
+        function setLoading(active) {
+            byId("loadingBar").classList.toggle("active", active);
+            document.querySelectorAll(".announce-btn").forEach(btn => btn.disabled = active);
+        }
+
         function autoFill(type) {
-            let selId = type === 1 ? 'train_select' : 'train_select_2';
-            let sel = document.getElementById(selId).value;
-            let data = trainData[sel];
-            if(data) {
-                let suffix = type === 1 ? '' : '_2';
-                document.getElementById('num' + suffix).value = data.num;
-                document.getElementById('origin' + suffix).value = data.origin;
-                document.getElementById('dest' + suffix).value = data.dest;
-                document.getElementById('time' + suffix).value = data.time;
-                document.getElementById('next_station' + suffix).value = data.next;
-            }
+            const suffix = type === 1 ? "" : "_2";
+            const selectId = type === 1 ? "train_select" : "train_select_2";
+            const selected = value(selectId);
+            const data = trainData[selected];
+            if (!data) return;
+            byId("num" + suffix).value = data.num || "";
+            byId("origin" + suffix).value = data.origin || "";
+            byId("dest" + suffix).value = data.dest || "";
+            byId("time" + suffix).value = data.time || "";
+            byId("next_station" + suffix).value = data.next || "";
         }
 
         function clearData() {
-            let fields = ['train_select', 'num', 'time', 'origin', 'dest', 'platform', 'next_station', 'delay_time', 'custom_text',
-                          'train_select_2', 'num_2', 'time_2', 'origin_2', 'dest_2', 'platform_2', 'next_station_2'];
-            fields.forEach(f => { document.getElementById(f).value = ""; });
+            const fields = [
+                "train_select", "num", "time", "origin", "dest", "platform", "next_station", "delay_time", "custom_text",
+                "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "platform_2", "next_station_2"
+            ];
+            fields.forEach(id => { if (byId(id)) byId(id).value = ""; });
+            byId("current").value = "คลองบางพระ";
+            byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ:</b><br>ล้างข้อมูลเรียบร้อยแล้ว";
+            setStatus("พร้อมใช้งาน");
         }
 
-        function playAudio(tabIndex) {
-            mobilePlayer.pause();
-            mobilePlayer.currentTime = 0; 
+        function stopAudio() {
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+            }
+            setStatus("หยุดเสียงแล้ว");
+        }
 
-            let statusBox = document.getElementById('statusBox');
-            statusBox.style.display = "block";
-            statusBox.innerText = "⏳ กำลังดึงเสียงพี่นิวัฒน์...";
-            statusBox.style.color = "#ff9800";
-            
-            mobilePlayer.src = '/audio/chime.mp3';
-            mobilePlayer.play().catch(()=>{});
-
-            let payload = {
+        function collectPayload(tabIndex) {
+            return {
                 tab_index: tabIndex,
-                num: document.getElementById('num').value,
-                origin: document.getElementById('origin').value,
-                dest: document.getElementById('dest').value,
-                time: document.getElementById('time').value,
-                platform: document.getElementById('platform').value,
-                current: document.getElementById('current').value,
-                next: document.getElementById('next_station').value,
-                delay: document.getElementById('delay_time').value,
-                custom_text: document.getElementById('custom_text').value,
-                train_type: document.getElementById('train_type').value,
-                // ข้อมูลขบวนที่ 2
-                num_2: document.getElementById('num_2').value,
-                origin_2: document.getElementById('origin_2').value,
-                dest_2: document.getElementById('dest_2').value,
-                time_2: document.getElementById('time_2').value,
-                platform_2: document.getElementById('platform_2').value,
-                next_2: document.getElementById('next_station_2').value
+                num: value("num"),
+                origin: value("origin"),
+                dest: value("dest"),
+                time: value("time"),
+                platform: value("platform"),
+                current: value("current") || "คลองบางพระ",
+                next: value("next_station"),
+                delay: value("delay_time"),
+                custom_text: value("custom_text"),
+                train_type: value("train_type") || "สินค้า",
+                num_2: value("num_2"),
+                origin_2: value("origin_2"),
+                dest_2: value("dest_2"),
+                time_2: value("time_2"),
+                platform_2: value("platform_2"),
+                next_2: value("next_station_2")
             };
+        }
 
-            fetch('/announce', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            }).then(response => response.json())
-            .then(data => {
-                if(data.status === "success") {
-                    statusBox.innerText = "🔊 กำลังกระจายเสียงประกาศ!";
-                    statusBox.style.color = "#4CAF50";
+        function getAudioContext() {
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!sharedAudioContext) sharedAudioContext = new AudioContext();
+                if (sharedAudioContext.state === "suspended") sharedAudioContext.resume().catch(() => {});
+                return sharedAudioContext;
+            } catch (e) {
+                return null;
+            }
+        }
 
-                    let announceUrl = '/audio/temp_announce.mp3?t=' + new Date().getTime(); 
-                    
-                    if (!mobilePlayer.paused && mobilePlayer.src.includes('chime.mp3')) {
-                        mobilePlayer.onended = () => {
-                            mobilePlayer.src = announceUrl;
-                            mobilePlayer.play();
-                            mobilePlayer.onended = null;
-                        };
-                    } else {
-                        mobilePlayer.src = announceUrl;
-                        mobilePlayer.play();
-                    }
+        function playWarningTone() {
+            return new Promise((resolve) => {
+                try {
+                    const ctx = getAudioContext();
+                    if (!ctx) return resolve();
 
-                    setTimeout(() => { statusBox.style.display = "none"; }, 7000);
+                    const startAt = ctx.currentTime + 0.02;
+                    const gain = ctx.createGain();
+                    gain.gain.setValueAtTime(0.0001, startAt);
+                    gain.gain.exponentialRampToValueAtTime(0.12, startAt + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.42);
+                    gain.connect(ctx.destination);
+
+                    const osc1 = ctx.createOscillator();
+                    osc1.type = "sine";
+                    osc1.frequency.setValueAtTime(880, startAt);
+                    osc1.connect(gain);
+                    osc1.start(startAt);
+                    osc1.stop(startAt + 0.18);
+
+                    const osc2 = ctx.createOscillator();
+                    osc2.type = "sine";
+                    osc2.frequency.setValueAtTime(660, startAt + 0.19);
+                    osc2.connect(gain);
+                    osc2.start(startAt + 0.19);
+                    osc2.stop(startAt + 0.42);
+
+                    setTimeout(resolve, 455);
+                } catch (e) {
+                    resolve();
                 }
             });
+        }
+
+        function preloadAudio(url) {
+            return new Promise((resolve, reject) => {
+                const audio = new Audio(url);
+                audio.preload = "auto";
+                audio.addEventListener("canplaythrough", () => resolve(audio), { once: true });
+                audio.addEventListener("error", () => reject(new Error("โหลดไฟล์เสียงไม่สำเร็จ")), { once: true });
+                audio.load();
+                setTimeout(() => resolve(audio), 1200);
+            });
+        }
+
+        async function playAnnouncement(tabIndex) {
+            if (isBusy) return;
+            isBusy = true;
+            getAudioContext(); // ปลดล็อกเสียงบนมือถือทันทีตอนผู้ใช้กดปุ่ม
+            setLoading(true);
+            stopAudio();
+            setStatus("กำลังสร้างเสียงประกาศ...", "work");
+            byId("previewBox").innerHTML = "<b>สถานะ:</b><br>กำลังสร้างไฟล์เสียง กรุณารอสักครู่";
+
+            try {
+                const response = await fetch("/announce", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(collectPayload(tabIndex))
+                });
+                const data = await response.json();
+
+                if (!response.ok || data.status !== "success") {
+                    throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
+                }
+
+                byId("previewBox").innerHTML = "<b>ข้อความประกาศ:</b><br>" + (data.text_preview || "-");
+                setStatus("เตรียมเปิดเสียง...", "work");
+                const audio = await preloadAudio(data.audio_url);
+                currentAudio = audio;
+
+                setStatus("เสียงเตือน...", "work");
+                await playWarningTone();
+
+                // จุดสำคัญ: โหลดไฟล์ประกาศไว้ก่อนแล้ว จึงต่อเสียงทันทีหลังเสียงเตือน
+                setStatus("กำลังประกาศ", "ok");
+                await audio.play();
+                audio.onended = () => setStatus("ประกาศเสร็จแล้ว", "ok");
+            } catch (err) {
+                console.error(err);
+                setStatus("เกิดข้อผิดพลาด", "error");
+                byId("previewBox").innerHTML = "<b>เกิดข้อผิดพลาด:</b><br>" + err.message;
+            } finally {
+                setLoading(false);
+                isBusy = false;
+            }
         }
     </script>
 </body>
 </html>
 """
 
-@app.route('/audio/<filename>')
-def serve_audio(filename):
-    if os.path.exists(filename):
-        return send_file(filename, mimetype="audio/mpeg")
-    return "File not found", 404
+
+def group_buttons(buttons):
+    grouped = {}
+    for item in buttons:
+        grouped.setdefault(item["group"], []).append(item)
+    return grouped
+
+
+def cleanup_old_audio(max_age_seconds=3600):
+    """ลบไฟล์เสียงเก่าที่เกิน 1 ชั่วโมง เพื่อไม่ให้โฟลเดอร์โตเกินไป"""
+    now = time.time()
+    for file in AUDIO_DIR.glob("announce_*.mp3"):
+        try:
+            if now - file.stat().st_mtime > max_age_seconds:
+                file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def spaced_train_number(number_text):
+    digits = "".join(ch for ch in str(number_text) if ch.isdigit())
+    return " ".join(digits) if digits else str(number_text or "")
+
+
+def tidy_time(text):
+    return (text or "").replace(" 0 นาที", "").strip()
+
+
+def station(name):
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if name.startswith("สถานี") or name.startswith("ป้ายหยุดรถ") or name.startswith("ที่หยุดรถ"):
+        return name
+    return f"สถานี{name}"
+
+
+def clean_space(text):
+    return " ".join((text or "").split())
+
+
+def build_announcement(data):
+    idx = int(data.get("tab_index", -1))
+
+    t_num = spaced_train_number(data.get("num", ""))
+    origin = data.get("origin", "")
+    dest = data.get("dest", "")
+    t_time = tidy_time(data.get("time", ""))
+    platform = data.get("platform", "")
+    current = data.get("current", STATION_NAME) or STATION_NAME
+    next_st = data.get("next", "")
+    delay = data.get("delay", "")
+    custom_text = data.get("custom_text", "")
+    train_type = data.get("train_type", "สินค้า") or "สินค้า"
+
+    t_num_2 = spaced_train_number(data.get("num_2", ""))
+    origin_2 = data.get("origin_2", "")
+    dest_2 = data.get("dest_2", "")
+    platform_2 = data.get("platform_2", "")
+    next_st_2 = data.get("next_2", "")
+
+    if idx == 0:
+        text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+    elif idx == 1:
+        text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
+    elif idx == 2:
+        text = f"โปรดทราบ อีกสักครู่ ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} กำลังจะเข้าเทียบสถานีในชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+    elif idx == 3:
+        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+    elif idx == 4:
+        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารที่มีตั๋วโดยสารกับขบวนรถเที่ยวนี้แล้ว กรุณานำสิ่งของและสัมภาระของท่านขึ้นบนขบวนรถ และจัดหาที่นั่งให้เรียบร้อย ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+    elif idx == 5:
+        text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
+    elif idx == 6:
+        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ ขบวนที่ {t_num} เข้าเทียบในชานชาลาที่ {platform} ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวังด้วยครับ ขอบคุณครับ"
+    elif idx == 7:
+        text = "โปรดทราบ ขอความร่วมมือผู้โดยสารทุกท่าน ห้ามสูบบุหรี่บนชานชาลา บริเวณสถานี และบนขบวนรถ เพื่อสุขภาพอนามัยที่ดีของส่วนรวม ขอบคุณครับ"
+    elif idx == 8:
+        text = custom_text if custom_text.strip() else "กรุณาพิมพ์ข้อความที่ต้องการประกาศในช่องข้อความประกาศเองก่อนกดปุ่มครับ"
+    elif idx == 9:
+        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type}วิ่งผ่านสถานี บริเวณชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+    elif idx == 10:
+        text = (
+            f"ผู้โดยสารโปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ก่อนผู้โดยสารจะลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงให้ถูกต้องครบถ้วน "
+            f"ขบวนรถที่จอดในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
+            f"และขบวนรถที่จอดในชานชาลาที่ {platform_2} เป็นขบวนรถ ขบวนที่ {t_num_2} รับส่งผู้โดยสารต้นทาง {station(origin_2)} ปลายทาง {station(dest_2)} "
+            f"ขบวนรถในชานชาลาที่ {platform} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ "
+            f"และขบวนรถในชานชาลาที่ {platform_2} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st_2} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+        )
+    else:
+        raise ValueError("ไม่พบประเภทประกาศที่เลือก")
+
+    return clean_space(text)
+
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_PAGE, trains=TRAINS, trains_json=json.dumps(TRAINS))
+    return render_template_string(
+        HTML_PAGE,
+        inbound=INBOUND_TRAINS,
+        outbound=OUTBOUND_TRAINS,
+        trains_json=json.dumps(TRAIN_DATA, ensure_ascii=False),
+        grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
+        voice_name=VOICE_NAME,
+    )
+
+
+@app.route("/audio/<path:filename>")
+def serve_audio(filename):
+    return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False)
+
 
 @app.route("/announce", methods=["POST"])
 def announce():
-    data = request.json
-    idx = data.get('tab_index')
-    
-    # ข้อมูลขบวนที่ 1
-    t_num = " ".join(list(data.get('num', '')))
-    origin = data.get('origin', '')
-    dest = data.get('dest', '')
-    t_time = data.get('time', '').replace(" 0 นาที", "")
-    platform = data.get('platform', '')
-    current = data.get('current', '')
-    next_st = data.get('next', '')
-    delay = data.get('delay', '')
-    custom_text = data.get('custom_text', '')
-    train_type = data.get('train_type', 'สินค้า')
-    
-    # ข้อมูลขบวนที่ 2
-    t_num_2 = " ".join(list(data.get('num_2', '')))
-    origin_2 = data.get('origin_2', '')
-    dest_2 = data.get('dest_2', '')
-    t_time_2 = data.get('time_2', '').replace(" 0 นาที", "")
-    platform_2 = data.get('platform_2', '')
-    next_st_2 = data.get('next_2', '')
+    cleanup_old_audio()
+    data = request.get_json(silent=True) or {}
 
-    text = ""
-    if idx == 0:
-        text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสารสามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
-    elif idx == 1:
-        text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดมีตั๋วที่ใช้ในการโดยสารแล้วนำสิ่งของและสัมภาระของท่าน รอรับการโดยสารได้ในชานชะลาที่ {platform} ขอบคุณครับ"
-    elif idx == 2:
-        text = f"โปรดทราบอีกสักครู่ ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} กำลังจะเข้าเทียบสถานีในชานชะลาที่ {platform} เพื่อความปลอดภัยของผู้โดยสาร กรุณายืนหลังเส้นสีเหลืองขอบชานชะลา และไม่เดินข้ามผ่านไป-มา ระหว่างชานชะลาที่ {platform} ขอบคุณครับ"
-    elif idx == 3:
-        text = f"โปรดทราบอีกสักครู่ ขบวนรถ วิ่งผ่านสถานี ในบริเวณชานชะลาที่ {platform} เพื่อความปลอดภัยของผู้โดยสาร กรุณายืนหลังเส้นสีเหลืองขอบชานชะลา และไม่เดินข้ามผ่านไป-มา ระหว่างชานชะลาที่ {platform} ขอบคุณครับ"
-    elif idx == 4:
-        text = f"โปรดทราบที่นี่สถานี{current} ที่นี่สถานี{current} ผู้โดยสารก่อนลงจากขบวนรถโปรดตรวจสอบสิ่งของและสัมภาระของท่านที่นำติดตัวมา นำลงจากขบวนรถให้ครบถ้วน ถูกต้องด้วยครับ ขบวนรถที่จอดเทียบในชานชะลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time}  ขบวนรถเที่ยวนี้เมื่อออกจากสถานีคลองบางพระ ไปแล้วจะหยุด รับ ส่ง ผู้โดยสารที่{next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
-    elif idx == 5:
-        text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึงสถานี{current} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
-    elif idx == 6:
-        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ ขบวนที่ {t_num} เข้าเทียบในชานชะลาที่ {platform} ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวังด้วยครับ ขอบคุณครับ"
-    elif idx == 7:
-        text = "โปรดทราบ ขอความร่วมมือผู้โดยสารทุกท่าน ห้ามสูบบุหรี่บนชานชะลา บริเวณสถานี และบนขบวนรถ เพื่อสุขภาพอนามัยที่ดีของส่วนรวม ขอบคุณครับ"
-    elif idx == 8:
-        text = custom_text if custom_text.strip() != "" else "โปรดพิมพ์ข้อความที่ต้องการประกาศในช่องด้านบนด้วยครับ"
-    elif idx == 9:
-        text = f"โปรดทราบอีกสักครู่ จะมีขบวนรถ{train_type} วิ่งผ่านหน้าสถานี ในชานชะลาที่ {platform} เพื่อความปลอดภัยของผู้โดยสาร กรุณายืนหลังเส้นสีเหลืองขอบชานชะลา และไม่เดินข้ามผ่านไป-มา ระหว่างชานชะลาที่ {platform} ขอบคุณครับ"
-    elif idx == 10:
-        # ปุ่ม 11: รถเข้าพร้อมกัน 2 ขบวน
-        text = (f"ผู้โดยสารโปรดทราบ ที่นี่สถานี{current} ที่นี่สถานี{current} ก่อนผู้โดยสารจะลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่านที่นำติดตัวมา นำลงให้ถูกต้องครบถ้วนด้วยครับ "
-                f"ขบวนรถที่จอดเทียบในชานชะลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง สถานี{origin} ปลายทาง สถานี{dest} "
-                f"และขบวนรถที่จอดเทียบในชานชะลาที่ {platform_2} เป็นขบวนรถ ขบวนที่ {t_num_2} รับส่งผู้โดยสารต้นทาง สถานี{origin_2} ปลายทาง สถานี{dest_2} "
-                f"ขบวนรถ ในชานชะลาที่ {platform} เมื่อออกจาก สถานีคลองบางพระ ไปแล้ว จะหยุดรับ ส่ง ผู้โดยสารที่{next_st} เป็นสถานีต่อไปตามลำดับ "
-                f"และขบวนรถ ในชานชะลาที่ {platform_2} เมื่อออกจาก สถานีคลองบางพระ ไปแล้ว จะหยุดรับ ส่ง ผู้โดยสารที่{next_st_2} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ")
+    try:
+        text = build_announcement(data)
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
 
-    filename = "temp_announce.mp3"
-    
-    if os.path.exists(filename):
-        try: os.remove(filename)
-        except: pass
-        
+    if not text:
+        return jsonify({"status": "error", "message": "ไม่มีข้อความสำหรับประกาศ"}), 400
+
+    filename = f"announce_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
+    output_path = AUDIO_DIR / filename
+
     try:
         subprocess.run(
-            ["edge-tts", "--voice", "th-TH-NiwatNeural", "--rate=-10%", "--text", text, "--write-media", filename], 
-            check=True
+            [
+                "edge-tts",
+                "--voice", VOICE_NAME,
+                "--rate", TTS_RATE,
+                "--text", text,
+                "--write-media", str(output_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-    except Exception as e:
-        print(f"TTS Error: {e}")
+    except FileNotFoundError:
+        return jsonify({
+            "status": "error",
+            "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts",
+            "text_preview": text,
+        }), 500
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        return jsonify({
+            "status": "error",
+            "message": f"สร้างเสียงไม่สำเร็จ: {detail}",
+            "text_preview": text,
+        }), 500
 
-    return {"status": "success"}
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        return jsonify({
+            "status": "error",
+            "message": "ระบบสร้างไฟล์เสียงไม่สำเร็จ หรือไฟล์เสียงว่าง",
+            "text_preview": text,
+        }), 500
 
-if __name__ == '__main__':
+    return jsonify({
+        "status": "success",
+        "audio_url": f"/audio/{filename}?v={int(time.time())}",
+        "text_preview": text,
+    })
+
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
