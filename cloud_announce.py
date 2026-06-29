@@ -421,8 +421,19 @@ HTML_PAGE = r"""
     <script>
         const trainData = {{ trains_json | safe }};
         let currentAudio = null;
+        let chimeAudio = null;
         let isBusy = false;
         let sharedAudioContext = null;
+        let mobileAudioUnlocked = false;
+
+        function getChimeAudio() {
+            if (!chimeAudio) {
+                chimeAudio = new Audio("/audio/chime.mp3");
+                chimeAudio.preload = "auto";
+                chimeAudio.load();
+            }
+            return chimeAudio;
+        }
 
         function byId(id) { return document.getElementById(id); }
         function value(id) { return (byId(id)?.value || "").trim(); }
@@ -470,6 +481,10 @@ HTML_PAGE = r"""
                 currentAudio.pause();
                 currentAudio.currentTime = 0;
             }
+            if (chimeAudio) {
+                chimeAudio.pause();
+                try { chimeAudio.currentTime = 0; } catch (e) {}
+            }
             setStatus("หยุดเสียงแล้ว");
         }
 
@@ -503,6 +518,29 @@ HTML_PAGE = r"""
                 return sharedAudioContext;
             } catch (e) {
                 return null;
+            }
+        }
+
+        async function unlockMobileAudio() {
+            // มือถือบางรุ่น โดยเฉพาะ iPhone/Safari จะไม่ยอมเล่นไฟล์เสียง
+            // ถ้าคำสั่ง play() เกิดหลังจากรอ fetch สร้างเสียงประกาศแล้ว
+            // จึงต้องปลดล็อกไฟล์ chime.mp3 ทันทีในจังหวะที่ผู้ใช้แตะปุ่ม
+            getAudioContext();
+            if (mobileAudioUnlocked) return;
+            const chime = getChimeAudio();
+            try {
+                chime.muted = true;
+                chime.volume = 0;
+                chime.currentTime = 0;
+                await chime.play();
+                chime.pause();
+                chime.currentTime = 0;
+                mobileAudioUnlocked = true;
+            } catch (e) {
+                console.warn("Mobile audio unlock failed:", e);
+            } finally {
+                chime.muted = false;
+                chime.volume = 1;
             }
         }
 
@@ -553,29 +591,36 @@ HTML_PAGE = r"""
 
         function playOriginalChime() {
             return new Promise(async (resolve) => {
-                const chime = new Audio("/audio/chime.mp3?v=" + new Date().getTime());
+                const chime = getChimeAudio();
                 const maxWaitMs = 2400; // กันไฟล์เสียงเตือนมีช่วงเงียบท้ายไฟล์นานเกินไป
                 let finished = false;
+                let safetyTimer = null;
 
                 function finish() {
                     if (finished) return;
                     finished = true;
+                    if (safetyTimer) clearTimeout(safetyTimer);
                     chime.pause();
-                    chime.currentTime = 0;
+                    try { chime.currentTime = 0; } catch (e) {}
                     resolve();
                 }
 
-                chime.preload = "auto";
+                function onError() {
+                    playWarningTone().finally(finish);
+                }
+
+                chime.removeEventListener("ended", finish);
+                chime.removeEventListener("error", onError);
                 chime.addEventListener("ended", finish, { once: true });
-                chime.addEventListener("error", async () => {
-                    await playWarningTone();
-                    finish();
-                }, { once: true });
+                chime.addEventListener("error", onError, { once: true });
 
                 try {
-                    chime.load();
+                    chime.pause();
+                    chime.muted = false;
+                    chime.volume = 1;
+                    chime.currentTime = 0;
                     await chime.play();
-                    setTimeout(finish, maxWaitMs);
+                    safetyTimer = setTimeout(finish, maxWaitMs);
                 } catch (e) {
                     await playWarningTone();
                     finish();
@@ -586,7 +631,7 @@ HTML_PAGE = r"""
         async function playAnnouncement(tabIndex) {
             if (isBusy) return;
             isBusy = true;
-            getAudioContext(); // ปลดล็อกเสียงบนมือถือทันทีตอนผู้ใช้กดปุ่ม
+            await unlockMobileAudio(); // ปลดล็อกเสียงบนมือถือทันทีตอนผู้ใช้กดปุ่ม
             setLoading(true);
             stopAudio();
             setStatus("กำลังสร้างเสียงประกาศ...", "work");
@@ -722,7 +767,7 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
     elif idx == 4:
-        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)}  ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time}  ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
