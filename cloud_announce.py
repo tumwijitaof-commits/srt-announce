@@ -13,6 +13,9 @@ AUDIO_DIR.mkdir(exist_ok=True)
 
 VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-NiwatNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "-10%")
+EN_VOICE_NAME = os.environ.get("TTS_EN_VOICE", "en-US-GuyNeural")
+TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-5%")
+THANK_YOU_TEXT = os.environ.get("TTS_THANK_YOU", "แต๊งกิ้วครับ")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
 
@@ -376,8 +379,18 @@ HTML_PAGE = r"""
                         <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                     </select>
 
-                    <label>พิมพ์ข้อความประกาศเอง</label>
+                    <label>รูปแบบเสียงประกาศ</label>
+                    <select id="announce_mode">
+                        <option value="bilingual" selected>ไทย + อังกฤษ + แต๊งกิ้ว</option>
+                        <option value="thai_only">ภาษาไทยเท่านั้น</option>
+                    </select>
+                    <div class="helper">โหมดสองภาษา: เล่นเสียงเตือน → ภาษาไทย → ภาษาอังกฤษ → แต๊งกิ้วครับ</div>
+
+                    <label>พิมพ์ข้อความประกาศเอง ภาษาไทย</label>
                     <textarea id="custom_text" placeholder="พิมพ์ข้อความที่ต้องการประกาศเองตรงนี้"></textarea>
+
+                    <label>ข้อความอังกฤษสำหรับประกาศเอง</label>
+                    <textarea id="custom_text_en" placeholder="ใช้เฉพาะปุ่มประกาศเอง ถ้าเว้นว่าง ระบบจะพูดอังกฤษแบบทั่วไป"></textarea>
 
                     <div class="toolbar">
                         <button class="secondary" onclick="clearData()">ล้างข้อมูล</button>
@@ -411,7 +424,7 @@ HTML_PAGE = r"""
                     </div>
 
                     <div class="notice">
-                        หมายเหตุ: ระบบนี้ใช้เสียง <b>{{ voice_name }}</b> ผ่าน edge-tts และสร้างไฟล์เสียงแยกทุกครั้ง เพื่อลดปัญหาไฟล์เก่าค้างหรือกดพร้อมกันแล้วเสียงชนกัน
+                        หมายเหตุ: ระบบนี้ใช้เสียงไทย <b>{{ voice_name }}</b> และเสียงอังกฤษ <b>{{ en_voice_name }}</b> ผ่าน edge-tts โดยสร้างไฟล์เสียงแยกทุกครั้ง เพื่อลดปัญหาไฟล์เก่าค้างหรือกดพร้อมกันแล้วเสียงชนกัน
                     </div>
                 </div>
             </div>
@@ -467,11 +480,12 @@ HTML_PAGE = r"""
 
         function clearData() {
             const fields = [
-                "train_select", "num", "time", "origin", "dest", "platform", "next_station", "delay_time", "custom_text",
+                "train_select", "num", "time", "origin", "dest", "platform", "next_station", "delay_time", "custom_text", "custom_text_en",
                 "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "platform_2", "next_station_2"
             ];
             fields.forEach(id => { if (byId(id)) byId(id).value = ""; });
             byId("current").value = "คลองบางพระ";
+            byId("announce_mode").value = "bilingual";
             byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ:</b><br>ล้างข้อมูลเรียบร้อยแล้ว";
             setStatus("พร้อมใช้งาน");
         }
@@ -500,6 +514,8 @@ HTML_PAGE = r"""
                 next: value("next_station"),
                 delay: value("delay_time"),
                 custom_text: value("custom_text"),
+                custom_text_en: value("custom_text_en"),
+                announce_mode: value("announce_mode") || "bilingual",
                 train_type: value("train_type") || "สินค้า",
                 num_2: value("num_2"),
                 origin_2: value("origin_2"),
@@ -589,6 +605,20 @@ HTML_PAGE = r"""
             });
         }
 
+        function playAudioElement(audio) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    currentAudio = audio;
+                    audio.currentTime = 0;
+                    audio.addEventListener("ended", resolve, { once: true });
+                    audio.addEventListener("error", () => reject(new Error("เล่นไฟล์เสียงไม่สำเร็จ")), { once: true });
+                    await audio.play();
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        }
+
         function playOriginalChime() {
             return new Promise(async (resolve) => {
                 const chime = getChimeAudio();
@@ -651,16 +681,23 @@ HTML_PAGE = r"""
 
                 byId("previewBox").innerHTML = "<b>ข้อความประกาศ:</b><br>" + (data.text_preview || "-");
                 setStatus("เตรียมเปิดเสียง...", "work");
-                const audio = await preloadAudio(data.audio_url);
-                currentAudio = audio;
+                const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
+                const audios = await Promise.all(audioUrls.map(url => preloadAudio(url)));
 
                 setStatus("เสียงเตือน...", "work");
                 await playOriginalChime();
 
-                // จุดสำคัญ: โหลดไฟล์ประกาศไว้ก่อนแล้ว จึงต่อเสียงทันทีหลังเสียงเตือน
-                setStatus("กำลังประกาศ", "ok");
-                await audio.play();
-                audio.onended = () => setStatus("ประกาศเสร็จแล้ว", "ok");
+                // จุดสำคัญ: โหลดไฟล์ประกาศทุกช่วงไว้ก่อนแล้ว จึงต่อเสียงทันทีหลังเสียงเตือน
+                for (let i = 0; i < audios.length; i++) {
+                    if (audios.length > 1) {
+                        const labels = ["ภาษาไทย", "ภาษาอังกฤษ", "คำลงท้าย"];
+                        setStatus("กำลังประกาศ " + (labels[i] || (i + 1)), "ok");
+                    } else {
+                        setStatus("กำลังประกาศ", "ok");
+                    }
+                    await playAudioElement(audios[i]);
+                }
+                setStatus("ประกาศเสร็จแล้ว", "ok");
             } catch (err) {
                 console.error(err);
                 setStatus("เกิดข้อผิดพลาด", "error");
@@ -738,6 +775,131 @@ def prepare_tts_text(text):
     return clean_space(tts_text)
 
 
+
+EN_STATION_NAMES = {
+    "คลองบางพระ": "Khlong Bang Phra",
+    "กรุงเทพ": "Bangkok",
+    "หัวลำโพง": "Hua Lamphong",
+    "ชุมทางฉะเชิงเทรา": "Chachoengsao Junction",
+    "ฉะเชิงเทรา": "Chachoengsao",
+    "ปราจีนบุรี": "Prachin Buri",
+    "กบินทร์บุรี": "Kabin Buri",
+    "จุกเสม็ด": "Chuk Samet",
+    "ด่านพรมแดนบ้านคลองลึก": "Ban Klong Luk Border",
+    "คลองแขวงกลั่น": "Khlong Khwaeng Klan",
+    "คลองเปรง": "Khlong Preng",
+    "บางเตย": "Bang Toei",
+    "สถานีคลองเปรง": "Khlong Preng Station",
+    "สถานีชุมทางฉะเชิงเทรา": "Chachoengsao Junction Station",
+    "ป้ายหยุดรถคลองแขวงกลั่น": "Khlong Khwaeng Klan Halt",
+    "ป้ายหยุดรถบางเตย": "Bang Toei Halt",
+}
+
+EN_TRAIN_TYPES = {
+    "สินค้า": "freight train",
+    "ด่วนพิเศษ": "special express train",
+    "พิเศษ": "special train",
+    "รถจักรเปล่า": "light engine",
+}
+
+DIGIT_WORDS_EN = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+}
+
+
+def train_number_en(number_text):
+    digits = "".join(ch for ch in str(number_text) if ch.isdigit())
+    return " ".join(DIGIT_WORDS_EN.get(ch, ch) for ch in digits) if digits else str(number_text or "")
+
+
+def station_en(name):
+    name = (name or "").strip()
+    if not name:
+        return ""
+    cleaned = name
+    for prefix in ("สถานี", "ป้ายหยุดรถ", "ที่หยุดรถ"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned.replace(prefix, "", 1).strip()
+    return EN_STATION_NAMES.get(name) or EN_STATION_NAMES.get(cleaned) or cleaned
+
+
+def next_stations_en(text):
+    result = text or ""
+    # แทนคำที่ยาวก่อน เพื่อไม่ให้ชนกับชื่อสถานีย่อย
+    for th_name in sorted(EN_STATION_NAMES, key=len, reverse=True):
+        result = result.replace(th_name, EN_STATION_NAMES[th_name])
+    result = result.replace(" และ ", " and ").replace("และ", " and ")
+    return clean_space(result)
+
+
+def time_en(text):
+    raw = text or ""
+    nums = [int(part) for part in __import__("re").findall(r"\d+", raw)]
+    if not nums:
+        return raw
+    hour = nums[0]
+    minute = nums[1] if len(nums) > 1 else 0
+    suffix = "A.M." if hour < 12 else "P.M."
+    hour12 = hour % 12
+    if hour12 == 0:
+        hour12 = 12
+    return f"{hour12}:{minute:02d} {suffix}"
+
+
+def build_english_announcement(data):
+    idx = int(data.get("tab_index", -1))
+
+    t_num = train_number_en(data.get("num", ""))
+    origin = station_en(data.get("origin", ""))
+    dest = station_en(data.get("dest", ""))
+    t_time = time_en(tidy_time(data.get("time", "")))
+    platform = data.get("platform", "")
+    current = station_en(data.get("current", STATION_NAME) or STATION_NAME)
+    next_st = next_stations_en(data.get("next", ""))
+    delay = time_en(data.get("delay", ""))
+    custom_text_en = data.get("custom_text_en", "")
+    train_type = EN_TRAIN_TYPES.get(data.get("train_type", "สินค้า") or "สินค้า", "train")
+
+    t_num_2 = train_number_en(data.get("num_2", ""))
+    origin_2 = station_en(data.get("origin_2", ""))
+    dest_2 = station_en(data.get("dest_2", ""))
+    platform_2 = data.get("platform_2", "")
+    next_st_2 = next_stations_en(data.get("next_2", ""))
+
+    if idx == 0:
+        text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
+    elif idx == 1:
+        text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
+    elif idx == 2:
+        text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, will shortly arrive at platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+    elif idx == 3:
+        text = f"Attention please. A train will shortly pass through platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+    elif idx == 4:
+        text = f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. The train at platform {platform} is train number {t_num}, from {origin} to {dest}, scheduled at {t_time}. After departing {current} Station, the next stops will be {next_st}."
+    elif idx == 5:
+        text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
+    elif idx == 6:
+        text = f"Attention please. Train number {t_num} will shortly arrive at platform {platform}. Passengers leaving the train, please be careful."
+    elif idx == 7:
+        text = "Attention please. Smoking and alcoholic beverages are not allowed on the platform, in the station area, and on the train. Thank you for your cooperation."
+    elif idx == 8:
+        text = custom_text_en.strip() if custom_text_en.strip() else "Attention please. Please listen carefully to the station announcement."
+    elif idx == 9:
+        text = f"Attention please. A {train_type} will shortly pass through platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+    elif idx == 10:
+        text = (
+            f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. "
+            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}. "
+            f"The train at platform {platform_2} is train number {t_num_2}, from {origin_2} to {dest_2}. "
+            f"After departing {current} Station, the train at platform {platform} will next stop at {next_st}. "
+            f"The train at platform {platform_2} will next stop at {next_st_2}."
+        )
+    else:
+        raise ValueError("ไม่พบประเภทประกาศที่เลือก")
+
+    return clean_space(text)
+
 def build_announcement(data):
     idx = int(data.get("tab_index", -1))
 
@@ -801,6 +963,7 @@ def index():
         trains_json=json.dumps(TRAIN_DATA, ensure_ascii=False),
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
+        en_voice_name=EN_VOICE_NAME,
     )
 
 
@@ -820,59 +983,90 @@ def announce():
     data = request.get_json(silent=True) or {}
 
     try:
-        text = build_announcement(data)
+        thai_text = build_announcement(data)
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
-    if not text:
+    if not thai_text:
         return jsonify({"status": "error", "message": "ไม่มีข้อความสำหรับประกาศ"}), 400
 
-    filename = f"announce_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
-    output_path = AUDIO_DIR / filename
-    tts_text = prepare_tts_text(text)
+    mode = (data.get("announce_mode") or "bilingual").strip()
+    segments = [("th", thai_text, VOICE_NAME, TTS_RATE, prepare_tts_text)]
+
+    english_text = ""
+    if mode == "bilingual":
+        try:
+            english_text = build_english_announcement(data)
+        except Exception as exc:
+            return jsonify({"status": "error", "message": f"สร้างข้อความอังกฤษไม่สำเร็จ: {exc}"}), 400
+        segments.append(("en", english_text, EN_VOICE_NAME, TTS_EN_RATE, clean_space))
+        segments.append(("thanks", THANK_YOU_TEXT, VOICE_NAME, TTS_RATE, prepare_tts_text))
+
+    audio_urls = []
+    created_files = []
 
     try:
-        subprocess.run(
-            [
-                "edge-tts",
-                "--voice", VOICE_NAME,
-                "--rate", TTS_RATE,
-                "--text", tts_text,
-                "--write-media", str(output_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        for label, segment_text, voice, rate, prepare_func in segments:
+            if not segment_text:
+                continue
+            filename = f"announce_{label}_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
+            output_path = AUDIO_DIR / filename
+            tts_text = prepare_func(segment_text)
+            subprocess.run(
+                [
+                    "edge-tts",
+                    "--voice", voice,
+                    "--rate", rate,
+                    "--text", tts_text,
+                    "--write-media", str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {label} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
+            created_files.append(output_path)
+            audio_urls.append(f"/audio/{filename}?v={int(time.time())}")
     except FileNotFoundError:
         return jsonify({
             "status": "error",
             "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts",
-            "text_preview": text,
+            "text_preview": thai_text,
         }), 500
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         return jsonify({
             "status": "error",
             "message": f"สร้างเสียงไม่สำเร็จ: {detail}",
-            "text_preview": text,
+            "text_preview": thai_text,
         }), 500
-
-    if not output_path.exists() or output_path.stat().st_size == 0:
+    except Exception as exc:
         return jsonify({
             "status": "error",
-            "message": "ระบบสร้างไฟล์เสียงไม่สำเร็จ หรือไฟล์เสียงว่าง",
-            "text_preview": text,
+            "message": str(exc),
+            "text_preview": thai_text,
         }), 500
+
+    if not audio_urls:
+        return jsonify({
+            "status": "error",
+            "message": "ไม่มีไฟล์เสียงสำหรับประกาศ",
+            "text_preview": thai_text,
+        }), 500
+
+    preview = thai_text
+    if mode == "bilingual":
+        preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}<br><br>🔚 {THANK_YOU_TEXT}"
 
     return jsonify({
         "status": "success",
-        "audio_url": f"/audio/{filename}?v={int(time.time())}",
-        "text_preview": text,
+        "audio_url": audio_urls[0],
+        "audio_urls": audio_urls,
+        "text_preview": preview,
     })
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
