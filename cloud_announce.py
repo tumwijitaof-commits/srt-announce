@@ -433,23 +433,23 @@ HTML_PAGE = r"""
 
     <script>
         const trainData = {{ trains_json | safe }};
-        let currentAudio = null;
-        let chimeAudio = null;
+        let mainPlayer = null;
         let isBusy = false;
         let sharedAudioContext = null;
         let mobileAudioUnlocked = false;
 
-        function getChimeAudio() {
-            if (!chimeAudio) {
-                chimeAudio = new Audio("/audio/chime.mp3");
-                chimeAudio.preload = "auto";
-                chimeAudio.load();
-            }
-            return chimeAudio;
-        }
-
         function byId(id) { return document.getElementById(id); }
         function value(id) { return (byId(id)?.value || "").trim(); }
+
+        function getMainPlayer() {
+            if (!mainPlayer) {
+                mainPlayer = new Audio();
+                mainPlayer.preload = "auto";
+                mainPlayer.setAttribute("playsinline", "");
+                mainPlayer.setAttribute("webkit-playsinline", "");
+            }
+            return mainPlayer;
+        }
 
         function setStatus(text, type = "normal") {
             const el = byId("statusText");
@@ -491,20 +491,18 @@ HTML_PAGE = r"""
         }
 
         function stopAudio() {
-            if (currentAudio) {
-                currentAudio.pause();
-                currentAudio.currentTime = 0;
-            }
-            if (chimeAudio) {
-                chimeAudio.pause();
-                try { chimeAudio.currentTime = 0; } catch (e) {}
-            }
+            const player = getMainPlayer();
+            try {
+                player.pause();
+                player.currentTime = 0;
+            } catch (e) {}
             setStatus("หยุดเสียงแล้ว");
         }
 
         function collectPayload(tabIndex) {
             return {
                 tab_index: tabIndex,
+                announce_mode: value("announce_mode") || "bilingual",
                 num: value("num"),
                 origin: value("origin"),
                 dest: value("dest"),
@@ -515,7 +513,6 @@ HTML_PAGE = r"""
                 delay: value("delay_time"),
                 custom_text: value("custom_text"),
                 custom_text_en: value("custom_text_en"),
-                announce_mode: value("announce_mode") || "bilingual",
                 train_type: value("train_type") || "สินค้า",
                 num_2: value("num_2"),
                 origin_2: value("origin_2"),
@@ -538,25 +535,25 @@ HTML_PAGE = r"""
         }
 
         async function unlockMobileAudio() {
-            // มือถือบางรุ่น โดยเฉพาะ iPhone/Safari จะไม่ยอมเล่นไฟล์เสียง
-            // ถ้าคำสั่ง play() เกิดหลังจากรอ fetch สร้างเสียงประกาศแล้ว
-            // จึงต้องปลดล็อกไฟล์ chime.mp3 ทันทีในจังหวะที่ผู้ใช้แตะปุ่ม
+            // มือถือบางรุ่นจะบล็อกเสียง ถ้า play() เกิดหลังจากรอสร้างไฟล์เสียงนานไป
+            // วิธีแก้คือปลดล็อก media element หลักทันทีตอนผู้ใช้แตะปุ่ม แล้วใช้ element เดิมเล่นทุกไฟล์ต่อกัน
             getAudioContext();
             if (mobileAudioUnlocked) return;
-            const chime = getChimeAudio();
+            const player = getMainPlayer();
             try {
-                chime.muted = true;
-                chime.volume = 0;
-                chime.currentTime = 0;
-                await chime.play();
-                chime.pause();
-                chime.currentTime = 0;
+                player.muted = true;
+                player.volume = 0;
+                player.src = "/audio/chime.mp3?unlock=" + Date.now();
+                player.currentTime = 0;
+                await player.play();
+                player.pause();
+                try { player.currentTime = 0; } catch (e) {}
                 mobileAudioUnlocked = true;
             } catch (e) {
                 console.warn("Mobile audio unlock failed:", e);
             } finally {
-                chime.muted = false;
-                chime.volume = 1;
+                player.muted = false;
+                player.volume = 1;
             }
         }
 
@@ -594,74 +591,90 @@ HTML_PAGE = r"""
             });
         }
 
-        function preloadAudio(url) {
+        function playUrl(url, options = {}) {
             return new Promise((resolve, reject) => {
-                const audio = new Audio(url);
-                audio.preload = "auto";
-                audio.addEventListener("canplaythrough", () => resolve(audio), { once: true });
-                audio.addEventListener("error", () => reject(new Error("โหลดไฟล์เสียงไม่สำเร็จ")), { once: true });
-                audio.load();
-                setTimeout(() => resolve(audio), 1200);
-            });
-        }
-
-        function playAudioElement(audio) {
-            return new Promise(async (resolve, reject) => {
-                try {
-                    currentAudio = audio;
-                    audio.currentTime = 0;
-                    audio.addEventListener("ended", resolve, { once: true });
-                    audio.addEventListener("error", () => reject(new Error("เล่นไฟล์เสียงไม่สำเร็จ")), { once: true });
-                    await audio.play();
-                } catch (e) {
-                    reject(e);
-                }
-            });
-        }
-
-        function playOriginalChime() {
-            return new Promise(async (resolve) => {
-                const chime = getChimeAudio();
-                const maxWaitMs = 2400; // กันไฟล์เสียงเตือนมีช่วงเงียบท้ายไฟล์นานเกินไป
+                const player = getMainPlayer();
+                const maxWaitMs = options.maxWaitMs || null;
+                const errorText = options.errorText || "เล่นไฟล์เสียงไม่สำเร็จ";
                 let finished = false;
+                let started = false;
                 let safetyTimer = null;
+                let startTimer = null;
+
+                function cleanup() {
+                    player.removeEventListener("ended", onEnded);
+                    player.removeEventListener("error", onError);
+                    player.removeEventListener("canplay", startPlay);
+                    if (safetyTimer) clearTimeout(safetyTimer);
+                    if (startTimer) clearTimeout(startTimer);
+                }
 
                 function finish() {
                     if (finished) return;
                     finished = true;
-                    if (safetyTimer) clearTimeout(safetyTimer);
-                    chime.pause();
-                    try { chime.currentTime = 0; } catch (e) {}
+                    cleanup();
+                    if (maxWaitMs) {
+                        try { player.pause(); player.currentTime = 0; } catch (e) {}
+                    }
                     resolve();
                 }
 
-                function onError() {
-                    playWarningTone().finally(finish);
+                function fail(e) {
+                    if (finished) return;
+                    finished = true;
+                    cleanup();
+                    reject(e instanceof Error ? e : new Error(errorText));
                 }
 
-                chime.removeEventListener("ended", finish);
-                chime.removeEventListener("error", onError);
-                chime.addEventListener("ended", finish, { once: true });
-                chime.addEventListener("error", onError, { once: true });
+                function onEnded() { finish(); }
+                function onError() { fail(new Error(errorText)); }
+
+                async function startPlay() {
+                    if (started || finished) return;
+                    started = true;
+                    try {
+                        player.muted = false;
+                        player.volume = 1;
+                        await player.play();
+                    } catch (e) {
+                        fail(e);
+                    }
+                }
 
                 try {
-                    chime.pause();
-                    chime.muted = false;
-                    chime.volume = 1;
-                    chime.currentTime = 0;
-                    await chime.play();
-                    safetyTimer = setTimeout(finish, maxWaitMs);
+                    player.pause();
+                    player.src = url;
+                    player.preload = "auto";
+                    player.muted = false;
+                    player.volume = 1;
+                    player.currentTime = 0;
+                    player.addEventListener("ended", onEnded, { once: true });
+                    player.addEventListener("error", onError, { once: true });
+                    player.addEventListener("canplay", startPlay, { once: true });
+                    player.load();
+                    startTimer = setTimeout(startPlay, 450);
+                    if (maxWaitMs) safetyTimer = setTimeout(finish, maxWaitMs);
                 } catch (e) {
-                    await playWarningTone();
-                    finish();
+                    fail(e);
                 }
             });
+        }
+
+        async function playOriginalChime() {
+            try {
+                await playUrl("/audio/chime.mp3?v=" + Date.now(), {
+                    maxWaitMs: 2400,
+                    errorText: "เล่นเสียงเตือนไม่สำเร็จ"
+                });
+            } catch (e) {
+                await playWarningTone();
+            }
         }
 
         async function playAnnouncement(tabIndex) {
             if (isBusy) return;
             isBusy = true;
-            await unlockMobileAudio(); // ปลดล็อกเสียงบนมือถือทันทีตอนผู้ใช้กดปุ่ม
+            await unlockMobileAudio();
             setLoading(true);
             stopAudio();
             setStatus("กำลังสร้างเสียงประกาศ...", "work");
@@ -680,28 +693,29 @@ HTML_PAGE = r"""
                 }
 
                 byId("previewBox").innerHTML = "<b>ข้อความประกาศ:</b><br>" + (data.text_preview || "-");
-                setStatus("เตรียมเปิดเสียง...", "work");
                 const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
-                const audios = await Promise.all(audioUrls.map(url => preloadAudio(url)));
+                if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
+
+                // โหลดไฟล์เข้าหน่วยความจำล่วงหน้าเล็กน้อย ลดการหน่วงระหว่างไทย-อังกฤษ
+                audioUrls.forEach(url => { try { fetch(url, { cache: "no-store" }).catch(() => {}); } catch (e) {} });
 
                 setStatus("เสียงเตือน...", "work");
                 await playOriginalChime();
 
-                // จุดสำคัญ: โหลดไฟล์ประกาศทุกช่วงไว้ก่อนแล้ว จึงต่อเสียงทันทีหลังเสียงเตือน
-                for (let i = 0; i < audios.length; i++) {
-                    if (audios.length > 1) {
-                        const labels = ["ภาษาไทย", "ภาษาอังกฤษ", "คำลงท้าย"];
-                        setStatus("กำลังประกาศ " + (labels[i] || (i + 1)), "ok");
-                    } else {
-                        setStatus("กำลังประกาศ", "ok");
-                    }
-                    await playAudioElement(audios[i]);
+                const labels = ["ภาษาไทย", "ภาษาอังกฤษ", "คำลงท้าย"];
+                for (let i = 0; i < audioUrls.length; i++) {
+                    setStatus(audioUrls.length > 1 ? "กำลังประกาศ " + (labels[i] || (i + 1)) : "กำลังประกาศ", "ok");
+                    await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณาแตะปุ่มประกาศอีกครั้ง" });
                 }
                 setStatus("ประกาศเสร็จแล้ว", "ok");
             } catch (err) {
                 console.error(err);
                 setStatus("เกิดข้อผิดพลาด", "error");
-                byId("previewBox").innerHTML = "<b>เกิดข้อผิดพลาด:</b><br>" + err.message;
+                let message = err.message || String(err);
+                if (message.includes("not allowed") || message.includes("permission") || message.includes("บล็อก")) {
+                    message = "มือถือบล็อกการเล่นเสียงชั่วคราว ให้กดปุ่มประกาศเดิมอีกครั้ง หรือเปิดหน้านี้ผ่าน Chrome/Safari โดยตรง และตรวจว่าไม่ได้ปิดเสียงมือถือ";
+                }
+                byId("previewBox").innerHTML = "<b>เกิดข้อผิดพลาด:</b><br>" + message;
             } finally {
                 setLoading(false);
                 isBusy = false;
