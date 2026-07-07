@@ -672,7 +672,7 @@ HTML_PAGE = r"""
         async function playOriginalChime() {
             try {
                 await playUrl("/audio/chime.mp3?v=" + Date.now(), {
-                    maxWaitMs: 2400,
+                    maxWaitMs: 5200,
                     errorText: "เล่นเสียงเตือนไม่สำเร็จ"
                 });
             } catch (e) {
@@ -922,7 +922,10 @@ def build_english_announcement(data):
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
-    return clean_space(text)
+    text = clean_space(text)
+    if not text.lower().endswith("thank you."):
+        text = f"{text} Thank you."
+    return text
 
 def build_announcement(data):
     idx = int(data.get("tab_index", -1))
