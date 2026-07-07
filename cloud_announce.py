@@ -15,7 +15,6 @@ VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-NiwatNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "-10%")
 EN_VOICE_NAME = os.environ.get("TTS_EN_VOICE", "en-US-GuyNeural")
 TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-5%")
-THANK_YOU_TEXT = os.environ.get("TTS_THANK_YOU", "แต๊งกิ้วครับ")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
 
@@ -379,12 +378,20 @@ HTML_PAGE = r"""
                         <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                     </select>
 
+                    <label>ชานชาลาสำหรับประกาศรถผ่าน</label>
+                    <select id="pass_platform">
+                        <option value="1" selected>ชานชาลาที่ 1</option>
+                        <option value="2">ชานชาลาที่ 2</option>
+                        <option value="3">ชานชาลาที่ 3</option>
+                    </select>
+                    <div class="helper">ใช้กับปุ่ม “รถผ่านสถานี” และ “สินค้า / พิเศษ ผ่าน” เพื่อไม่ต้องพิมพ์ชานชาลาเอง</div>
+
                     <label>รูปแบบเสียงประกาศ</label>
                     <select id="announce_mode">
-                        <option value="bilingual" selected>ไทย + อังกฤษ + แต๊งกิ้ว</option>
+                        <option value="bilingual" selected>ไทย + อังกฤษ</option>
                         <option value="thai_only">ภาษาไทยเท่านั้น</option>
                     </select>
-                    <div class="helper">โหมดสองภาษา: เล่นเสียงเตือน → ภาษาไทย → ภาษาอังกฤษ → แต๊งกิ้วครับ</div>
+                    <div class="helper">โหมดสองภาษา: เล่นเสียงเตือน → ภาษาไทย → ภาษาอังกฤษ</div>
 
                     <label>พิมพ์ข้อความประกาศเอง ภาษาไทย</label>
                     <textarea id="custom_text" placeholder="พิมพ์ข้อความที่ต้องการประกาศเองตรงนี้"></textarea>
@@ -486,6 +493,7 @@ HTML_PAGE = r"""
             fields.forEach(id => { if (byId(id)) byId(id).value = ""; });
             byId("current").value = "คลองบางพระ";
             byId("announce_mode").value = "bilingual";
+            if (byId("pass_platform")) byId("pass_platform").value = "1";
             byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ:</b><br>ล้างข้อมูลเรียบร้อยแล้ว";
             setStatus("พร้อมใช้งาน");
         }
@@ -514,6 +522,7 @@ HTML_PAGE = r"""
                 custom_text: value("custom_text"),
                 custom_text_en: value("custom_text_en"),
                 train_type: value("train_type") || "สินค้า",
+                pass_platform: value("pass_platform") || value("platform") || "1",
                 num_2: value("num_2"),
                 origin_2: value("origin_2"),
                 dest_2: value("dest_2"),
@@ -702,7 +711,7 @@ HTML_PAGE = r"""
                 setStatus("เสียงเตือน...", "work");
                 await playOriginalChime();
 
-                const labels = ["ภาษาไทย", "ภาษาอังกฤษ", "คำลงท้าย"];
+                const labels = ["ภาษาไทย", "ภาษาอังกฤษ"];
                 for (let i = 0; i < audioUrls.length; i++) {
                     setStatus(audioUrls.length > 1 ? "กำลังประกาศ " + (labels[i] || (i + 1)) : "กำลังประกาศ", "ok");
                     await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณาแตะปุ่มประกาศอีกครั้ง" });
@@ -869,6 +878,7 @@ def build_english_announcement(data):
     dest = station_en(data.get("dest", ""))
     t_time = time_en(tidy_time(data.get("time", "")))
     platform = data.get("platform", "")
+    pass_platform = data.get("pass_platform") or platform
     current = station_en(data.get("current", STATION_NAME) or STATION_NAME)
     next_st = next_stations_en(data.get("next", ""))
     delay = time_en(data.get("delay", ""))
@@ -888,7 +898,7 @@ def build_english_announcement(data):
     elif idx == 2:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, will shortly arrive at platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 3:
-        text = f"Attention please. A train will shortly pass through platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+        text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
         text = f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. The train at platform {platform} is train number {t_num}, from {origin} to {dest}, scheduled at {t_time}. After departing {current} Station, the next stops will be {next_st}."
     elif idx == 5:
@@ -896,11 +906,11 @@ def build_english_announcement(data):
     elif idx == 6:
         text = f"Attention please. Train number {t_num} will shortly arrive at platform {platform}. Passengers leaving the train, please be careful."
     elif idx == 7:
-        text = "Attention please. Smoking and alcoholic beverages are not allowed on the platform, in the station area, and on the train. Thank you for your cooperation."
+        text = "Attention please. For safety and good hygiene, the State Railway of Thailand would like to inform all passengers that all station areas, trains, and railway station premises are smoke-free and alcohol-free areas. Smoking and drinking alcoholic beverages are strictly prohibited. Violators are subject to legal action."
     elif idx == 8:
         text = custom_text_en.strip() if custom_text_en.strip() else "Attention please. Please listen carefully to the station announcement."
     elif idx == 9:
-        text = f"Attention please. A {train_type} will shortly pass through platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+        text = f"Attention please. A {train_type} will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 10:
         text = (
             f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. "
@@ -922,6 +932,7 @@ def build_announcement(data):
     dest = data.get("dest", "")
     t_time = tidy_time(data.get("time", ""))
     platform = data.get("platform", "")
+    pass_platform = data.get("pass_platform") or platform
     current = data.get("current", STATION_NAME) or STATION_NAME
     next_st = data.get("next", "")
     delay = data.get("delay", "")
@@ -941,7 +952,7 @@ def build_announcement(data):
     elif idx == 2:
         text = f"โปรดทราบ อีกสักครู่ ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} กำลังจะเข้าเทียบสถานีในชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
     elif idx == 3:
-        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
         text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time}  ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
@@ -949,11 +960,11 @@ def build_announcement(data):
     elif idx == 6:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ ขบวนที่ {t_num} เข้าเทียบในชานชาลาที่ {platform} ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวังด้วยครับ ขอบคุณครับ"
     elif idx == 7:
-        text = "โปรดทราบ ขอความร่วมมือผู้โดยสารทุกท่าน งดสูบบุหรี่และงดดื่มเครื่องดื่มแอลกอฮอล์ทุกชนิด บนชานชาลา บริเวณสถานี และบนขบวนรถ เพื่อสุขภาพอนามัยที่ดีและความเป็นระเบียบเรียบร้อยของส่วนรวม ขอบคุณครับ"
+        text = "ท่านผู้โดยสารโปรดทราบ เพื่อความปลอดภัยและสุขอนามัยที่ดี การรถไฟฯ ขอแจ้งให้ทราบว่า บริเวณสถานี บนขบวนรถ และภายในเขตพื้นที่สถานีทุกแห่ง เป็นเขตปลอดบุหรี่และเครื่องดื่มแอลกอฮอล์ ห้ามสูบบุหรี่และห้ามดื่มสุราโดยเด็ดขาด ผู้ฝ่าฝืนมีความผิดตามกฎหมาย ขอขอบคุณในความร่วมมือครับ"
     elif idx == 8:
         text = custom_text if custom_text.strip() else "กรุณาพิมพ์ข้อความที่ต้องการประกาศในช่องข้อความประกาศเองก่อนกดปุ่มครับ"
     elif idx == 9:
-        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type}วิ่งผ่านสถานี บริเวณชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type}วิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 10:
         text = (
             f"ผู้โดยสารโปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ก่อนผู้โดยสารจะลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงให้ถูกต้องครบถ้วน "
@@ -1014,7 +1025,6 @@ def announce():
         except Exception as exc:
             return jsonify({"status": "error", "message": f"สร้างข้อความอังกฤษไม่สำเร็จ: {exc}"}), 400
         segments.append(("en", english_text, EN_VOICE_NAME, TTS_EN_RATE, clean_space))
-        segments.append(("thanks", THANK_YOU_TEXT, VOICE_NAME, TTS_RATE, prepare_tts_text))
 
     audio_urls = []
     created_files = []
@@ -1073,7 +1083,7 @@ def announce():
 
     preview = thai_text
     if mode == "bilingual":
-        preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}<br><br>🔚 {THANK_YOU_TEXT}"
+        preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
 
     return jsonify({
         "status": "success",
