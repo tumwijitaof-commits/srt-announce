@@ -279,15 +279,16 @@ HTML_PAGE = r"""
             background: #fffaf0; line-height: 1.7; font-size: 14px;
         }
         .action-stack { display: grid; gap: 9px; margin-top: 13px; }
-        .primary, .secondary, .danger {
+        .primary, .secondary, .danger, .pause-btn {
             width: 100%; border: 0; border-radius: 14px; padding: 14px;
             color: white; font-weight: 900;
         }
-        .primary { background: linear-gradient(135deg, var(--maroon-dark), var(--maroon)); font-size: 17px; }
+        .primary { background: linear-gradient(135deg, var(--maroon-dark), var(--maroon)); font-size: 16px; }
+        .pause-btn { background: #b06b00; }
         .secondary { background: #665b55; }
         .danger { background: var(--red); }
-        .primary:disabled { opacity: .45; cursor: not-allowed; }
-        .two-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+        .primary:disabled, .pause-btn:disabled, .danger:disabled { opacity: .45; cursor: not-allowed; }
+        .playback-controls { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 9px; }
         .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
         .voice-quick-panel {
             margin-top: 14px;
@@ -372,6 +373,7 @@ HTML_PAGE = r"""
             .train-number { min-width: 64px; font-size: 19px; }
             .voice-choice-grid { grid-template-columns: 1fr; }
             .voice-test-btn { width: 100%; min-width: 0; }
+            .playback-controls { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -635,11 +637,12 @@ HTML_PAGE = r"""
                 <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
                 <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก</div>
                 <div class="action-stack">
-                    <button type="button" class="primary" id="playButton" onclick="playSelectedAnnouncement()" disabled>🔊 เริ่มประกาศเสียง</button>
-                    <div class="two-actions">
-                        <button type="button" class="danger" onclick="stopAudio()">■ หยุดเสียง</button>
-                        <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
+                    <div class="playback-controls">
+                        <button type="button" class="primary" id="playButton" onclick="playOrResumeAudio()" disabled>▶ เริ่มประกาศ</button>
+                        <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
+                        <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
+                    <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
                 </div>
                 <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ โดยเสียงภาษาไทยและภาษาอังกฤษจะใช้เพศเดียวกันตามปุ่มที่เลือกด้านบน</p>
             </div>
@@ -658,6 +661,9 @@ HTML_PAGE = r"""
     let preparedAudioPromise = null;
     let preparedAudioData = null;
     let prepareTimer = null;
+    let playbackState = "idle"; // idle | loading | playing | paused
+    let playbackRunId = 0;
+    let activePlaybackCancel = null;
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -759,7 +765,7 @@ HTML_PAGE = r"""
         selectedAnnouncement = index;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
-        byId("playButton").disabled = false;
+        refreshPlaybackControls();
         byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>พร้อมสร้างเสียงตามข้อมูลที่เลือก`;
 
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
@@ -904,10 +910,27 @@ HTML_PAGE = r"""
         else el.style.background = "rgba(255,255,255,.12)";
     }
 
+    function refreshPlaybackControls() {
+        const playButton = byId("playButton");
+        const pauseButton = byId("pauseButton");
+        const stopButton = byId("stopButton");
+        if (!playButton || !pauseButton || !stopButton) return;
+
+        playButton.textContent = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ เริ่มประกาศ";
+        playButton.disabled = playbackState === "loading" || playbackState === "playing" || (playbackState === "idle" && selectedAnnouncement === null);
+        pauseButton.disabled = playbackState !== "playing";
+        stopButton.disabled = !["loading", "playing", "paused"].includes(playbackState);
+    }
+
+    function setPlaybackState(state) {
+        playbackState = state;
+        refreshPlaybackControls();
+    }
+
     function setLoading(active) {
         byId("loadingBar").classList.toggle("active", active);
         document.querySelectorAll(".announce-option, .lang-btn, .voice-choice-btn, .voice-test-btn").forEach(btn => btn.disabled = active);
-        byId("playButton").disabled = active || selectedAnnouncement === null;
+        refreshPlaybackControls();
     }
 
     function getMainPlayer() {
@@ -920,12 +943,39 @@ HTML_PAGE = r"""
         return mainPlayer;
     }
 
+    function makePlaybackStoppedError() {
+        const error = new Error("หยุดการเล่นเสียงแล้ว");
+        error.name = "PlaybackStoppedError";
+        return error;
+    }
+
+    function cancelActivePlayback(resetPosition = true) {
+        const cancel = activePlaybackCancel;
+        activePlaybackCancel = null;
+        if (cancel) {
+            try { cancel(); } catch (e) {}
+        }
+        const player = getMainPlayer();
+        try {
+            player.pause();
+            if (resetPosition) player.currentTime = 0;
+        } catch (e) {}
+    }
+
+    function beginPlaybackRun() {
+        playbackRunId += 1;
+        cancelActivePlayback(true);
+        setPlaybackState("loading");
+        return playbackRunId;
+    }
+
     async function testStationVoice() {
         if (isBusy) return;
+        const runId = beginPlaybackRun();
         isBusy = true;
         await unlockMobileAudio();
+        if (runId !== playbackRunId) return;
         setLoading(true);
-        stopAudio();
         setStatus("กำลังสร้างเสียงทดสอบ...", "work");
         const testMode = value("announce_mode") || "thai_only";
         byId("previewBox").innerHTML = "<b>กำลังทดสอบเสียง</b><br><br>ระบบกำลังสร้างเสียงตามภาษาและเพศที่เลือก";
@@ -939,6 +989,7 @@ HTML_PAGE = r"""
                     announce_mode: testMode
                 })
             });
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
             const data = await response.json();
             if (!response.ok || data.status !== "success") {
                 throw new Error(data.message || "สร้างเสียงทดสอบไม่สำเร็จ");
@@ -947,24 +998,59 @@ HTML_PAGE = r"""
             const testLabels = data.audio_labels || [];
             if (!testUrls.length) throw new Error("ไม่พบไฟล์เสียงทดสอบ");
             for (let i = 0; i < testUrls.length; i++) {
+                if (runId !== playbackRunId) throw makePlaybackStoppedError();
                 setStatus(`กำลังทดสอบ ${testLabels[i] || "เสียง"}`, "ok");
-                await playUrl(testUrls[i], { errorText: "ไม่สามารถเล่นเสียงทดสอบได้" });
+                await playUrl(testUrls[i], { errorText: "ไม่สามารถเล่นเสียงทดสอบได้", runId });
             }
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
             renderServerPreview(data.text_preview || "-");
             setStatus("ทดสอบเสียงเสร็จแล้ว", "ok");
         } catch (err) {
-            console.error(err);
-            setStatus("เกิดข้อผิดพลาด", "error");
-            byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(err.message || String(err))}`;
+            if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
+                console.error(err);
+                setStatus("เกิดข้อผิดพลาด", "error");
+                byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(err.message || String(err))}`;
+            }
         } finally {
-            setLoading(false);
-            isBusy = false;
+            if (runId === playbackRunId) {
+                setLoading(false);
+                isBusy = false;
+                setPlaybackState("idle");
+            }
         }
     }
 
-    function stopAudio() {
+    async function playOrResumeAudio() {
         const player = getMainPlayer();
-        try { player.pause(); player.currentTime = 0; } catch (e) {}
+        if (playbackState === "paused") {
+            try {
+                await player.play();
+                setPlaybackState("playing");
+                setStatus("เล่นเสียงต่อแล้ว", "ok");
+            } catch (err) {
+                setStatus("เล่นเสียงต่อไม่สำเร็จ", "error");
+            }
+            return;
+        }
+        await playSelectedAnnouncement();
+    }
+
+    function pauseAudio() {
+        if (playbackState !== "playing") return;
+        const player = getMainPlayer();
+        try {
+            player.pause();
+            setPlaybackState("paused");
+            setStatus("พักเสียงชั่วคราว", "work");
+        } catch (e) {}
+    }
+
+    function stopAudio() {
+        playbackRunId += 1;
+        cancelActivePlayback(true);
+        isBusy = false;
+        setLoading(false);
+        setPlaybackState("idle");
         setStatus("หยุดเสียงแล้ว");
     }
 
@@ -1016,33 +1102,77 @@ HTML_PAGE = r"""
             const player = getMainPlayer();
             const maxWaitMs = options.maxWaitMs || null;
             const errorText = options.errorText || "เล่นไฟล์เสียงไม่สำเร็จ";
+            const runId = options.runId ?? playbackRunId;
             let finished = false, started = false, safetyTimer = null, startTimer = null;
+
             function cleanup() {
-                player.removeEventListener("ended", onEnded); player.removeEventListener("error", onError); player.removeEventListener("canplay", startPlay);
-                if (safetyTimer) clearTimeout(safetyTimer); if (startTimer) clearTimeout(startTimer);
+                player.removeEventListener("ended", onEnded);
+                player.removeEventListener("error", onError);
+                player.removeEventListener("canplay", startPlay);
+                if (safetyTimer) clearTimeout(safetyTimer);
+                if (startTimer) clearTimeout(startTimer);
+                if (activePlaybackCancel === cancelThisPlayback) activePlaybackCancel = null;
             }
-            function finish() { if (finished) return; finished = true; cleanup(); if (maxWaitMs) { try { player.pause(); player.currentTime = 0; } catch (e) {} } resolve(); }
-            function fail(e) { if (finished) return; finished = true; cleanup(); reject(e instanceof Error ? e : new Error(errorText)); }
+            function finish() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                if (maxWaitMs) {
+                    try { player.pause(); player.currentTime = 0; } catch (e) {}
+                }
+                resolve();
+            }
+            function fail(e) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                reject(e instanceof Error ? e : new Error(errorText));
+            }
+            function cancelThisPlayback() {
+                if (finished) return;
+                try { player.pause(); player.currentTime = 0; } catch (e) {}
+                fail(makePlaybackStoppedError());
+            }
             function onEnded() { finish(); }
             function onError() { fail(new Error(errorText)); }
             async function startPlay() {
-                if (started || finished) return; started = true;
-                try { player.muted = false; player.volume = 1; await player.play(); } catch (e) { fail(e); }
+                if (started || finished) return;
+                if (runId !== playbackRunId) return fail(makePlaybackStoppedError());
+                started = true;
+                try {
+                    player.muted = false;
+                    player.volume = 1;
+                    await player.play();
+                    setPlaybackState("playing");
+                } catch (e) { fail(e); }
             }
             try {
-                player.pause(); player.src = url; player.preload = "auto"; player.muted = false; player.volume = 1; player.currentTime = 0;
+                if (runId !== playbackRunId) return fail(makePlaybackStoppedError());
+                cancelActivePlayback(true);
+                activePlaybackCancel = cancelThisPlayback;
+                player.src = url;
+                player.preload = "auto";
+                player.muted = false;
+                player.volume = 1;
+                player.currentTime = 0;
                 player.addEventListener("ended", onEnded, { once: true });
                 player.addEventListener("error", onError, { once: true });
                 player.addEventListener("canplay", startPlay, { once: true });
-                player.load(); startTimer = setTimeout(startPlay, 450);
+                player.load();
+                startTimer = setTimeout(startPlay, 450);
                 if (maxWaitMs) safetyTimer = setTimeout(finish, maxWaitMs);
             } catch (e) { fail(e); }
         });
     }
 
-    async function playOriginalChime() {
-        try { await playUrl("/audio/chime.mp3", { maxWaitMs: 5200, errorText: "เล่นเสียงเตือนไม่สำเร็จ" }); }
-        catch (e) { await playWarningTone(); }
+    async function playOriginalChime(runId = playbackRunId) {
+        try {
+            await playUrl("/audio/chime.mp3", { maxWaitMs: 5200, errorText: "เล่นเสียงเตือนไม่สำเร็จ", runId });
+        } catch (e) {
+            if (e?.name === "PlaybackStoppedError") throw e;
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
+            await playWarningTone();
+        }
     }
 
     async function playSelectedAnnouncement() {
@@ -1057,48 +1187,57 @@ HTML_PAGE = r"""
 
     async function playAnnouncement(tabIndex) {
         if (isBusy) return;
+        const runId = beginPlaybackRun();
         isBusy = true;
         await unlockMobileAudio();
+        if (runId !== playbackRunId) return;
         setLoading(true);
-        stopAudio();
 
         // เริ่มสร้าง/ดึงไฟล์เสียงและเล่นเสียงเตือนพร้อมกัน
-        // ถ้าเสียงถูกเตรียมล่วงหน้าไว้แล้ว request นี้จะตอบกลับทันทีจากแคช
         setStatus("เสียงเตือน...", "work");
         byId("previewBox").innerHTML = "<b>กำลังเริ่มประกาศ</b><br><br>เสียงเตือนกำลังเล่น และระบบกำลังตรวจสอบไฟล์เสียงประกาศ";
 
         try {
             const dataPromise = requestAnnouncementData(tabIndex, false);
-            const chimePromise = playOriginalChime();
-            const data = await dataPromise;
+            const chimePromise = playOriginalChime(runId);
+            const [data] = await Promise.all([dataPromise, chimePromise]);
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
 
             renderServerPreview(data.text_preview || "-");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
             if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
 
-            // URL เป็นชื่อแคชคงที่ จึงให้เบราว์เซอร์เก็บไฟล์ไว้เพื่อเล่นซ้ำทันที
             audioUrls.forEach(url => {
                 try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
             });
 
-            await chimePromise;
             for (let i = 0; i < audioUrls.length; i++) {
+                if (runId !== playbackRunId) throw makePlaybackStoppedError();
                 setStatus(`กำลังประกาศ ${audioLabels[i] || ""}`.trim(), "ok");
-                await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง" });
+                await playUrl(audioUrls[i], {
+                    errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
+                    runId
+                });
             }
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
             setStatus("ประกาศเสร็จแล้ว", "ok");
         } catch (err) {
-            console.error(err);
-            setStatus("เกิดข้อผิดพลาด", "error");
-            let message = err.message || String(err);
-            if (message.includes("not allowed") || message.includes("permission") || message.includes("บล็อก")) {
-                message = "มือถือบล็อกการเล่นเสียงชั่วคราว กรุณากดปุ่มประกาศอีกครั้ง หรือเปิดหน้านี้ผ่าน Chrome/Safari โดยตรง";
+            if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
+                console.error(err);
+                setStatus("เกิดข้อผิดพลาด", "error");
+                let message = err.message || String(err);
+                if (message.includes("not allowed") || message.includes("permission") || message.includes("บล็อก")) {
+                    message = "มือถือบล็อกการเล่นเสียงชั่วคราว กรุณากดปุ่มประกาศอีกครั้ง หรือเปิดหน้านี้ผ่าน Chrome/Safari โดยตรง";
+                }
+                byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(message)}`;
             }
-            byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(message)}`;
         } finally {
-            setLoading(false);
-            isBusy = false;
+            if (runId === playbackRunId) {
+                setLoading(false);
+                isBusy = false;
+                setPlaybackState("idle");
+            }
         }
     }
 
@@ -1114,7 +1253,7 @@ HTML_PAGE = r"""
         selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
-        byId("playButton").disabled = true;
+        refreshPlaybackControls();
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
@@ -1134,6 +1273,7 @@ HTML_PAGE = r"""
 
     updateCustomLanguageFields();
     [1, 2, 3].forEach(refreshSummary);
+    refreshPlaybackControls();
 </script>
 </body>
 </html>
@@ -1537,7 +1677,7 @@ def build_english_announcement(data):
     elif idx == 3:
         text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
-        text = f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. The train at platform {platform} is train number {t_num}, from {origin} to {dest}, scheduled at {t_time}. After departing {current} Station, the next stops will be {next_st}."
+        text = f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. The train at platform {platform} is train number {t_num}, from {origin} to {dest}. After departing {current} Station, the next stops will be {next_st}."
     elif idx == 5:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
@@ -1611,7 +1751,7 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
-        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
