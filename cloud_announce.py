@@ -6,6 +6,9 @@ import json
 import time
 import uuid
 import re
+import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,6 +36,14 @@ TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+0%")
 TTS_EN_PITCH = os.environ.get("TTS_EN_PITCH", "+0Hz")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
+
+# แคชไฟล์เสียงและล็อกสำหรับป้องกันการสร้างเสียงซ้ำพร้อมกัน
+_AUDIO_CACHE_LOCKS = {}
+_AUDIO_CACHE_LOCKS_GUARD = threading.Lock()
+_AUDIO_CLEANUP_LOCK = threading.Lock()
+_LAST_AUDIO_CLEANUP = 0.0
+AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60))
+
 
 # ------------------------------------------------------------
 # ฐานข้อมูลตารางเดินรถ สถานีคลองบางพระ
@@ -88,6 +99,7 @@ HTML_PAGE = r"""
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ระบบประกาศสถานีคลองบางพระ</title>
+    <link rel="preload" href="/audio/chime.mp3" as="audio" type="audio/mpeg">
     <style>
         :root {
             --maroon: #800000;
@@ -642,6 +654,10 @@ HTML_PAGE = r"""
     let isBusy = false;
     let sharedAudioContext = null;
     let mobileAudioUnlocked = false;
+    let preparedAudioKey = "";
+    let preparedAudioPromise = null;
+    let preparedAudioData = null;
+    let prepareTimer = null;
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -663,6 +679,8 @@ HTML_PAGE = r"""
         } else {
             byId("voiceHelper").innerText = "เสียงที่เลือกจะใช้กับภาษาไทย และคำลงท้ายจะเปลี่ยนเป็นครับหรือค่ะอัตโนมัติ";
         }
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement();
     }
 
     function setThaiVoice(voice, button) {
@@ -671,6 +689,8 @@ HTML_PAGE = r"""
         if (button) button.classList.add("active");
         const voiceName = voice === "th-TH-NiwatNeural" ? "เสียงผู้ชาย" : "เสียงผู้หญิง";
         setStatus("เลือก " + voiceName + " แล้ว", "ok");
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement();
     }
 
     function updateCustomLanguageFields() {
@@ -692,6 +712,8 @@ HTML_PAGE = r"""
                 if (el) el.value = "";
             });
             refreshSummary(type);
+            invalidatePreparedAudio();
+            schedulePrepareAnnouncement();
             return;
         }
         byId("num" + suffix).value = data.num || "";
@@ -700,6 +722,8 @@ HTML_PAGE = r"""
         byId("time" + suffix).value = data.time || "";
         byId("next_station" + suffix).value = data.next || "";
         refreshSummary(type);
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement();
     }
 
     function refreshSummary(type = 1) {
@@ -727,6 +751,8 @@ HTML_PAGE = r"""
         if (type === 1 && byId("pass_platform")) {
             byId("pass_platform").value = value("platform") || "1";
         }
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement();
     }
 
     function selectAnnouncement(index, button) {
@@ -747,7 +773,9 @@ HTML_PAGE = r"""
             byId("customFields").classList.add("show");
             updateCustomLanguageFields();
         }
-        byId("previewBox").innerHTML = "<b>พร้อมประกาศ</b><br><br>ตรวจสอบขบวนรถ ชานชาลา และภาษาที่เลือก แล้วกดปุ่มเริ่มประกาศเสียง";
+        byId("previewBox").innerHTML = "<b>กำลังเตรียมเสียงล่วงหน้า</b><br><br>เมื่อเสียงพร้อม ปุ่มประกาศจะทำงานได้แทบจะทันที";
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(80);
     }
 
     function escapeHtml(text) {
@@ -777,6 +805,81 @@ HTML_PAGE = r"""
             num_3: value("num_3"), origin_3: value("origin_3"), dest_3: value("dest_3"),
             time_3: value("time_3"), platform_3: value("platform_3"), next_3: value("next_station_3")
         };
+    }
+
+    function payloadKey(payload) {
+        return JSON.stringify(payload);
+    }
+
+    function invalidatePreparedAudio() {
+        preparedAudioKey = "";
+        preparedAudioPromise = null;
+        preparedAudioData = null;
+        if (prepareTimer) {
+            clearTimeout(prepareTimer);
+            prepareTimer = null;
+        }
+    }
+
+    function requestAnnouncementData(tabIndex, background = false) {
+        const payload = collectPayload(tabIndex);
+        const key = payloadKey(payload);
+
+        if (preparedAudioKey === key && preparedAudioData) {
+            return Promise.resolve(preparedAudioData);
+        }
+        if (preparedAudioKey === key && preparedAudioPromise) {
+            return preparedAudioPromise;
+        }
+
+        preparedAudioKey = key;
+        preparedAudioData = null;
+
+        const requestPromise = fetch("/announce", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }).then(async response => {
+            const data = await response.json();
+            if (!response.ok || data.status !== "success") {
+                throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
+            }
+            return data;
+        }).then(data => {
+            if (preparedAudioKey === key) {
+                preparedAudioData = data;
+                preparedAudioPromise = null;
+                if (background && !isBusy) {
+                    setStatus("เสียงพร้อมประกาศ", "ok");
+                    byId("previewBox").innerHTML = "<b>เสียงพร้อมแล้ว</b><br><br>กดปุ่มเริ่มประกาศ เสียงเตือนจะดังทันที";
+                }
+            }
+            return data;
+        }).catch(error => {
+            if (preparedAudioKey === key) {
+                preparedAudioPromise = null;
+                preparedAudioData = null;
+            }
+            throw error;
+        });
+
+        preparedAudioPromise = requestPromise;
+        return requestPromise;
+    }
+
+    function schedulePrepareAnnouncement(delay = 320) {
+        if (prepareTimer) clearTimeout(prepareTimer);
+        if (selectedAnnouncement === null) return;
+
+        prepareTimer = setTimeout(() => {
+            prepareTimer = null;
+            if (validateSelection()) return;
+            if (!isBusy) setStatus("กำลังเตรียมเสียงล่วงหน้า...", "work");
+            requestAnnouncementData(selectedAnnouncement, true).catch(error => {
+                console.warn("Background audio preparation failed:", error);
+                if (!isBusy) setStatus("พร้อมใช้งาน");
+            });
+        }, delay);
     }
 
     function validateSelection() {
@@ -880,7 +983,7 @@ HTML_PAGE = r"""
         const player = getMainPlayer();
         try {
             player.muted = true; player.volume = 0;
-            player.src = "/audio/chime.mp3?unlock=" + Date.now();
+            player.src = "/audio/chime.mp3";
             player.currentTime = 0;
             await player.play();
             player.pause();
@@ -938,7 +1041,7 @@ HTML_PAGE = r"""
     }
 
     async function playOriginalChime() {
-        try { await playUrl("/audio/chime.mp3?v=" + Date.now(), { maxWaitMs: 5200, errorText: "เล่นเสียงเตือนไม่สำเร็จ" }); }
+        try { await playUrl("/audio/chime.mp3", { maxWaitMs: 5200, errorText: "เล่นเสียงเตือนไม่สำเร็จ" }); }
         catch (e) { await playWarningTone(); }
     }
 
@@ -956,23 +1059,30 @@ HTML_PAGE = r"""
         if (isBusy) return;
         isBusy = true;
         await unlockMobileAudio();
-        setLoading(true); stopAudio();
-        setStatus("กำลังสร้างเสียง...", "work");
-        byId("previewBox").innerHTML = "<b>กำลังสร้างไฟล์เสียง</b><br><br>ระบบกำลังเตรียมเสียงประกาศ กรุณารอสักครู่";
+        setLoading(true);
+        stopAudio();
+
+        // เริ่มสร้าง/ดึงไฟล์เสียงและเล่นเสียงเตือนพร้อมกัน
+        // ถ้าเสียงถูกเตรียมล่วงหน้าไว้แล้ว request นี้จะตอบกลับทันทีจากแคช
+        setStatus("เสียงเตือน...", "work");
+        byId("previewBox").innerHTML = "<b>กำลังเริ่มประกาศ</b><br><br>เสียงเตือนกำลังเล่น และระบบกำลังตรวจสอบไฟล์เสียงประกาศ";
+
         try {
-            const response = await fetch("/announce", {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(collectPayload(tabIndex))
-            });
-            const data = await response.json();
-            if (!response.ok || data.status !== "success") throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
+            const dataPromise = requestAnnouncementData(tabIndex, false);
+            const chimePromise = playOriginalChime();
+            const data = await dataPromise;
+
             renderServerPreview(data.text_preview || "-");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
             if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
-            audioUrls.forEach(url => { try { fetch(url, { cache: "no-store" }).catch(() => {}); } catch (e) {} });
-            setStatus("เสียงเตือน...", "work");
-            await playOriginalChime();
+
+            // URL เป็นชื่อแคชคงที่ จึงให้เบราว์เซอร์เก็บไฟล์ไว้เพื่อเล่นซ้ำทันที
+            audioUrls.forEach(url => {
+                try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
+            });
+
+            await chimePromise;
             for (let i = 0; i < audioUrls.length; i++) {
                 setStatus(`กำลังประกาศ ${audioLabels[i] || ""}`.trim(), "ok");
                 await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง" });
@@ -987,12 +1097,14 @@ HTML_PAGE = r"""
             }
             byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(message)}`;
         } finally {
-            setLoading(false); isBusy = false;
+            setLoading(false);
+            isBusy = false;
         }
     }
 
     function clearData() {
         stopAudio();
+        invalidatePreparedAudio();
         ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "custom_text", "custom_text_en",
          "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
          "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
@@ -1007,6 +1119,18 @@ HTML_PAGE = r"""
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
     }
+
+    // เมื่อแก้ข้อมูลหลังเลือกประเภทประกาศ ให้เตรียมเสียงชุดใหม่อัตโนมัติ
+    document.querySelectorAll("input, select, textarea").forEach(element => {
+        element.addEventListener("input", () => {
+            invalidatePreparedAudio();
+            schedulePrepareAnnouncement();
+        });
+        element.addEventListener("change", () => {
+            invalidatePreparedAudio();
+            schedulePrepareAnnouncement(180);
+        });
+    });
 
     updateCustomLanguageFields();
     [1, 2, 3].forEach(refreshSummary);
@@ -1024,15 +1148,103 @@ def group_buttons(buttons):
     return grouped
 
 
-def cleanup_old_audio(max_age_seconds=3600):
-    """ลบไฟล์เสียงเก่าที่เกิน 1 ชั่วโมง เพื่อไม่ให้โฟลเดอร์โตเกินไป"""
+def cleanup_old_audio(max_age_seconds=AUDIO_CACHE_MAX_AGE):
+    """ลบไฟล์เสียงเก่าแบบเป็นช่วง ๆ เพื่อลดภาระทุกครั้งที่กดประกาศ"""
+    global _LAST_AUDIO_CLEANUP
     now = time.time()
-    for file in AUDIO_DIR.glob("announce_*.mp3"):
+    if now - _LAST_AUDIO_CLEANUP < 600:
+        return
+
+    with _AUDIO_CLEANUP_LOCK:
+        now = time.time()
+        if now - _LAST_AUDIO_CLEANUP < 600:
+            return
+        _LAST_AUDIO_CLEANUP = now
+
+        for file in AUDIO_DIR.glob("announce_*.mp3"):
+            try:
+                if now - file.stat().st_mtime > max_age_seconds:
+                    file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _cache_lock(cache_key):
+    with _AUDIO_CACHE_LOCKS_GUARD:
+        return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
+
+
+def generate_cached_audio(segment):
+    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
+    prepare_func = segment.get("prepare") or (lambda value: value)
+    tts_text = prepare_func(segment.get("text", ""))
+    cache_payload = json.dumps(
+        {
+            "voice": segment["voice"],
+            "rate": segment["rate"],
+            "volume": segment["volume"],
+            "pitch": segment["pitch"],
+            "text": tts_text,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:28]
+    filename = f"announce_cache_{segment['code']}_{cache_key}.mp3"
+    output_path = AUDIO_DIR / filename
+
+    if output_path.exists() and output_path.stat().st_size > 0:
         try:
-            if now - file.stat().st_mtime > max_age_seconds:
-                file.unlink(missing_ok=True)
+            os.utime(output_path, None)
         except OSError:
             pass
+        return filename
+
+    lock = _cache_lock(cache_key)
+    with lock:
+        if output_path.exists() and output_path.stat().st_size > 0:
+            try:
+                os.utime(output_path, None)
+            except OSError:
+                pass
+            return filename
+
+        temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
+        try:
+            subprocess.run(
+                [
+                    "edge-tts",
+                    f"--voice={segment['voice']}",
+                    f"--rate={segment['rate']}",
+                    f"--volume={segment['volume']}",
+                    f"--pitch={segment['pitch']}",
+                    "--text", tts_text,
+                    "--write-media", str(temp_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if not temp_path.exists() or temp_path.stat().st_size == 0:
+                raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
+            os.replace(temp_path, output_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    return filename
+
+
+def generate_audio_segments(segments):
+    """สร้างไทยและอังกฤษพร้อมกัน ลดเวลาของโหมดสองภาษาเกือบครึ่งหนึ่ง"""
+    if not segments:
+        return []
+    if len(segments) == 1:
+        return [generate_cached_audio(segments[0])]
+
+    with ThreadPoolExecutor(max_workers=min(2, len(segments))) as executor:
+        return list(executor.map(generate_cached_audio, segments))
 
 
 def spaced_train_number(number_text):
@@ -1449,10 +1661,10 @@ def index():
 def serve_audio(filename):
     # ไฟล์เสียงเตือนเดิม ให้วาง chime.mp3 ไว้โฟลเดอร์เดียวกับไฟล์ Python
     if filename == CHIME_FILENAME:
-        return send_from_directory(BASE_DIR, CHIME_FILENAME, mimetype="audio/mpeg", as_attachment=False)
+        return send_from_directory(BASE_DIR, CHIME_FILENAME, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
     # ไฟล์เสียงประกาศที่ระบบสร้างใหม่ จะอยู่ในโฟลเดอร์ audio_generated
-    return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False)
+    return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
 
 @app.route("/test-station-voice", methods=["POST"])
@@ -1500,28 +1712,9 @@ def test_station_voice():
     audio_urls = []
     audio_labels = []
     try:
-        for segment in segments:
-            filename = f"announce_{segment['code']}_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
-            output_path = AUDIO_DIR / filename
-            subprocess.run(
-                [
-                    "edge-tts",
-                    f"--voice={segment['voice']}",
-                    f"--rate={segment['rate']}",
-                    f"--volume={segment['volume']}",
-                    f"--pitch={segment['pitch']}",
-                    "--text", segment["text"],
-                    "--write-media", str(output_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if not output_path.exists() or output_path.stat().st_size == 0:
-                raise RuntimeError(f"ระบบสร้างไฟล์เสียงทดสอบ {segment['label']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
-            audio_urls.append(f"/audio/{filename}?v={int(time.time())}")
+        filenames = generate_audio_segments(segments)
+        for segment, filename in zip(segments, filenames):
+            audio_urls.append(f"/audio/{filename}")
             audio_labels.append(segment["label"])
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts"}), 500
@@ -1608,38 +1801,11 @@ def announce():
 
     audio_urls = []
     audio_labels = []
-    created_files = []
 
     try:
-        for segment in segments:
-            label = segment["code"]
-            segment_text = segment["text"]
-            filename = f"announce_{label}_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
-            output_path = AUDIO_DIR / filename
-            tts_text = segment["prepare"](segment_text)
-
-            subprocess.run(
-                [
-                    "edge-tts",
-                    f"--voice={segment['voice']}",
-                    f"--rate={segment['rate']}",
-                    f"--volume={segment['volume']}",
-                    f"--pitch={segment['pitch']}",
-                    "--text", tts_text,
-                    "--write-media", str(output_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-
-            if not output_path.exists() or output_path.stat().st_size == 0:
-                raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {label} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
-
-            created_files.append(output_path)
-            audio_urls.append(f"/audio/{filename}?v={int(time.time())}")
+        filenames = generate_audio_segments(segments)
+        for segment, filename in zip(segments, filenames):
+            audio_urls.append(f"/audio/{filename}")
             audio_labels.append(segment["display_label"])
 
     except FileNotFoundError:
