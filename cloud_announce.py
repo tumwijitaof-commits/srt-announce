@@ -62,7 +62,7 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
     {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "เลือกประเภทรถวิ่งผ่าน", "group": "เหตุการณ์พิเศษ"},
-    {"idx": 10, "title": "รถเข้าพร้อมกัน 2 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1 และ 2", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
 ]
 
 HTML_PAGE = r"""
@@ -195,6 +195,28 @@ HTML_PAGE = r"""
         .route { font-size: 17px; font-weight: 900; color: var(--maroon-dark); }
         .train-meta { color: var(--muted); font-size: 13px; line-height: 1.5; }
         .platform-row { display: grid; grid-template-columns: 1fr 140px; gap: 11px; margin-top: 12px; }
+        .train-pickers { display: grid; gap: 14px; }
+        .train-picker {
+            padding: 14px; border: 1px solid #e7d9c6; border-radius: 18px;
+            background: linear-gradient(145deg, #fff, #fffaf2);
+        }
+        .train-picker.primary-train { border-color: rgba(128,0,0,.38); box-shadow: inset 4px 0 0 var(--maroon); }
+        .train-picker-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 10px; margin-bottom: 10px;
+        }
+        .train-picker-title { display: flex; align-items: center; gap: 9px; font-weight: 900; color: var(--maroon-dark); }
+        .train-order {
+            width: 30px; height: 30px; display: grid; place-items: center;
+            border-radius: 10px; color: white; background: var(--maroon); font-weight: 900;
+        }
+        .train-role {
+            padding: 5px 9px; border-radius: 999px; background: #f5ecdf;
+            color: var(--muted); font-size: 11px; font-weight: 800;
+        }
+        .train-picker .train-summary { margin-top: 10px; }
+        .train-picker .platform-row { grid-template-columns: minmax(0,1fr); }
+        .station-row { margin-top: 13px; }
 
         .announce-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
         .announce-option {
@@ -291,48 +313,140 @@ HTML_PAGE = r"""
             <section class="card">
                 <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกขบวนและชานชาลา</h2></div>
                 <div class="card-body">
-                    <label for="train_select">ขบวนรถ</label>
-                    <select id="train_select" onchange="autoFill(1)">
-                        <option value="">-- เลือกขบวนรถ --</option>
-                        <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
-                        {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
-                        </optgroup>
-                        <optgroup label="ขาออก ไปทางตะวันออก">
-                        {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
-                        </optgroup>
-                    </select>
+                    <p class="helper" style="margin:0 0 12px;">เลือกได้สูงสุด 3 ขบวน โดยขบวนที่ 1 ใช้กับประกาศทั่วไป ส่วนปุ่ม “รถเข้าพร้อมกัน 2–3 ขบวน” จะนำขบวนที่เลือกทั้งหมดมาประกาศร่วมกัน</p>
 
-                    <div class="train-summary" id="trainSummary">
-                        <div class="train-number" id="summaryNum">–</div>
-                        <div class="route" id="summaryRoute">ยังไม่ได้เลือกขบวนรถ</div>
-                        <div class="train-meta" id="summaryMeta">เมื่อเลือกขบวน ระบบจะเติมต้นทาง ปลายทาง เวลา และสถานีต่อไปให้อัตโนมัติ</div>
-                    </div>
-
-                    <div class="platform-row">
-                        <div>
-                            <label for="platform">ชานชาลาที่</label>
-                            <select id="platform" onchange="syncPlatformDefaults()">
-                                <option value="1" selected>ชานชาลาที่ 1</option>
-                                <option value="2">ชานชาลาที่ 2</option>
-                                <option value="3">ชานชาลาที่ 3</option>
+                    <div class="train-pickers">
+                        <div class="train-picker primary-train">
+                            <div class="train-picker-head">
+                                <div class="train-picker-title"><span class="train-order">1</span> ขบวนที่ 1</div>
+                                <span class="train-role">ขบวนหลัก</span>
+                            </div>
+                            <label for="train_select">เลือกขบวนรถ</label>
+                            <select id="train_select" onchange="autoFill(1)">
+                                <option value="">-- เลือกขบวนรถ --</option>
+                                <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
+                                {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
+                                </optgroup>
+                                <optgroup label="ขาออก ไปทางตะวันออก">
+                                {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
+                                </optgroup>
                             </select>
+                            <div class="train-summary" id="trainSummary">
+                                <div class="train-number" id="summaryNum">–</div>
+                                <div class="route" id="summaryRoute">ยังไม่ได้เลือกขบวนรถ</div>
+                                <div class="train-meta" id="summaryMeta">เมื่อเลือกขบวน ระบบจะเติมข้อมูลให้อัตโนมัติ</div>
+                            </div>
+                            <div class="platform-row">
+                                <div>
+                                    <label for="platform">ชานชาลาที่</label>
+                                    <select id="platform" onchange="syncPlatformDefaults(1)">
+                                        <option value="1" selected>ชานชาลาที่ 1</option>
+                                        <option value="2">ชานชาลาที่ 2</option>
+                                        <option value="3">ชานชาลาที่ 3</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <details class="advanced">
+                                <summary>แก้ไขรายละเอียดขบวนที่ 1</summary>
+                                <div class="advanced-content field-grid">
+                                    <div><label>ขบวนที่</label><input type="text" id="num" oninput="refreshSummary(1)"></div>
+                                    <div><label>เวลา</label><input type="text" id="time" oninput="refreshSummary(1)"></div>
+                                    <div><label>ต้นทาง</label><input type="text" id="origin" oninput="refreshSummary(1)"></div>
+                                    <div><label>ปลายทาง</label><input type="text" id="dest" oninput="refreshSummary(1)"></div>
+                                    <div class="full"><label>สถานีต่อไป</label><input type="text" id="next_station" oninput="refreshSummary(1)"></div>
+                                </div>
+                            </details>
                         </div>
-                        <div>
-                            <label for="current">สถานีปัจจุบัน</label>
-                            <input type="text" id="current" value="คลองบางพระ">
+
+                        <div class="train-picker">
+                            <div class="train-picker-head">
+                                <div class="train-picker-title"><span class="train-order">2</span> ขบวนที่ 2</div>
+                                <span class="train-role">ไม่บังคับ</span>
+                            </div>
+                            <label for="train_select_2">เลือกขบวนรถ</label>
+                            <select id="train_select_2" onchange="autoFill(2)">
+                                <option value="">-- ยังไม่เลือกขบวนที่ 2 --</option>
+                                <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
+                                {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
+                                </optgroup>
+                                <optgroup label="ขาออก ไปทางตะวันออก">
+                                {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
+                                </optgroup>
+                            </select>
+                            <div class="train-summary" id="trainSummary2">
+                                <div class="train-number" id="summaryNum2">–</div>
+                                <div class="route" id="summaryRoute2">ยังไม่ได้เลือกขบวนที่ 2</div>
+                                <div class="train-meta" id="summaryMeta2">ใช้เมื่อมีขบวนรถเข้าพร้อมกัน</div>
+                            </div>
+                            <div class="platform-row">
+                                <div>
+                                    <label for="platform_2">ชานชาลาที่</label>
+                                    <select id="platform_2" onchange="syncPlatformDefaults(2)">
+                                        <option value="1">ชานชาลาที่ 1</option>
+                                        <option value="2" selected>ชานชาลาที่ 2</option>
+                                        <option value="3">ชานชาลาที่ 3</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <details class="advanced">
+                                <summary>แก้ไขรายละเอียดขบวนที่ 2</summary>
+                                <div class="advanced-content field-grid">
+                                    <div><label>ขบวนที่</label><input type="text" id="num_2" oninput="refreshSummary(2)"></div>
+                                    <div><label>เวลา</label><input type="text" id="time_2" oninput="refreshSummary(2)"></div>
+                                    <div><label>ต้นทาง</label><input type="text" id="origin_2" oninput="refreshSummary(2)"></div>
+                                    <div><label>ปลายทาง</label><input type="text" id="dest_2" oninput="refreshSummary(2)"></div>
+                                    <div class="full"><label>สถานีต่อไป</label><input type="text" id="next_station_2" oninput="refreshSummary(2)"></div>
+                                </div>
+                            </details>
+                        </div>
+
+                        <div class="train-picker">
+                            <div class="train-picker-head">
+                                <div class="train-picker-title"><span class="train-order">3</span> ขบวนที่ 3</div>
+                                <span class="train-role">ไม่บังคับ</span>
+                            </div>
+                            <label for="train_select_3">เลือกขบวนรถ</label>
+                            <select id="train_select_3" onchange="autoFill(3)">
+                                <option value="">-- ยังไม่เลือกขบวนที่ 3 --</option>
+                                <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
+                                {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
+                                </optgroup>
+                                <optgroup label="ขาออก ไปทางตะวันออก">
+                                {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
+                                </optgroup>
+                            </select>
+                            <div class="train-summary" id="trainSummary3">
+                                <div class="train-number" id="summaryNum3">–</div>
+                                <div class="route" id="summaryRoute3">ยังไม่ได้เลือกขบวนที่ 3</div>
+                                <div class="train-meta" id="summaryMeta3">ใช้เมื่อมีขบวนรถเข้าพร้อมกัน 3 ขบวน</div>
+                            </div>
+                            <div class="platform-row">
+                                <div>
+                                    <label for="platform_3">ชานชาลาที่</label>
+                                    <select id="platform_3" onchange="syncPlatformDefaults(3)">
+                                        <option value="1">ชานชาลาที่ 1</option>
+                                        <option value="2">ชานชาลาที่ 2</option>
+                                        <option value="3" selected>ชานชาลาที่ 3</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <details class="advanced">
+                                <summary>แก้ไขรายละเอียดขบวนที่ 3</summary>
+                                <div class="advanced-content field-grid">
+                                    <div><label>ขบวนที่</label><input type="text" id="num_3" oninput="refreshSummary(3)"></div>
+                                    <div><label>เวลา</label><input type="text" id="time_3" oninput="refreshSummary(3)"></div>
+                                    <div><label>ต้นทาง</label><input type="text" id="origin_3" oninput="refreshSummary(3)"></div>
+                                    <div><label>ปลายทาง</label><input type="text" id="dest_3" oninput="refreshSummary(3)"></div>
+                                    <div class="full"><label>สถานีต่อไป</label><input type="text" id="next_station_3" oninput="refreshSummary(3)"></div>
+                                </div>
+                            </details>
                         </div>
                     </div>
 
-                    <details class="advanced">
-                        <summary>แก้ไขรายละเอียดขบวนเพิ่มเติม</summary>
-                        <div class="advanced-content field-grid">
-                            <div><label>ขบวนที่</label><input type="text" id="num" oninput="refreshSummary()"></div>
-                            <div><label>เวลา</label><input type="text" id="time" oninput="refreshSummary()"></div>
-                            <div><label>ต้นทาง</label><input type="text" id="origin" oninput="refreshSummary()"></div>
-                            <div><label>ปลายทาง</label><input type="text" id="dest" oninput="refreshSummary()"></div>
-                            <div class="full"><label>สถานีต่อไป</label><input type="text" id="next_station" oninput="refreshSummary()"></div>
-                        </div>
-                    </details>
+                    <div class="station-row">
+                        <label for="current">สถานีปัจจุบัน</label>
+                        <input type="text" id="current" value="คลองบางพระ">
+                    </div>
                 </div>
             </section>
 
@@ -390,27 +504,6 @@ HTML_PAGE = r"""
                         </div>
                     </div>
 
-                    <div class="conditional" id="secondTrainFields">
-                        <p class="conditional-title">ข้อมูลขบวนที่ 2</p>
-                        <label for="train_select_2">เลือกขบวนที่ 2</label>
-                        <select id="train_select_2" onchange="autoFill(2)">
-                            <option value="">-- เลือกขบวนรถ --</option>
-                            <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
-                            {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
-                            </optgroup>
-                            <optgroup label="ขาออก ไปทางตะวันออก">
-                            {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
-                            </optgroup>
-                        </select>
-                        <div class="field-grid" style="margin-top:11px;">
-                            <div><label>ขบวนที่ 2</label><input type="text" id="num_2"></div>
-                            <div><label>ชานชาลาที่ 2</label><select id="platform_2"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select></div>
-                            <div><label>ต้นทาง 2</label><input type="text" id="origin_2"></div>
-                            <div><label>ปลายทาง 2</label><input type="text" id="dest_2"></div>
-                            <div><label>เวลา 2</label><input type="text" id="time_2"></div>
-                            <div><label>สถานีต่อไป 2</label><input type="text" id="next_station_2"></div>
-                        </div>
-                    </div>
                 </div>
             </section>
         </div>
@@ -457,39 +550,53 @@ HTML_PAGE = r"""
         byId("englishCustomWrap").classList.toggle("hidden", mode === "thai_only");
     }
 
+    function trainSuffix(type) { return type === 1 ? "" : `_${type}`; }
+    function summarySuffix(type) { return type === 1 ? "" : String(type); }
+
     function autoFill(type) {
-        const isFirst = type === 1;
-        const selectId = isFirst ? "train_select" : "train_select_2";
-        const suffix = isFirst ? "" : "_2";
+        const suffix = trainSuffix(type);
+        const selectId = type === 1 ? "train_select" : `train_select_${type}`;
         const data = trainData[value(selectId)];
-        if (!data) return;
+        if (!data) {
+            ["num", "origin", "dest", "time", "next_station"].forEach(field => {
+                const el = byId(field + suffix);
+                if (el) el.value = "";
+            });
+            refreshSummary(type);
+            return;
+        }
         byId("num" + suffix).value = data.num || "";
         byId("origin" + suffix).value = data.origin || "";
         byId("dest" + suffix).value = data.dest || "";
         byId("time" + suffix).value = data.time || "";
         byId("next_station" + suffix).value = data.next || "";
-        if (isFirst) refreshSummary();
+        refreshSummary(type);
     }
 
-    function refreshSummary() {
-        const num = value("num") || "–";
-        const origin = value("origin");
-        const dest = value("dest");
-        const time = value("time");
-        const next = value("next_station");
-        byId("summaryNum").textContent = num;
-        byId("summaryRoute").textContent = origin && dest ? `${origin} → ${dest}` : "ยังไม่ได้เลือกขบวนรถ";
+    function refreshSummary(type = 1) {
+        const suffix = trainSuffix(type);
+        const summary = summarySuffix(type);
+        const num = value("num" + suffix) || "–";
+        const origin = value("origin" + suffix);
+        const dest = value("dest" + suffix);
+        const time = value("time" + suffix);
+        const next = value("next_station" + suffix);
+        byId("summaryNum" + summary).textContent = num;
+        byId("summaryRoute" + summary).textContent = origin && dest
+            ? `${origin} → ${dest}`
+            : (type === 1 ? "ยังไม่ได้เลือกขบวนรถ" : `ยังไม่ได้เลือกขบวนที่ ${type}`);
         const details = [];
         if (time) details.push(`เวลา ${time}`);
         if (next) details.push(`สถานีต่อไป: ${next}`);
-        byId("summaryMeta").textContent = details.length ? details.join(" • ") : "เมื่อเลือกขบวน ระบบจะเติมข้อมูลให้อัตโนมัติ";
+        const emptyText = type === 1
+            ? "เมื่อเลือกขบวน ระบบจะเติมข้อมูลให้อัตโนมัติ"
+            : (type === 2 ? "ใช้เมื่อมีขบวนรถเข้าพร้อมกัน" : "ใช้เมื่อมีขบวนรถเข้าพร้อมกัน 3 ขบวน");
+        byId("summaryMeta" + summary).textContent = details.length ? details.join(" • ") : emptyText;
     }
 
-    function syncPlatformDefaults() {
-        const platform = value("platform") || "1";
-        if (byId("pass_platform")) byId("pass_platform").value = platform;
-        if (byId("platform_2") && byId("platform_2").value === platform) {
-            byId("platform_2").value = platform === "1" ? "2" : "1";
+    function syncPlatformDefaults(type = 1) {
+        if (type === 1 && byId("pass_platform")) {
+            byId("pass_platform").value = value("platform") || "1";
         }
     }
 
@@ -500,7 +607,7 @@ HTML_PAGE = r"""
         byId("playButton").disabled = false;
         byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>พร้อมสร้างเสียงตามข้อมูลที่เลือก`;
 
-        ["delayFields", "passFields", "customFields", "secondTrainFields"].forEach(id => byId(id).classList.remove("show"));
+        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         byId("trainTypeWrap").classList.remove("hidden");
         if (index === 5) byId("delayFields").classList.add("show");
         if (index === 3 || index === 9) {
@@ -511,7 +618,6 @@ HTML_PAGE = r"""
             byId("customFields").classList.add("show");
             updateCustomLanguageFields();
         }
-        if (index === 10) byId("secondTrainFields").classList.add("show");
         byId("previewBox").innerHTML = "<b>พร้อมประกาศ</b><br><br>ตรวจสอบขบวนรถ ชานชาลา และภาษาที่เลือก แล้วกดปุ่มเริ่มประกาศเสียง";
     }
 
@@ -537,7 +643,9 @@ HTML_PAGE = r"""
             train_type: value("train_type") || "สินค้า",
             pass_platform: value("pass_platform") || value("platform") || "1",
             num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
-            time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2")
+            time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2"),
+            num_3: value("num_3"), origin_3: value("origin_3"), dest_3: value("dest_3"),
+            time_3: value("time_3"), platform_3: value("platform_3"), next_3: value("next_station_3")
         };
     }
 
@@ -550,7 +658,7 @@ HTML_PAGE = r"""
             if (mode !== "english_only" && !value("custom_text")) return "กรุณาพิมพ์ข้อความภาษาไทย";
             if (mode !== "thai_only" && !value("custom_text_en")) return "กรุณาพิมพ์ข้อความภาษาอังกฤษ";
         }
-        if (selectedAnnouncement === 10 && !value("num_2")) return "กรุณาเลือกขบวนที่ 2";
+        if (selectedAnnouncement === 10 && !value("num_2")) return "กรุณาเลือกอย่างน้อยขบวนที่ 1 และขบวนที่ 2";
         return "";
     }
 
@@ -714,21 +822,22 @@ HTML_PAGE = r"""
     function clearData() {
         stopAudio();
         ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "custom_text", "custom_text_en",
-         "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2"].forEach(id => { if (byId(id)) byId(id).value = ""; });
-        byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2";
+         "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
+         "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
+        byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2"; byId("platform_3").value = "3";
         byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
         setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
         selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
-        ["delayFields", "passFields", "customFields", "secondTrainFields"].forEach(id => byId(id).classList.remove("show"));
+        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         byId("playButton").disabled = true;
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
-        refreshSummary(); setStatus("พร้อมใช้งาน");
+        [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
     }
 
     updateCustomLanguageFields();
-    refreshSummary();
+    [1, 2, 3].forEach(refreshSummary);
 </script>
 </body>
 </html>
@@ -891,6 +1000,12 @@ def build_english_announcement(data):
     platform_2 = data.get("platform_2", "")
     next_st_2 = next_stations_en(data.get("next_2", ""))
 
+    t_num_3 = train_number_en(data.get("num_3", ""))
+    origin_3 = station_en(data.get("origin_3", ""))
+    dest_3 = station_en(data.get("dest_3", ""))
+    platform_3 = data.get("platform_3", "")
+    next_st_3 = next_stations_en(data.get("next_3", ""))
+
     if idx == 0:
         text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
     elif idx == 1:
@@ -912,12 +1027,23 @@ def build_english_announcement(data):
     elif idx == 9:
         text = f"Attention please. A {train_type} will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 10:
+        trains = [
+            (platform, t_num, origin, dest, next_st),
+            (platform_2, t_num_2, origin_2, dest_2, next_st_2),
+        ]
+        if t_num_3:
+            trains.append((platform_3, t_num_3, origin_3, dest_3, next_st_3))
+        train_details = " ".join(
+            f"The train at platform {p} is train number {n}, from {o} to {d}."
+            for p, n, o, d, _ in trains
+        )
+        next_details = " ".join(
+            f"After departing {current} Station, the train at platform {p} will next stop at {nxt}."
+            for p, _, _, _, nxt in trains
+        )
         text = (
             f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. "
-            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}. "
-            f"The train at platform {platform_2} is train number {t_num_2}, from {origin_2} to {dest_2}. "
-            f"After departing {current} Station, the train at platform {platform} will next stop at {next_st}. "
-            f"The train at platform {platform_2} will next stop at {next_st_2}."
+            f"{train_details} {next_details}"
         )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
@@ -948,6 +1074,12 @@ def build_announcement(data):
     platform_2 = data.get("platform_2", "")
     next_st_2 = data.get("next_2", "")
 
+    t_num_3 = spaced_train_number(data.get("num_3", ""))
+    origin_3 = data.get("origin_3", "")
+    dest_3 = data.get("dest_3", "")
+    platform_3 = data.get("platform_3", "")
+    next_st_3 = data.get("next_3", "")
+
     if idx == 0:
         text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
     elif idx == 1:
@@ -969,12 +1101,23 @@ def build_announcement(data):
     elif idx == 9:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type}วิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 10:
+        trains = [
+            (platform, t_num, origin, dest, next_st),
+            (platform_2, t_num_2, origin_2, dest_2, next_st_2),
+        ]
+        if t_num_3:
+            trains.append((platform_3, t_num_3, origin_3, dest_3, next_st_3))
+        train_details = " ".join(
+            f"ขบวนรถที่จอดในชานชาลาที่ {p} เป็นขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)}"
+            for p, n, o, d, _ in trains
+        )
+        next_details = " ".join(
+            f"ขบวนรถในชานชาลาที่ {p} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {nxt} เป็นสถานีต่อไปตามลำดับ"
+            for p, _, _, _, nxt in trains
+        )
         text = (
-            f"ผู้โดยสารโปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ก่อนผู้โดยสารจะลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงให้ถูกต้องครบถ้วน "
-            f"ขบวนรถที่จอดในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
-            f"และขบวนรถที่จอดในชานชาลาที่ {platform_2} เป็นขบวนรถ ขบวนที่ {t_num_2} รับส่งผู้โดยสารต้นทาง {station(origin_2)} ปลายทาง {station(dest_2)} "
-            f"ขบวนรถในชานชาลาที่ {platform} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ "
-            f"และขบวนรถในชานชาลาที่ {platform_2} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st_2} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+            f"ผู้โดยสารโปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ก่อนผู้โดยสารจะลงจากขบวนรถ "
+            f"โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงให้ถูกต้องครบถ้วน {train_details} {next_details} ขอบคุณครับ"
         )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
