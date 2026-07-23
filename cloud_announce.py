@@ -5,6 +5,7 @@ import subprocess
 import json
 import time
 import uuid
+import re
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
@@ -1064,17 +1065,150 @@ def english_voice_for(thai_voice):
 
 
 # แก้เฉพาะคำที่ระบบ TTS มักอ่านคลาดเคลื่อนจริง ๆ
-# ไม่แยก ไม่ยืด และไม่เปลี่ยนรูปประโยคของคำว่า “คลองบางพระ”
+# ข้อความที่แสดงบนหน้าเว็บจะยังคงแพตเทิร์นเดิมทุกคำ
 PRONUNCIATION_FIXES = {
     "กบินทร์บุรี": "กะบินบุรี",
     "จุกเสม็ด": "จุกสะเม็ด",
+    # ขยายคำย่อเฉพาะตอนอ่านเสียง เพื่อไม่ให้ TTS อ่านเครื่องหมาย ฯ แปลก ๆ
+    "การรถไฟฯ": "การรถไฟแห่งประเทศไทย",
 }
 
 
+def _normalize_punctuation_spacing(text):
+    """จัดช่องว่างรอบเครื่องหมาย โดยไม่รบกวนเวลา 8:25 หรือคำย่อ P.M."""
+    value = text or ""
+    value = re.sub(r"\s+([,;!?])", r"\1", value)
+    value = re.sub(r"([,;!?])(?=[^\s])", r"\1 ", value)
+    value = re.sub(r",\s*,+", ",", value)
+    value = re.sub(r"\.\s*\.+", ".", value)
+    return clean_space(value)
+
+
 def prepare_tts_text(text):
+    """
+    เตรียมข้อความภาษาไทยสำหรับเสียงเท่านั้น
+
+    หลักการคือคงรูปประโยคประกาศเดิม แต่เพิ่มเครื่องหมายหยุดในตำแหน่ง
+    ที่ผู้ประกาศจริงมักเว้นหายใจ เพื่อไม่ให้เสียงอ่านรวดเดียวติดกัน
+    """
     tts_text = clean_space(text or "")
+
     for official_word, spoken_word in PRONUNCIATION_FIXES.items():
         tts_text = tts_text.replace(official_word, spoken_word)
+
+    # เปิดประกาศให้มีจังหวะก่อนเข้าสู่รายละเอียด
+    opening_rules = (
+        (r"^ท่านผู้โดยสารโปรดทราบ\s+", "ท่านผู้โดยสารโปรดทราบ. "),
+        (r"^ผู้โดยสารโปรดทราบ\s+", "ผู้โดยสารโปรดทราบ. "),
+        (r"^โปรดทราบ\s+", "โปรดทราบ. "),
+        (r"\bอีกสักครู่\s+", "อีกสักครู่, "),
+        (r"\bวันนี้ขบวนรถ\s+", "วันนี้, ขบวนรถ "),
+    )
+    for pattern, replacement in opening_rules:
+        tts_text = re.sub(pattern, replacement, tts_text, count=1)
+
+    # ชื่อสถานีอ่านต่อเนื่อง ไม่แยกคำว่า “คลองบางพระ”
+    # แต่เว้นเล็กน้อยระหว่างคำเกริ่น “ที่นี่” กับชื่อสถานี
+    tts_text = tts_text.replace("ที่นี่สถานี", "ที่นี่, สถานี")
+
+    # เมื่อกล่าวชื่อสถานีซ้ำ ให้หยุดหนึ่งจังหวะระหว่างครั้งแรกกับครั้งที่สอง
+    tts_text = re.sub(
+        r"(ที่นี่,\s*สถานี.+?)\s+(?=ที่นี่,\s*สถานี)",
+        r"\1. ",
+        tts_text,
+        count=1,
+    )
+
+    # จบชื่อสถานีครั้งที่สองก่อนเข้าสู่คำแนะนำผู้โดยสาร
+    tts_text = re.sub(
+        r"(ที่นี่,\s*สถานี[^.]+?)(?=\s+(?:ผู้โดยสารก่อน|ก่อนผู้โดยสาร))",
+        r"\1. ",
+        tts_text,
+        count=1,
+    )
+
+    # จังหวะข้อมูลขบวน: หมายเลข → ต้นทาง → ปลายทาง → เวลา
+    tts_text = re.sub(
+        r"(ขบวนที่\s+(?:\d\s*)+)(?=\s)",
+        lambda m: m.group(1).rstrip() + ", ",
+        tts_text,
+    )
+    tts_text = tts_text.replace("ขบวนรถ ขบวนที่", "ขบวนรถ, ขบวนที่")
+    tts_text = tts_text.replace("รับส่งผู้โดยสารต้นทาง", "รับส่งผู้โดยสาร, ต้นทาง")
+    tts_text = re.sub(r"\s+ปลายทาง\s+", ", ปลายทาง ", tts_text)
+    tts_text = re.sub(r"\s+เที่ยวกำหนดเวลา\s+", ", เที่ยวกำหนดเวลา ", tts_text)
+    tts_text = tts_text.replace("ต้นทาง สถานี", "ต้นทางสถานี")
+    tts_text = tts_text.replace("ปลายทาง สถานี", "ปลายทางสถานี")
+
+    # หลังบอกเวลา ให้จบช่วงข้อมูลขบวนก่อนเข้าสู่คำแนะนำถัดไป
+    tts_text = re.sub(
+        r"(เที่ยวกำหนดเวลา\s+\d+\s+นาฬิกา(?:\s+\d+\s+นาที)?)(?=\s)",
+        r"\1. ",
+        tts_text,
+    )
+
+    # หัวข้อความปลอดภัยและข้อความขอความร่วมมือ
+    tts_text = re.sub(r"\s+เพื่อความปลอดภัย\s+", ". เพื่อความปลอดภัย, ", tts_text)
+    tts_text = re.sub(r"\s+เพื่อความปลอดภัยและสุขอนามัยที่ดี\s+", ". เพื่อความปลอดภัยและสุขอนามัยที่ดี, ", tts_text)
+    tts_text = tts_text.replace(" และไม่เดินข้ามไปมา", ", และไม่เดินข้ามไปมา")
+    tts_text = tts_text.replace(" ระหว่างชานชาลาที่", ", ระหว่างชานชาลาที่")
+
+    # จังหวะเมื่อกล่าวถึงชานชาลา: ใช้จังหวะสั้นถ้ายังเป็นประโยคเดียวกัน
+    tts_text = re.sub(
+        r"(ชานชาลาที่\s+\d+)(?=\s+(?:เป็นขบวนรถ|เมื่อออกจาก))",
+        r"\1, ",
+        tts_text,
+    )
+    tts_text = re.sub(
+        r"(ชานชาลาที่\s+\d+)(?=\s+(?:เพื่อความปลอดภัย|ผู้โดยสาร|ขอบคุณ|โปรด))",
+        r"\1. ",
+        tts_text,
+    )
+
+    # แบ่งช่วงคำแนะนำผู้โดยสารและข้อมูลขบวนให้ไม่อ่านรวดเดียว
+    tts_text = tts_text.replace("ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบ", "ผู้โดยสารก่อนลงจากขบวนรถ, โปรดตรวจสอบ")
+    tts_text = tts_text.replace("ก่อนผู้โดยสารจะลงจากขบวนรถ โปรดตรวจสอบ", "ก่อนผู้โดยสารจะลงจากขบวนรถ, โปรดตรวจสอบ")
+    tts_text = tts_text.replace("สิ่งของและสัมภาระของท่าน นำลง", "สิ่งของและสัมภาระของท่าน, นำลง")
+    tts_text = tts_text.replace("นำลงจากขบวนรถให้ครบถ้วน ขบวนรถ", "นำลงจากขบวนรถให้ครบถ้วน. ขบวนรถ")
+    tts_text = tts_text.replace("นำลงให้ถูกต้องครบถ้วน ขบวนรถ", "นำลงให้ถูกต้องครบถ้วน. ขบวนรถ")
+    tts_text = tts_text.replace("ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวัง", "ผู้โดยสารที่ลงจากขบวนรถ, โปรดระมัดระวัง")
+
+    # ประกาศหลายขบวน: เว้นจังหวะระหว่างรายละเอียดแต่ละขบวน
+    tts_text = re.sub(r"\s+(?=และขบวนรถที่จอดในชานชาลาที่)", ", ", tts_text)
+    tts_text = re.sub(r"\s+(?=ขบวนรถในชานชาลาที่)", ". ", tts_text, count=1)
+    tts_text = re.sub(r"\s+(?=และขบวนรถในชานชาลาที่)", ", ", tts_text)
+
+    # แยกข้อความสถานีต่อไปและคำขอโทษให้ฟังเป็นประโยคชัดเจน
+    tts_text = tts_text.replace("ที่ ป้ายหยุดรถ", "ที่ป้ายหยุดรถ")
+    tts_text = tts_text.replace("ที่ สถานี", "ที่สถานี")
+    tts_text = tts_text.replace("สถานีคลองบางพระ แล้ว", "สถานีคลองบางพระแล้ว")
+    tts_text = tts_text.replace(" และ สถานี", " และสถานี")
+    tts_text = tts_text.replace(" และ ป้ายหยุดรถ", " และป้ายหยุดรถ")
+    tts_text = tts_text.replace(" เป็นสถานีต่อไปตามลำดับ", ", เป็นสถานีต่อไปตามลำดับ")
+    tts_text = tts_text.replace(" ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง", " ล่าช้ากว่ากำหนดเวลาเดิม. คาดว่าจะถึง")
+    tts_text = tts_text.replace(" ในนามของการรถไฟแห่งประเทศไทย", ". ในนามของการรถไฟแห่งประเทศไทย")
+    tts_text = tts_text.replace(" ต้องขออภัย", ", ต้องขออภัย")
+
+    # ประกาศห้ามสูบบุหรี่มีหลายใจความ จึงแบ่งเป็นช่วงสั้น ๆ
+    tts_text = tts_text.replace("ขอแจ้งให้ทราบว่า บริเวณสถานี", "ขอแจ้งให้ทราบว่า, บริเวณสถานี")
+    tts_text = tts_text.replace("ภายในเขตพื้นที่สถานีทุกแห่ง เป็นเขต", "ภายในเขตพื้นที่สถานีทุกแห่ง, เป็นเขต")
+    tts_text = tts_text.replace("เครื่องดื่มแอลกอฮอล์ ห้ามสูบบุหรี่", "เครื่องดื่มแอลกอฮอล์. ห้ามสูบบุหรี่")
+    tts_text = tts_text.replace("โดยเด็ดขาด ผู้ฝ่าฝืน", "โดยเด็ดขาด. ผู้ฝ่าฝืน")
+
+    # คำลงท้ายควรมีจังหวะก่อนกล่าวขอบคุณ แต่ไม่เพิ่มถ้ามีเครื่องหมายอยู่แล้ว
+    tts_text = re.sub(r"(?<![.!?])\s+(ขอขอบคุณในความร่วมมือ(?:ครับ|ค่ะ))$", r". \1", tts_text)
+    tts_text = re.sub(r"(?<![.!?])\s+(ขอบคุณ(?:ครับ|ค่ะ))$", r". \1", tts_text)
+
+    return _normalize_punctuation_spacing(tts_text)
+
+
+def prepare_english_tts_text(text):
+    """จัดช่องว่างภาษาอังกฤษโดยรักษาเวลา 8:25 และคำย่อ A.M./P.M."""
+    tts_text = clean_space(text or "")
+    tts_text = re.sub(r"\s+([,.;:!?])", r"\1", tts_text)
+    # ป้องกันเสียงอ่าน Attention please ติดกับประโยคถัดไปเร็วเกินไป
+    tts_text = re.sub(r"^Attention please[,.]?\s*", "Attention please. ", tts_text, count=1, flags=re.IGNORECASE)
+    tts_text = tts_text.replace("A.M..", "A.M.").replace("P.M..", "P.M.")
     return clean_space(tts_text)
 
 
@@ -1359,7 +1493,7 @@ def test_station_voice():
         segments.append({
             "code": "en_test",
             "label": "ภาษาอังกฤษ",
-            "text": clean_space(english_text),
+            "text": prepare_english_tts_text(english_text),
             "voice": english_voice,
             "rate": TTS_EN_RATE,
             "volume": TTS_EN_VOLUME,
@@ -1472,7 +1606,7 @@ def announce():
             "rate": TTS_EN_RATE,
             "volume": TTS_EN_VOLUME,
             "pitch": TTS_EN_PITCH,
-            "prepare": clean_space,
+            "prepare": prepare_english_tts_text,
         })
 
     audio_urls = []
