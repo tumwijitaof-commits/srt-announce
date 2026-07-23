@@ -24,14 +24,14 @@ if VOICE_NAME not in THAI_VOICE_OPTIONS:
     VOICE_NAME = "th-TH-PremwadeeNeural"
 
 # ไม่เร่งความดังหรือกดระดับเสียงมากเกินไป เพราะจะทำให้เสียงแตกและคำเพี้ยน
-TTS_RATE = os.environ.get("TTS_RATE", "-6%")
+TTS_RATE = os.environ.get("TTS_RATE", "-10%")
 TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
 TTS_PITCH = os.environ.get("TTS_PITCH", "+0Hz")
 ENGLISH_VOICE_OPTIONS = {
     "female": os.environ.get("TTS_EN_FEMALE_VOICE", "en-US-JennyNeural"),
     "male": os.environ.get("TTS_EN_MALE_VOICE", "en-US-GuyNeural"),
 }
-TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-5%")
+TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-8%")
 TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+0%")
 TTS_EN_PITCH = os.environ.get("TTS_EN_PITCH", "+0Hz")
 STATION_NAME = "คลองบางพระ"
@@ -1142,6 +1142,7 @@ HTML_PAGE = r"""
                 try {
                     player.muted = false;
                     player.volume = 1;
+                    player.playbackRate = 1.0;
                     await player.play();
                     setPlaybackState("playing");
                 } catch (e) { fail(e); }
