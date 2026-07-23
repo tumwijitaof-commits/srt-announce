@@ -40,7 +40,7 @@ OUTBOUND_TRAINS = [
     {"label": "283 (08:46) กรุงเทพ - จุกเสม็ด", "num": "283", "origin": "กรุงเทพ", "dest": "จุกเสม็ด", "time": "8 นาฬิกา 46 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
     {"label": "281 (09:23) กรุงเทพ - กบินทร์บุรี", "num": "281", "origin": "กรุงเทพ", "dest": "กบินทร์บุรี", "time": "9 นาฬิกา 23 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
     {"label": "367 (11:35) กรุงเทพ - ฉะเชิงเทรา", "num": "367", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "11 นาฬิกา 35 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
-    {"label": "389 (13:23) กรุงเทพ - ฉะเชิงเทรา", "num": "389", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "13 นาฬิกา 23 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
+    {"label": "389 (13:23) กรุงเทพ - ฉะเชิงเทรา", "num": "389", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "13 นาฬิกา 23 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
     {"label": "279 (14:08) กรุงเทพ - คลองลึก", "num": "279", "origin": "กรุงเทพ", "dest": "ด่านพรมแดนบ้านคลองลึก", "time": "14 นาฬิกา 8 นาที", "next": "สถานีชุมทางฉะเชิงเทรา"},
     {"label": "277 (16:37) กรุงเทพ - กบินทร์บุรี", "num": "277", "origin": "กรุงเทพ", "dest": "กบินทร์บุรี", "time": "16 นาฬิกา 37 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
     {"label": "379 (17:57) กรุงเทพ - ฉะเชิงเทรา", "num": "379", "origin": "กรุงเทพ", "dest": "ชุมทางฉะเชิงเทรา", "time": "17 นาฬิกา 57 นาที", "next": "ป้ายหยุดรถบางเตย และ สถานีชุมทางฉะเชิงเทรา"},
@@ -386,18 +386,24 @@ HTML_PAGE = r"""
                     </select>
                     <div class="helper">ใช้กับปุ่ม “รถผ่านสถานี” และ “สินค้า / พิเศษ ผ่าน” เพื่อไม่ต้องพิมพ์ชานชาลาเอง</div>
 
-                    <label>รูปแบบเสียงประกาศ</label>
-                    <select id="announce_mode">
-                        <option value="bilingual" selected>ไทย + อังกฤษ</option>
-                        <option value="thai_only">ภาษาไทยเท่านั้น</option>
+                    <label>เลือกภาษาที่ใช้ประกาศ</label>
+                    <select id="announce_mode" onchange="updateLanguageFields()">
+                        <option value="thai_only" selected>1 ภาษา — ภาษาไทย</option>
+                        <option value="english_only">1 ภาษา — ภาษาอังกฤษ</option>
+                        <option value="bilingual">2 ภาษา — ภาษาไทย + ภาษาอังกฤษ</option>
                     </select>
-                    <div class="helper">โหมดสองภาษา: เล่นเสียงเตือน → ภาษาไทย → ภาษาอังกฤษ</div>
+                    <div class="helper" id="languageHelper">โหมดภาษาไทย: เล่นเสียงเตือน → ภาษาไทย</div>
 
-                    <label>พิมพ์ข้อความประกาศเอง ภาษาไทย</label>
-                    <textarea id="custom_text" placeholder="พิมพ์ข้อความที่ต้องการประกาศเองตรงนี้"></textarea>
+                    <div id="thaiCustomGroup">
+                        <label>พิมพ์ข้อความประกาศเอง ภาษาไทย</label>
+                        <textarea id="custom_text" placeholder="พิมพ์ข้อความที่ต้องการประกาศเองตรงนี้"></textarea>
+                    </div>
 
-                    <label>ข้อความอังกฤษสำหรับประกาศเอง</label>
-                    <textarea id="custom_text_en" placeholder="ใช้เฉพาะปุ่มประกาศเอง ถ้าเว้นว่าง ระบบจะพูดอังกฤษแบบทั่วไป"></textarea>
+                    <div id="englishCustomGroup" style="display:none;">
+                        <label>ข้อความอังกฤษสำหรับประกาศเอง</label>
+                        <textarea id="custom_text_en" placeholder="ใช้เฉพาะปุ่มประกาศเอง ถ้าเว้นว่าง ระบบจะพูดอังกฤษแบบทั่วไป"></textarea>
+                    </div>
+
 
                     <div class="toolbar">
                         <button class="secondary" onclick="clearData()">ล้างข้อมูล</button>
@@ -492,7 +498,8 @@ HTML_PAGE = r"""
             ];
             fields.forEach(id => { if (byId(id)) byId(id).value = ""; });
             byId("current").value = "คลองบางพระ";
-            byId("announce_mode").value = "bilingual";
+            byId("announce_mode").value = "thai_only";
+            updateLanguageFields();
             if (byId("pass_platform")) byId("pass_platform").value = "1";
             byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ:</b><br>ล้างข้อมูลเรียบร้อยแล้ว";
             setStatus("พร้อมใช้งาน");
@@ -507,10 +514,29 @@ HTML_PAGE = r"""
             setStatus("หยุดเสียงแล้ว");
         }
 
+        function updateLanguageFields() {
+            const mode = value("announce_mode") || "thai_only";
+            const thaiGroup = byId("thaiCustomGroup");
+            const englishGroup = byId("englishCustomGroup");
+            const helper = byId("languageHelper");
+
+            if (thaiGroup) thaiGroup.style.display = mode === "english_only" ? "none" : "block";
+            if (englishGroup) englishGroup.style.display = mode === "thai_only" ? "none" : "block";
+
+            if (!helper) return;
+            if (mode === "bilingual") {
+                helper.innerText = "โหมดสองภาษา: เล่นเสียงเตือน → ภาษาไทย → ภาษาอังกฤษ";
+            } else if (mode === "english_only") {
+                helper.innerText = "โหมดภาษาอังกฤษ: เล่นเสียงเตือน → ภาษาอังกฤษ";
+            } else {
+                helper.innerText = "โหมดภาษาไทย: เล่นเสียงเตือน → ภาษาไทย";
+            }
+        }
+
         function collectPayload(tabIndex) {
             return {
                 tab_index: tabIndex,
-                announce_mode: value("announce_mode") || "bilingual",
+                announce_mode: value("announce_mode") || "thai_only",
                 num: value("num"),
                 origin: value("origin"),
                 dest: value("dest"),
@@ -680,6 +706,8 @@ HTML_PAGE = r"""
             }
         }
 
+        document.addEventListener("DOMContentLoaded", updateLanguageFields);
+
         async function playAnnouncement(tabIndex) {
             if (isBusy) return;
             isBusy = true;
@@ -711,9 +739,10 @@ HTML_PAGE = r"""
                 setStatus("เสียงเตือน...", "work");
                 await playOriginalChime();
 
-                const labels = ["ภาษาไทย", "ภาษาอังกฤษ"];
+                const labels = (data.audio_labels && data.audio_labels.length) ? data.audio_labels : [];
                 for (let i = 0; i < audioUrls.length; i++) {
-                    setStatus(audioUrls.length > 1 ? "กำลังประกาศ " + (labels[i] || (i + 1)) : "กำลังประกาศ", "ok");
+                    const currentLabel = labels[i] || "เสียงประกาศ";
+                    setStatus("กำลังประกาศ " + currentLabel, "ok");
                     await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณาแตะปุ่มประกาศอีกครั้ง" });
                 }
                 setStatus("ประกาศเสร็จแล้ว", "ok");
@@ -1010,40 +1039,68 @@ def announce():
     cleanup_old_audio()
     data = request.get_json(silent=True) or {}
 
-    try:
-        thai_text = build_announcement(data)
-    except Exception as exc:
-        return jsonify({"status": "error", "message": str(exc)}), 400
+    mode = (data.get("announce_mode") or "thai_only").strip()
+    allowed_modes = {"thai_only", "english_only", "bilingual"}
+    if mode not in allowed_modes:
+        return jsonify({"status": "error", "message": "รูปแบบภาษาที่เลือกไม่ถูกต้อง"}), 400
 
-    if not thai_text:
-        return jsonify({"status": "error", "message": "ไม่มีข้อความสำหรับประกาศ"}), 400
-
-    mode = (data.get("announce_mode") or "bilingual").strip()
-    segments = [("th", thai_text, VOICE_NAME, TTS_RATE, prepare_tts_text)]
-
+    thai_text = ""
     english_text = ""
-    if mode == "bilingual":
+    segments = []
+
+    if mode in {"thai_only", "bilingual"}:
+        try:
+            thai_text = build_announcement(data)
+        except Exception as exc:
+            return jsonify({"status": "error", "message": f"สร้างข้อความไทยไม่สำเร็จ: {exc}"}), 400
+
+        if not thai_text:
+            return jsonify({"status": "error", "message": "ไม่มีข้อความภาษาไทยสำหรับประกาศ"}), 400
+
+        segments.append({
+            "code": "th",
+            "display_label": "ภาษาไทย",
+            "text": thai_text,
+            "voice": VOICE_NAME,
+            "rate": TTS_RATE,
+            "prepare": prepare_tts_text,
+        })
+
+    if mode in {"english_only", "bilingual"}:
         try:
             english_text = build_english_announcement(data)
         except Exception as exc:
             return jsonify({"status": "error", "message": f"สร้างข้อความอังกฤษไม่สำเร็จ: {exc}"}), 400
-        segments.append(("en", english_text, EN_VOICE_NAME, TTS_EN_RATE, clean_space))
+
+        if not english_text:
+            return jsonify({"status": "error", "message": "ไม่มีข้อความภาษาอังกฤษสำหรับประกาศ"}), 400
+
+        segments.append({
+            "code": "en",
+            "display_label": "ภาษาอังกฤษ",
+            "text": english_text,
+            "voice": EN_VOICE_NAME,
+            "rate": TTS_EN_RATE,
+            "prepare": clean_space,
+        })
 
     audio_urls = []
+    audio_labels = []
     created_files = []
 
     try:
-        for label, segment_text, voice, rate, prepare_func in segments:
-            if not segment_text:
-                continue
+        for segment in segments:
+            label = segment["code"]
+            segment_text = segment["text"]
             filename = f"announce_{label}_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
             output_path = AUDIO_DIR / filename
-            tts_text = prepare_func(segment_text)
+            tts_text = segment["prepare"](segment_text)
+
             subprocess.run(
                 [
                     "edge-tts",
-                    "--voice", voice,
-                    "--rate", rate,
+                    "--voice", segment["voice"],
+                    "--rate", segment["rate"],
                     "--text", tts_text,
                     "--write-media", str(output_path),
                 ],
@@ -1053,45 +1110,54 @@ def announce():
                 encoding="utf-8",
                 errors="replace",
             )
+
             if not output_path.exists() or output_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {label} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
+
             created_files.append(output_path)
             audio_urls.append(f"/audio/{filename}?v={int(time.time())}")
+            audio_labels.append(segment["display_label"])
+
     except FileNotFoundError:
         return jsonify({
             "status": "error",
             "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts",
-            "text_preview": thai_text,
+            "text_preview": thai_text or english_text,
         }), 500
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         return jsonify({
             "status": "error",
             "message": f"สร้างเสียงไม่สำเร็จ: {detail}",
-            "text_preview": thai_text,
+            "text_preview": thai_text or english_text,
         }), 500
     except Exception as exc:
         return jsonify({
             "status": "error",
             "message": str(exc),
-            "text_preview": thai_text,
+            "text_preview": thai_text or english_text,
         }), 500
 
     if not audio_urls:
         return jsonify({
             "status": "error",
             "message": "ไม่มีไฟล์เสียงสำหรับประกาศ",
-            "text_preview": thai_text,
+            "text_preview": thai_text or english_text,
         }), 500
 
-    preview = thai_text
     if mode == "bilingual":
         preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
+    elif mode == "english_only":
+        preview = f"🇬🇧 {english_text}"
+    else:
+        preview = f"🇹🇭 {thai_text}"
 
     return jsonify({
         "status": "success",
         "audio_url": audio_urls[0],
         "audio_urls": audio_urls,
+        "audio_labels": audio_labels,
+        "announce_mode": mode,
         "text_preview": preview,
     })
 
