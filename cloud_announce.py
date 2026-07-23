@@ -74,695 +74,666 @@ HTML_PAGE = r"""
     <title>ระบบประกาศสถานีคลองบางพระ</title>
     <style>
         :root {
-            --srt-maroon: #800000;
-            --srt-maroon-dark: #5d0000;
-            --srt-gold: #c9a227;
-            --paper: #fffaf0;
-            --ink: #221b1b;
-            --muted: #6f6262;
-            --line: #e8ddca;
-            --success: #1b7f45;
-            --danger: #b3261e;
-            --blue: #0b57d0;
-            --shadow: 0 14px 36px rgba(65, 0, 0, 0.12);
+            --maroon: #800000;
+            --maroon-dark: #5b0000;
+            --gold: #c7a12a;
+            --cream: #fffaf1;
+            --paper: #ffffff;
+            --ink: #251d1d;
+            --muted: #716464;
+            --line: #e9dece;
+            --green: #177744;
+            --red: #b42318;
+            --shadow: 0 12px 34px rgba(83, 28, 28, .10);
         }
         * { box-sizing: border-box; }
         body {
             margin: 0;
-            color: var(--ink);
-            font-family: "Sarabun", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
-            background:
-                radial-gradient(circle at top left, rgba(201,162,39,0.20), transparent 30%),
-                linear-gradient(135deg, #fff8ea 0%, #f5efe3 48%, #efe2ce 100%);
             min-height: 100vh;
-            padding: 18px;
+            padding: 16px;
+            color: var(--ink);
+            font-family: "Sarabun", "Noto Sans Thai", "Segoe UI", sans-serif;
+            background: linear-gradient(145deg, #fffaf1, #f4eadc);
         }
-        .app-shell { max-width: 1180px; margin: 0 auto; }
-        .official-header {
-            color: white;
-            background: linear-gradient(135deg, var(--srt-maroon-dark), var(--srt-maroon));
-            border: 1px solid rgba(201,162,39,0.65);
-            border-radius: 24px;
-            padding: 22px;
-            box-shadow: var(--shadow);
-            position: sticky;
-            top: 12px;
-            z-index: 10;
-        }
-        .header-top {
+        button, input, select, textarea { font: inherit; }
+        button { cursor: pointer; }
+        .app { max-width: 1120px; margin: 0 auto; }
+        .topbar {
             display: flex;
-            align-items: center;
             justify-content: space-between;
-            gap: 16px;
-            flex-wrap: wrap;
-        }
-        .brand {
-            display: flex;
             align-items: center;
-            gap: 14px;
-        }
-        .seal {
-            width: 58px;
-            height: 58px;
-            border-radius: 18px;
-            background: linear-gradient(135deg, #fff4c2, var(--srt-gold));
-            color: var(--srt-maroon);
-            display: grid;
-            place-items: center;
-            font-size: 30px;
-            box-shadow: inset 0 0 0 3px rgba(255,255,255,0.35);
-            flex: 0 0 auto;
-        }
-        h1 { margin: 0; font-size: clamp(22px, 3vw, 32px); line-height: 1.2; }
-        .sub { margin: 5px 0 0; opacity: 0.92; font-size: 14px; }
-        .status-pill {
-            background: rgba(255,255,255,0.13);
-            border: 1px solid rgba(255,255,255,0.27);
-            border-radius: 999px;
-            padding: 10px 14px;
-            font-weight: 700;
-            min-width: 220px;
-            text-align: center;
-        }
-        .main-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
-            gap: 18px;
-            margin-top: 18px;
-            align-items: start;
-        }
-        .card {
-            background: rgba(255,255,255,0.92);
-            border: 1px solid var(--line);
+            gap: 16px;
+            padding: 18px 20px;
+            color: white;
             border-radius: 22px;
+            background: linear-gradient(135deg, var(--maroon-dark), var(--maroon));
+            box-shadow: var(--shadow);
+        }
+        .brand { display: flex; align-items: center; gap: 13px; }
+        .logo {
+            width: 52px; height: 52px; flex: 0 0 auto;
+            display: grid; place-items: center;
+            border-radius: 16px;
+            font-size: 27px;
+            color: var(--maroon);
+            background: linear-gradient(135deg, #fff4c4, var(--gold));
+        }
+        h1 { margin: 0; font-size: clamp(21px, 3vw, 30px); line-height: 1.2; }
+        .subtitle { margin: 4px 0 0; opacity: .88; font-size: 13px; }
+        .status {
+            min-width: 180px;
+            padding: 10px 14px;
+            border: 1px solid rgba(255,255,255,.25);
+            border-radius: 999px;
+            text-align: center;
+            font-weight: 800;
+            background: rgba(255,255,255,.12);
+        }
+        .progress { display: none; height: 4px; margin-top: 10px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.2); }
+        .progress.active { display: block; }
+        .progress::after {
+            content: ""; display: block; width: 35%; height: 100%;
+            background: linear-gradient(90deg, transparent, #fff5a5, transparent);
+            animation: loading 1s linear infinite;
+        }
+        @keyframes loading { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(320px, .74fr);
+            gap: 16px;
+            align-items: start;
+            margin-top: 16px;
+        }
+        .stack { display: grid; gap: 16px; }
+        .card {
+            background: rgba(255,255,255,.96);
+            border: 1px solid var(--line);
+            border-radius: 20px;
             box-shadow: var(--shadow);
             overflow: hidden;
         }
-        .card-title {
-            margin: 0;
-            padding: 15px 18px;
-            color: var(--srt-maroon-dark);
-            border-bottom: 1px solid var(--line);
-            background: linear-gradient(180deg, #fffdf8, #fff7e8);
-            font-size: 18px;
+        .card-head { padding: 15px 18px; border-bottom: 1px solid var(--line); background: #fffdf9; }
+        .step-title { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--maroon-dark); font-size: 18px; }
+        .step {
+            width: 30px; height: 30px; display: grid; place-items: center;
+            border-radius: 10px; color: white; background: var(--maroon); font-size: 14px;
         }
-        .card-body { padding: 18px; }
-        label {
-            display: block;
-            font-weight: 800;
-            margin: 12px 0 6px;
-            color: #352828;
+        .card-body { padding: 17px; }
+        .helper { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+        label { display: block; margin: 0 0 6px; font-weight: 800; }
+        input, select, textarea {
+            width: 100%; padding: 12px 13px;
+            border: 1px solid #d9ccb9; border-radius: 13px;
+            background: white; color: var(--ink); outline: none;
         }
-        select, input, textarea {
-            width: 100%;
-            border: 1px solid #d6c7b0;
-            border-radius: 14px;
-            padding: 12px 13px;
-            background: white;
-            color: var(--ink);
-            font-size: 15px;
-            outline: none;
-            transition: border 0.15s, box-shadow 0.15s;
-            font-family: inherit;
+        input:focus, select:focus, textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 4px rgba(199,161,42,.14); }
+        textarea { min-height: 92px; resize: vertical; }
+        .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+        .full { grid-column: 1 / -1; }
+
+        .language-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+        .lang-btn {
+            min-height: 62px; padding: 10px;
+            border: 1px solid #dfd1bd; border-radius: 15px;
+            background: #fff; color: var(--ink); font-weight: 850;
         }
-        select:focus, input:focus, textarea:focus {
-            border-color: var(--srt-gold);
-            box-shadow: 0 0 0 4px rgba(201,162,39,0.18);
+        .lang-btn small { display: block; margin-top: 2px; color: var(--muted); font-weight: 600; }
+        .lang-btn.active { border-color: var(--maroon); color: var(--maroon); background: #fff1f1; box-shadow: inset 0 0 0 1px var(--maroon); }
+
+        .train-summary {
+            display: grid; grid-template-columns: auto 1fr; gap: 10px 12px;
+            margin-top: 12px; padding: 14px;
+            border-radius: 16px; border: 1px solid #eadcc5; background: var(--cream);
         }
-        textarea { min-height: 84px; resize: vertical; }
-        .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
-        .helper { color: var(--muted); font-size: 13px; margin-top: 7px; line-height: 1.45; }
-        .train-card-2 {
-            border: 1px dashed rgba(128,0,0,0.35);
-            border-radius: 18px;
-            padding: 15px;
-            background: #fffaf0;
-            margin-top: 14px;
+        .train-number {
+            grid-row: 1 / span 2; align-self: stretch;
+            min-width: 74px; display: grid; place-items: center;
+            border-radius: 13px; background: var(--maroon); color: white;
+            font-size: 22px; font-weight: 900;
         }
-        .action-groups { display: grid; gap: 14px; }
-        .group-title {
-            margin: 4px 0 8px;
-            color: var(--srt-maroon);
-            font-size: 15px;
-            border-left: 5px solid var(--srt-gold);
-            padding-left: 10px;
+        .route { font-size: 17px; font-weight: 900; color: var(--maroon-dark); }
+        .train-meta { color: var(--muted); font-size: 13px; line-height: 1.5; }
+        .platform-row { display: grid; grid-template-columns: 1fr 140px; gap: 11px; margin-top: 12px; }
+
+        .announce-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
+        .announce-option {
+            min-height: 74px; padding: 12px;
+            border: 1px solid #e5d7c4; border-radius: 15px;
+            text-align: left; color: var(--ink); background: linear-gradient(145deg, #fff, #fff9ef);
         }
-        .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        button {
-            border: 0;
-            font-family: inherit;
-            cursor: pointer;
-            transition: transform 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease;
+        .announce-option strong { display: block; color: var(--maroon-dark); font-size: 15px; }
+        .announce-option span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+        .announce-option.active { border-color: var(--maroon); background: #fff0f0; box-shadow: inset 0 0 0 1px var(--maroon); }
+        .announce-option:disabled { opacity: .55; cursor: not-allowed; }
+
+        .conditional {
+            display: none; margin-top: 13px; padding: 14px;
+            border-radius: 16px; border: 1px dashed rgba(128,0,0,.35); background: #fffaf3;
         }
-        button:active { transform: translateY(1px) scale(0.99); }
-        button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
-        .announce-btn {
-            text-align: left;
-            border-radius: 16px;
-            padding: 14px;
-            background: linear-gradient(135deg, #ffffff, #fff7e7);
-            border: 1px solid #eadcc4;
-            color: var(--ink);
-            min-height: 82px;
-            box-shadow: 0 6px 16px rgba(68,0,0,0.06);
+        .conditional.show { display: block; }
+        .conditional-title { margin: 0 0 10px; color: var(--maroon); font-weight: 900; }
+        .advanced { margin-top: 12px; }
+        .advanced summary { cursor: pointer; color: var(--maroon); font-weight: 850; }
+        .advanced-content { margin-top: 12px; }
+
+        .sticky { position: sticky; top: 16px; }
+        .selected-type {
+            padding: 12px 14px; margin-bottom: 12px;
+            border-radius: 14px; background: #f7f1e8; color: var(--muted);
         }
-        .announce-btn:hover { box-shadow: 0 10px 22px rgba(68,0,0,0.12); }
-        .announce-btn strong { display: block; color: var(--srt-maroon-dark); font-size: 16px; }
-        .announce-btn span { display: block; color: var(--muted); font-size: 12.5px; margin-top: 3px; line-height: 1.35; }
-        .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
-        .secondary, .stop {
-            border-radius: 14px;
-            padding: 13px;
-            font-weight: 900;
-            color: white;
+        .selected-type b { color: var(--maroon-dark); }
+        .preview {
+            min-height: 150px; max-height: 390px; overflow: auto;
+            padding: 15px; border: 1px solid #eadcc5; border-radius: 16px;
+            background: #fffaf0; line-height: 1.7; font-size: 14px;
         }
-        .secondary { background: var(--srt-maroon); }
-        .stop { background: var(--danger); }
-        .preview-box {
-            margin-top: 14px;
-            border-radius: 18px;
-            padding: 14px;
-            background: #fff8e8;
-            border: 1px solid #eadcc4;
-            color: #473535;
-            font-size: 14px;
-            line-height: 1.65;
-            min-height: 88px;
+        .action-stack { display: grid; gap: 9px; margin-top: 13px; }
+        .primary, .secondary, .danger {
+            width: 100%; border: 0; border-radius: 14px; padding: 14px;
+            color: white; font-weight: 900;
         }
-        .preview-box b { color: var(--srt-maroon); }
-        .notice {
-            margin-top: 12px;
-            background: #f4efe4;
-            border: 1px solid #e2d7c4;
-            border-radius: 16px;
-            padding: 12px;
-            color: #5d5149;
-            font-size: 13px;
-            line-height: 1.55;
-        }
-        .loading-bar {
-            height: 5px;
-            width: 100%;
-            border-radius: 999px;
-            background: rgba(255,255,255,0.20);
-            overflow: hidden;
-            margin-top: 13px;
-            display: none;
-        }
-        .loading-bar.active { display: block; }
-        .loading-bar::after {
-            content: "";
-            display: block;
-            height: 100%;
-            width: 38%;
-            border-radius: inherit;
-            background: linear-gradient(90deg, transparent, #fff4b2, transparent);
-            animation: move 1s linear infinite;
-        }
-        @keyframes move { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
-        @media (max-width: 900px) {
-            body { padding: 10px; }
-            .official-header { position: static; border-radius: 20px; }
-            .main-grid { grid-template-columns: 1fr; }
-            .button-grid { grid-template-columns: 1fr; }
+        .primary { background: linear-gradient(135deg, var(--maroon-dark), var(--maroon)); font-size: 17px; }
+        .secondary { background: #665b55; }
+        .danger { background: var(--red); }
+        .primary:disabled { opacity: .45; cursor: not-allowed; }
+        .two-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+        .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+        .hidden { display: none !important; }
+
+        @media (max-width: 860px) {
+            body { padding: 9px; }
+            .topbar { border-radius: 18px; padding: 15px; }
+            .status { min-width: auto; }
+            .layout { grid-template-columns: 1fr; }
+            .sticky { position: static; }
         }
         @media (max-width: 560px) {
-            .field-grid, .toolbar { grid-template-columns: 1fr; }
-            .seal { width: 48px; height: 48px; font-size: 25px; }
+            .topbar { align-items: flex-start; }
+            .logo { width: 44px; height: 44px; font-size: 23px; }
+            .status { font-size: 12px; padding: 8px 10px; }
+            .language-grid { grid-template-columns: 1fr; }
+            .lang-btn { min-height: 52px; text-align: left; }
+            .announce-grid, .field-grid, .platform-row { grid-template-columns: 1fr; }
+            .train-summary { grid-template-columns: 64px 1fr; }
+            .train-number { min-width: 64px; font-size: 19px; }
         }
     </style>
 </head>
 <body>
-    <main class="app-shell">
-        <section class="official-header">
-            <div class="header-top">
-                <div class="brand">
-                    <div class="seal">🚆</div>
-                    <div>
-                        <h1>ระบบประกาศสถานีคลองบางพระ</h1>
-                        <p class="sub">แบบฟอร์มประกาศเสียงอัตโนมัติ | สถานีคลองบางพระ</p>
+<main class="app">
+    <header class="topbar">
+        <div class="brand">
+            <div class="logo">🚆</div>
+            <div>
+                <h1>ระบบประกาศสถานีคลองบางพระ</h1>
+                <p class="subtitle">เลือกข้อมูลไม่กี่ขั้นตอน แล้วกดประกาศได้ทันที</p>
+            </div>
+        </div>
+        <div class="status" id="statusText">พร้อมใช้งาน</div>
+        <div class="progress" id="loadingBar"></div>
+    </header>
+
+    <section class="layout">
+        <div class="stack">
+            <section class="card">
+                <div class="card-head"><h2 class="step-title"><span class="step">1</span> เลือกภาษาประกาศ</h2></div>
+                <div class="card-body">
+                    <input type="hidden" id="announce_mode" value="thai_only">
+                    <div class="language-grid">
+                        <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ภาษาไทย<small>ประกาศภาษาเดียว</small></button>
+                        <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
+                        <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
                     </div>
                 </div>
-                <div class="status-pill" id="statusText">พร้อมใช้งาน</div>
-            </div>
-            <div class="loading-bar" id="loadingBar"></div>
-        </section>
+            </section>
 
-        <section class="main-grid">
-            <div class="card">
-                <h2 class="card-title">1) เลือกข้อมูลขบวนรถ</h2>
+            <section class="card">
+                <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกขบวนและชานชาลา</h2></div>
                 <div class="card-body">
-                    <label>เลือกขบวนที่ 1</label>
+                    <label for="train_select">ขบวนรถ</label>
                     <select id="train_select" onchange="autoFill(1)">
                         <option value="">-- เลือกขบวนรถ --</option>
                         <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
-                        {% for train in inbound %}
-                            <option value="{{ train.label }}">{{ train.label }}</option>
-                        {% endfor %}
+                        {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
                         </optgroup>
                         <optgroup label="ขาออก ไปทางตะวันออก">
-                        {% for train in outbound %}
-                            <option value="{{ train.label }}">{{ train.label }}</option>
-                        {% endfor %}
+                        {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
                         </optgroup>
                     </select>
 
-                    <div class="field-grid">
-                        <div><label>ขบวนที่</label><input type="text" id="num" placeholder="เช่น 383"></div>
-                        <div><label>เวลา</label><input type="text" id="time" placeholder="เช่น 20 นาฬิกา 25 นาที"></div>
-                        <div><label>ต้นทาง</label><input type="text" id="origin"></div>
-                        <div><label>ปลายทาง</label><input type="text" id="dest"></div>
-                        <div><label>ชานชาลาที่</label><input type="text" id="platform" placeholder="เช่น 1"></div>
-                        <div><label>สถานีปัจจุบัน</label><input type="text" id="current" value="คลองบางพระ"></div>
+                    <div class="train-summary" id="trainSummary">
+                        <div class="train-number" id="summaryNum">–</div>
+                        <div class="route" id="summaryRoute">ยังไม่ได้เลือกขบวนรถ</div>
+                        <div class="train-meta" id="summaryMeta">เมื่อเลือกขบวน ระบบจะเติมต้นทาง ปลายทาง เวลา และสถานีต่อไปให้อัตโนมัติ</div>
                     </div>
 
-                    <label>สถานีต่อไป</label>
-                    <input type="text" id="next_station" placeholder="ใช้กับประกาศรถออก / รถเข้าพร้อมกัน">
+                    <div class="platform-row">
+                        <div>
+                            <label for="platform">ชานชาลาที่</label>
+                            <select id="platform" onchange="syncPlatformDefaults()">
+                                <option value="1" selected>ชานชาลาที่ 1</option>
+                                <option value="2">ชานชาลาที่ 2</option>
+                                <option value="3">ชานชาลาที่ 3</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="current">สถานีปัจจุบัน</label>
+                            <input type="text" id="current" value="คลองบางพระ">
+                        </div>
+                    </div>
 
-                    <label>คาดว่าจะถึงเวลา</label>
-                    <input type="text" id="delay_time" placeholder="ใช้กับรถล่าช้า เช่น 19 นาฬิกา 30 นาที">
+                    <details class="advanced">
+                        <summary>แก้ไขรายละเอียดขบวนเพิ่มเติม</summary>
+                        <div class="advanced-content field-grid">
+                            <div><label>ขบวนที่</label><input type="text" id="num" oninput="refreshSummary()"></div>
+                            <div><label>เวลา</label><input type="text" id="time" oninput="refreshSummary()"></div>
+                            <div><label>ต้นทาง</label><input type="text" id="origin" oninput="refreshSummary()"></div>
+                            <div><label>ปลายทาง</label><input type="text" id="dest" oninput="refreshSummary()"></div>
+                            <div class="full"><label>สถานีต่อไป</label><input type="text" id="next_station" oninput="refreshSummary()"></div>
+                        </div>
+                    </details>
+                </div>
+            </section>
 
-                    <div class="train-card-2">
-                        <b style="color:var(--srt-maroon);">ข้อมูลขบวนที่ 2</b>
-                        <div class="helper">ใช้เฉพาะปุ่ม “รถเข้าพร้อมกัน 2 ขบวน”</div>
-                        <label>เลือกขบวนที่ 2</label>
+            <section class="card">
+                <div class="card-head"><h2 class="step-title"><span class="step">3</span> เลือกประเภทประกาศ</h2></div>
+                <div class="card-body">
+                    <div class="announce-grid">
+                        {% for group, buttons in grouped_buttons.items() %}
+                            {% for button in buttons %}
+                            <button type="button" class="announce-option" data-index="{{ button.idx }}" data-title="{{ button.title }}" onclick="selectAnnouncement({{ button.idx }}, this)">
+                                <strong>{{ button.title }}</strong><span>{{ button.hint }}</span>
+                            </button>
+                            {% endfor %}
+                        {% endfor %}
+                    </div>
+
+                    <div class="conditional" id="delayFields">
+                        <p class="conditional-title">ข้อมูลรถล่าช้า</p>
+                        <label for="delay_time">คาดว่าจะถึงเวลา</label>
+                        <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
+                    </div>
+
+                    <div class="conditional" id="passFields">
+                        <p class="conditional-title">ข้อมูลรถวิ่งผ่าน</p>
+                        <div class="field-grid">
+                            <div id="trainTypeWrap">
+                                <label for="train_type">ประเภทรถ</label>
+                                <select id="train_type">
+                                    <option value="สินค้า">สินค้า</option>
+                                    <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
+                                    <option value="พิเศษ">พิเศษ</option>
+                                    <option value="รถจักรเปล่า">รถจักรเปล่า</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="pass_platform">ชานชาลาที่รถผ่าน</label>
+                                <select id="pass_platform">
+                                    <option value="1" selected>ชานชาลาที่ 1</option>
+                                    <option value="2">ชานชาลาที่ 2</option>
+                                    <option value="3">ชานชาลาที่ 3</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="conditional" id="customFields">
+                        <p class="conditional-title">ข้อความประกาศเอง</p>
+                        <div id="thaiCustomWrap">
+                            <label for="custom_text">ข้อความภาษาไทย</label>
+                            <textarea id="custom_text" placeholder="พิมพ์ข้อความภาษาไทยที่ต้องการประกาศ"></textarea>
+                        </div>
+                        <div id="englishCustomWrap" class="hidden" style="margin-top:10px;">
+                            <label for="custom_text_en">English announcement</label>
+                            <textarea id="custom_text_en" placeholder="Type the English announcement"></textarea>
+                        </div>
+                    </div>
+
+                    <div class="conditional" id="secondTrainFields">
+                        <p class="conditional-title">ข้อมูลขบวนที่ 2</p>
+                        <label for="train_select_2">เลือกขบวนที่ 2</label>
                         <select id="train_select_2" onchange="autoFill(2)">
                             <option value="">-- เลือกขบวนรถ --</option>
                             <optgroup label="ขาเข้า กรุงเทพ (หัวลำโพง)">
-                            {% for train in inbound %}
-                                <option value="{{ train.label }}">{{ train.label }}</option>
-                            {% endfor %}
+                            {% for train in inbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
                             </optgroup>
                             <optgroup label="ขาออก ไปทางตะวันออก">
-                            {% for train in outbound %}
-                                <option value="{{ train.label }}">{{ train.label }}</option>
-                            {% endfor %}
+                            {% for train in outbound %}<option value="{{ train.label }}">{{ train.label }}</option>{% endfor %}
                             </optgroup>
                         </select>
-
-                        <div class="field-grid">
+                        <div class="field-grid" style="margin-top:11px;">
                             <div><label>ขบวนที่ 2</label><input type="text" id="num_2"></div>
-                            <div><label>เวลา 2</label><input type="text" id="time_2"></div>
+                            <div><label>ชานชาลาที่ 2</label><select id="platform_2"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select></div>
                             <div><label>ต้นทาง 2</label><input type="text" id="origin_2"></div>
                             <div><label>ปลายทาง 2</label><input type="text" id="dest_2"></div>
-                            <div><label>ชานชาลาที่ 2</label><input type="text" id="platform_2"></div>
+                            <div><label>เวลา 2</label><input type="text" id="time_2"></div>
                             <div><label>สถานีต่อไป 2</label><input type="text" id="next_station_2"></div>
                         </div>
                     </div>
+                </div>
+            </section>
+        </div>
 
-                    <label>ประเภทรถวิ่งผ่าน</label>
-                    <select id="train_type">
-                        <option value="สินค้า">สินค้า</option>
-                        <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
-                        <option value="พิเศษ">พิเศษ</option>
-                        <option value="รถจักรเปล่า">รถจักรเปล่า</option>
-                    </select>
-
-                    <label>ชานชาลาสำหรับประกาศรถผ่าน</label>
-                    <select id="pass_platform">
-                        <option value="1" selected>ชานชาลาที่ 1</option>
-                        <option value="2">ชานชาลาที่ 2</option>
-                        <option value="3">ชานชาลาที่ 3</option>
-                    </select>
-                    <div class="helper">ใช้กับปุ่ม “รถผ่านสถานี” และ “สินค้า / พิเศษ ผ่าน” เพื่อไม่ต้องพิมพ์ชานชาลาเอง</div>
-
-                    <label>เลือกภาษาที่ใช้ประกาศ</label>
-                    <select id="announce_mode" onchange="updateLanguageFields()">
-                        <option value="thai_only" selected>1 ภาษา — ภาษาไทย</option>
-                        <option value="english_only">1 ภาษา — ภาษาอังกฤษ</option>
-                        <option value="bilingual">2 ภาษา — ภาษาไทย + ภาษาอังกฤษ</option>
-                    </select>
-                    <div class="helper" id="languageHelper">โหมดภาษาไทย: เล่นเสียงเตือน → ภาษาไทย</div>
-
-                    <div id="thaiCustomGroup">
-                        <label>พิมพ์ข้อความประกาศเอง ภาษาไทย</label>
-                        <textarea id="custom_text" placeholder="พิมพ์ข้อความที่ต้องการประกาศเองตรงนี้"></textarea>
-                    </div>
-
-                    <div id="englishCustomGroup" style="display:none;">
-                        <label>ข้อความอังกฤษสำหรับประกาศเอง</label>
-                        <textarea id="custom_text_en" placeholder="ใช้เฉพาะปุ่มประกาศเอง ถ้าเว้นว่าง ระบบจะพูดอังกฤษแบบทั่วไป"></textarea>
-                    </div>
-
-
-                    <div class="toolbar">
-                        <button class="secondary" onclick="clearData()">ล้างข้อมูล</button>
-                        <button class="stop" onclick="stopAudio()">หยุดเสียง</button>
+        <aside class="card sticky">
+            <div class="card-head"><h2 class="step-title"><span class="step">4</span> ตรวจสอบและประกาศ</h2></div>
+            <div class="card-body">
+                <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
+                <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก</div>
+                <div class="action-stack">
+                    <button type="button" class="primary" id="playButton" onclick="playSelectedAnnouncement()" disabled>🔊 เริ่มประกาศเสียง</button>
+                    <div class="two-actions">
+                        <button type="button" class="danger" onclick="stopAudio()">■ หยุดเสียง</button>
+                        <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
                     </div>
                 </div>
+                <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ ระบบใช้เสียงไทย <b>{{ voice_name }}</b> และเสียงอังกฤษ <b>{{ en_voice_name }}</b></p>
             </div>
+        </aside>
+    </section>
+</main>
 
-            <div class="card">
-                <h2 class="card-title">2) เลือกประเภทประกาศ</h2>
-                <div class="card-body">
-                    <div class="action-groups">
-                        {% for group, buttons in grouped_buttons.items() %}
-                        <div>
-                            <h3 class="group-title">{{ group }}</h3>
-                            <div class="button-grid">
-                                {% for button in buttons %}
-                                <button class="announce-btn" onclick="playAnnouncement({{ button.idx }})">
-                                    <strong>{{ button.title }}</strong>
-                                    <span>{{ button.hint }}</span>
-                                </button>
-                                {% endfor %}
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
+<script>
+    const trainData = {{ trains_json | safe }};
+    let selectedAnnouncement = null;
+    let mainPlayer = null;
+    let isBusy = false;
+    let sharedAudioContext = null;
+    let mobileAudioUnlocked = false;
 
-                    <div class="preview-box" id="previewBox">
-                        <b>ตัวอย่างข้อความประกาศ:</b><br>
-                        กดปุ่มประกาศเพื่อสร้างเสียง ระบบจะสร้างไฟล์เสียงให้เสร็จก่อน แล้วเล่นเสียงเตือนสั้น ๆ ต่อด้วยเสียงประกาศทันที
-                    </div>
+    function byId(id) { return document.getElementById(id); }
+    function value(id) { return (byId(id)?.value || "").trim(); }
 
-                    <div class="notice">
-                        หมายเหตุ: ระบบนี้ใช้เสียงไทย <b>{{ voice_name }}</b> และเสียงอังกฤษ <b>{{ en_voice_name }}</b> ผ่าน edge-tts โดยสร้างไฟล์เสียงแยกทุกครั้ง เพื่อลดปัญหาไฟล์เก่าค้างหรือกดพร้อมกันแล้วเสียงชนกัน
-                    </div>
-                </div>
-            </div>
-        </section>
-    </main>
+    function setLanguage(mode, button) {
+        byId("announce_mode").value = mode;
+        document.querySelectorAll(".lang-btn").forEach(btn => btn.classList.remove("active"));
+        if (button) button.classList.add("active");
+        updateCustomLanguageFields();
+    }
 
-    <script>
-        const trainData = {{ trains_json | safe }};
-        let mainPlayer = null;
-        let isBusy = false;
-        let sharedAudioContext = null;
-        let mobileAudioUnlocked = false;
+    function updateCustomLanguageFields() {
+        const mode = value("announce_mode") || "thai_only";
+        byId("thaiCustomWrap").classList.toggle("hidden", mode === "english_only");
+        byId("englishCustomWrap").classList.toggle("hidden", mode === "thai_only");
+    }
 
-        function byId(id) { return document.getElementById(id); }
-        function value(id) { return (byId(id)?.value || "").trim(); }
+    function autoFill(type) {
+        const isFirst = type === 1;
+        const selectId = isFirst ? "train_select" : "train_select_2";
+        const suffix = isFirst ? "" : "_2";
+        const data = trainData[value(selectId)];
+        if (!data) return;
+        byId("num" + suffix).value = data.num || "";
+        byId("origin" + suffix).value = data.origin || "";
+        byId("dest" + suffix).value = data.dest || "";
+        byId("time" + suffix).value = data.time || "";
+        byId("next_station" + suffix).value = data.next || "";
+        if (isFirst) refreshSummary();
+    }
 
-        function getMainPlayer() {
-            if (!mainPlayer) {
-                mainPlayer = new Audio();
-                mainPlayer.preload = "auto";
-                mainPlayer.setAttribute("playsinline", "");
-                mainPlayer.setAttribute("webkit-playsinline", "");
-            }
-            return mainPlayer;
+    function refreshSummary() {
+        const num = value("num") || "–";
+        const origin = value("origin");
+        const dest = value("dest");
+        const time = value("time");
+        const next = value("next_station");
+        byId("summaryNum").textContent = num;
+        byId("summaryRoute").textContent = origin && dest ? `${origin} → ${dest}` : "ยังไม่ได้เลือกขบวนรถ";
+        const details = [];
+        if (time) details.push(`เวลา ${time}`);
+        if (next) details.push(`สถานีต่อไป: ${next}`);
+        byId("summaryMeta").textContent = details.length ? details.join(" • ") : "เมื่อเลือกขบวน ระบบจะเติมข้อมูลให้อัตโนมัติ";
+    }
+
+    function syncPlatformDefaults() {
+        const platform = value("platform") || "1";
+        if (byId("pass_platform")) byId("pass_platform").value = platform;
+        if (byId("platform_2") && byId("platform_2").value === platform) {
+            byId("platform_2").value = platform === "1" ? "2" : "1";
         }
+    }
 
-        function setStatus(text, type = "normal") {
-            const el = byId("statusText");
-            el.innerText = text;
-            if (type === "ok") el.style.background = "rgba(27,127,69,0.92)";
-            else if (type === "error") el.style.background = "rgba(179,38,30,0.92)";
-            else if (type === "work") el.style.background = "rgba(201,162,39,0.96)";
-            else el.style.background = "rgba(255,255,255,0.13)";
+    function selectAnnouncement(index, button) {
+        selectedAnnouncement = index;
+        document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
+        button.classList.add("active");
+        byId("playButton").disabled = false;
+        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>พร้อมสร้างเสียงตามข้อมูลที่เลือก`;
+
+        ["delayFields", "passFields", "customFields", "secondTrainFields"].forEach(id => byId(id).classList.remove("show"));
+        byId("trainTypeWrap").classList.remove("hidden");
+        if (index === 5) byId("delayFields").classList.add("show");
+        if (index === 3 || index === 9) {
+            byId("passFields").classList.add("show");
+            if (index === 3) byId("trainTypeWrap").classList.add("hidden");
         }
-
-        function setLoading(active) {
-            byId("loadingBar").classList.toggle("active", active);
-            document.querySelectorAll(".announce-btn").forEach(btn => btn.disabled = active);
+        if (index === 8) {
+            byId("customFields").classList.add("show");
+            updateCustomLanguageFields();
         }
+        if (index === 10) byId("secondTrainFields").classList.add("show");
+        byId("previewBox").innerHTML = "<b>พร้อมประกาศ</b><br><br>ตรวจสอบขบวนรถ ชานชาลา และภาษาที่เลือก แล้วกดปุ่มเริ่มประกาศเสียง";
+    }
 
-        function autoFill(type) {
-            const suffix = type === 1 ? "" : "_2";
-            const selectId = type === 1 ? "train_select" : "train_select_2";
-            const selected = value(selectId);
-            const data = trainData[selected];
-            if (!data) return;
-            byId("num" + suffix).value = data.num || "";
-            byId("origin" + suffix).value = data.origin || "";
-            byId("dest" + suffix).value = data.dest || "";
-            byId("time" + suffix).value = data.time || "";
-            byId("next_station" + suffix).value = data.next || "";
+    function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text == null ? "" : String(text);
+        return div.innerHTML;
+    }
+
+    function renderServerPreview(html) {
+        const safe = escapeHtml(html).replace(/&lt;br\s*\/?&gt;/gi, "<br>");
+        byId("previewBox").innerHTML = safe;
+    }
+
+    function collectPayload(tabIndex) {
+        return {
+            tab_index: tabIndex,
+            announce_mode: value("announce_mode") || "thai_only",
+            num: value("num"), origin: value("origin"), dest: value("dest"), time: value("time"),
+            platform: value("platform") || "1", current: value("current") || "คลองบางพระ",
+            next: value("next_station"), delay: value("delay_time"),
+            custom_text: value("custom_text"), custom_text_en: value("custom_text_en"),
+            train_type: value("train_type") || "สินค้า",
+            pass_platform: value("pass_platform") || value("platform") || "1",
+            num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
+            time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2")
+        };
+    }
+
+    function validateSelection() {
+        if (selectedAnnouncement === null) return "กรุณาเลือกประเภทประกาศ";
+        if (![7, 8].includes(selectedAnnouncement) && !value("num") && ![3, 9].includes(selectedAnnouncement)) return "กรุณาเลือกขบวนรถ";
+        if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
+        if (selectedAnnouncement === 8) {
+            const mode = value("announce_mode");
+            if (mode !== "english_only" && !value("custom_text")) return "กรุณาพิมพ์ข้อความภาษาไทย";
+            if (mode !== "thai_only" && !value("custom_text_en")) return "กรุณาพิมพ์ข้อความภาษาอังกฤษ";
         }
+        if (selectedAnnouncement === 10 && !value("num_2")) return "กรุณาเลือกขบวนที่ 2";
+        return "";
+    }
 
-        function clearData() {
-            const fields = [
-                "train_select", "num", "time", "origin", "dest", "platform", "next_station", "delay_time", "custom_text", "custom_text_en",
-                "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "platform_2", "next_station_2"
-            ];
-            fields.forEach(id => { if (byId(id)) byId(id).value = ""; });
-            byId("current").value = "คลองบางพระ";
-            byId("announce_mode").value = "thai_only";
-            updateLanguageFields();
-            if (byId("pass_platform")) byId("pass_platform").value = "1";
-            byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ:</b><br>ล้างข้อมูลเรียบร้อยแล้ว";
-            setStatus("พร้อมใช้งาน");
+    function setStatus(text, type = "normal") {
+        const el = byId("statusText");
+        el.textContent = text;
+        if (type === "ok") el.style.background = "rgba(23,119,68,.92)";
+        else if (type === "error") el.style.background = "rgba(180,35,24,.92)";
+        else if (type === "work") el.style.background = "rgba(199,161,42,.96)";
+        else el.style.background = "rgba(255,255,255,.12)";
+    }
+
+    function setLoading(active) {
+        byId("loadingBar").classList.toggle("active", active);
+        document.querySelectorAll(".announce-option, .lang-btn").forEach(btn => btn.disabled = active);
+        byId("playButton").disabled = active || selectedAnnouncement === null;
+    }
+
+    function getMainPlayer() {
+        if (!mainPlayer) {
+            mainPlayer = new Audio();
+            mainPlayer.preload = "auto";
+            mainPlayer.setAttribute("playsinline", "");
+            mainPlayer.setAttribute("webkit-playsinline", "");
         }
+        return mainPlayer;
+    }
 
-        function stopAudio() {
+    function stopAudio() {
+        const player = getMainPlayer();
+        try { player.pause(); player.currentTime = 0; } catch (e) {}
+        setStatus("หยุดเสียงแล้ว");
+    }
+
+    function getAudioContext() {
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!sharedAudioContext) sharedAudioContext = new AudioContext();
+            if (sharedAudioContext.state === "suspended") sharedAudioContext.resume().catch(() => {});
+            return sharedAudioContext;
+        } catch (e) { return null; }
+    }
+
+    async function unlockMobileAudio() {
+        getAudioContext();
+        if (mobileAudioUnlocked) return;
+        const player = getMainPlayer();
+        try {
+            player.muted = true; player.volume = 0;
+            player.src = "/audio/chime.mp3?unlock=" + Date.now();
+            player.currentTime = 0;
+            await player.play();
+            player.pause();
+            try { player.currentTime = 0; } catch (e) {}
+            mobileAudioUnlocked = true;
+        } catch (e) { console.warn("Mobile audio unlock failed:", e); }
+        finally { player.muted = false; player.volume = 1; }
+    }
+
+    function playWarningTone() {
+        return new Promise(resolve => {
+            try {
+                const ctx = getAudioContext();
+                if (!ctx) return resolve();
+                const startAt = ctx.currentTime + .02;
+                const gain = ctx.createGain();
+                gain.gain.setValueAtTime(.0001, startAt);
+                gain.gain.exponentialRampToValueAtTime(.12, startAt + .02);
+                gain.gain.exponentialRampToValueAtTime(.0001, startAt + .42);
+                gain.connect(ctx.destination);
+                const osc1 = ctx.createOscillator(); osc1.type = "sine"; osc1.frequency.setValueAtTime(880, startAt); osc1.connect(gain); osc1.start(startAt); osc1.stop(startAt + .18);
+                const osc2 = ctx.createOscillator(); osc2.type = "sine"; osc2.frequency.setValueAtTime(660, startAt + .19); osc2.connect(gain); osc2.start(startAt + .19); osc2.stop(startAt + .42);
+                setTimeout(resolve, 455);
+            } catch (e) { resolve(); }
+        });
+    }
+
+    function playUrl(url, options = {}) {
+        return new Promise((resolve, reject) => {
             const player = getMainPlayer();
-            try {
-                player.pause();
-                player.currentTime = 0;
-            } catch (e) {}
-            setStatus("หยุดเสียงแล้ว");
-        }
-
-        function updateLanguageFields() {
-            const mode = value("announce_mode") || "thai_only";
-            const thaiGroup = byId("thaiCustomGroup");
-            const englishGroup = byId("englishCustomGroup");
-            const helper = byId("languageHelper");
-
-            if (thaiGroup) thaiGroup.style.display = mode === "english_only" ? "none" : "block";
-            if (englishGroup) englishGroup.style.display = mode === "thai_only" ? "none" : "block";
-
-            if (!helper) return;
-            if (mode === "bilingual") {
-                helper.innerText = "โหมดสองภาษา: เล่นเสียงเตือน → ภาษาไทย → ภาษาอังกฤษ";
-            } else if (mode === "english_only") {
-                helper.innerText = "โหมดภาษาอังกฤษ: เล่นเสียงเตือน → ภาษาอังกฤษ";
-            } else {
-                helper.innerText = "โหมดภาษาไทย: เล่นเสียงเตือน → ภาษาไทย";
+            const maxWaitMs = options.maxWaitMs || null;
+            const errorText = options.errorText || "เล่นไฟล์เสียงไม่สำเร็จ";
+            let finished = false, started = false, safetyTimer = null, startTimer = null;
+            function cleanup() {
+                player.removeEventListener("ended", onEnded); player.removeEventListener("error", onError); player.removeEventListener("canplay", startPlay);
+                if (safetyTimer) clearTimeout(safetyTimer); if (startTimer) clearTimeout(startTimer);
             }
-        }
-
-        function collectPayload(tabIndex) {
-            return {
-                tab_index: tabIndex,
-                announce_mode: value("announce_mode") || "thai_only",
-                num: value("num"),
-                origin: value("origin"),
-                dest: value("dest"),
-                time: value("time"),
-                platform: value("platform"),
-                current: value("current") || "คลองบางพระ",
-                next: value("next_station"),
-                delay: value("delay_time"),
-                custom_text: value("custom_text"),
-                custom_text_en: value("custom_text_en"),
-                train_type: value("train_type") || "สินค้า",
-                pass_platform: value("pass_platform") || value("platform") || "1",
-                num_2: value("num_2"),
-                origin_2: value("origin_2"),
-                dest_2: value("dest_2"),
-                time_2: value("time_2"),
-                platform_2: value("platform_2"),
-                next_2: value("next_station_2")
-            };
-        }
-
-        function getAudioContext() {
-            try {
-                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                if (!sharedAudioContext) sharedAudioContext = new AudioContext();
-                if (sharedAudioContext.state === "suspended") sharedAudioContext.resume().catch(() => {});
-                return sharedAudioContext;
-            } catch (e) {
-                return null;
+            function finish() { if (finished) return; finished = true; cleanup(); if (maxWaitMs) { try { player.pause(); player.currentTime = 0; } catch (e) {} } resolve(); }
+            function fail(e) { if (finished) return; finished = true; cleanup(); reject(e instanceof Error ? e : new Error(errorText)); }
+            function onEnded() { finish(); }
+            function onError() { fail(new Error(errorText)); }
+            async function startPlay() {
+                if (started || finished) return; started = true;
+                try { player.muted = false; player.volume = 1; await player.play(); } catch (e) { fail(e); }
             }
-        }
-
-        async function unlockMobileAudio() {
-            // มือถือบางรุ่นจะบล็อกเสียง ถ้า play() เกิดหลังจากรอสร้างไฟล์เสียงนานไป
-            // วิธีแก้คือปลดล็อก media element หลักทันทีตอนผู้ใช้แตะปุ่ม แล้วใช้ element เดิมเล่นทุกไฟล์ต่อกัน
-            getAudioContext();
-            if (mobileAudioUnlocked) return;
-            const player = getMainPlayer();
             try {
-                player.muted = true;
-                player.volume = 0;
-                player.src = "/audio/chime.mp3?unlock=" + Date.now();
-                player.currentTime = 0;
-                await player.play();
-                player.pause();
-                try { player.currentTime = 0; } catch (e) {}
-                mobileAudioUnlocked = true;
-            } catch (e) {
-                console.warn("Mobile audio unlock failed:", e);
-            } finally {
-                player.muted = false;
-                player.volume = 1;
-            }
+                player.pause(); player.src = url; player.preload = "auto"; player.muted = false; player.volume = 1; player.currentTime = 0;
+                player.addEventListener("ended", onEnded, { once: true });
+                player.addEventListener("error", onError, { once: true });
+                player.addEventListener("canplay", startPlay, { once: true });
+                player.load(); startTimer = setTimeout(startPlay, 450);
+                if (maxWaitMs) safetyTimer = setTimeout(finish, maxWaitMs);
+            } catch (e) { fail(e); }
+        });
+    }
+
+    async function playOriginalChime() {
+        try { await playUrl("/audio/chime.mp3?v=" + Date.now(), { maxWaitMs: 5200, errorText: "เล่นเสียงเตือนไม่สำเร็จ" }); }
+        catch (e) { await playWarningTone(); }
+    }
+
+    async function playSelectedAnnouncement() {
+        const error = validateSelection();
+        if (error) {
+            setStatus("ข้อมูลไม่ครบ", "error");
+            byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
+            return;
         }
+        await playAnnouncement(selectedAnnouncement);
+    }
 
-        function playWarningTone() {
-            return new Promise((resolve) => {
-                try {
-                    const ctx = getAudioContext();
-                    if (!ctx) return resolve();
-
-                    const startAt = ctx.currentTime + 0.02;
-                    const gain = ctx.createGain();
-                    gain.gain.setValueAtTime(0.0001, startAt);
-                    gain.gain.exponentialRampToValueAtTime(0.12, startAt + 0.02);
-                    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.42);
-                    gain.connect(ctx.destination);
-
-                    const osc1 = ctx.createOscillator();
-                    osc1.type = "sine";
-                    osc1.frequency.setValueAtTime(880, startAt);
-                    osc1.connect(gain);
-                    osc1.start(startAt);
-                    osc1.stop(startAt + 0.18);
-
-                    const osc2 = ctx.createOscillator();
-                    osc2.type = "sine";
-                    osc2.frequency.setValueAtTime(660, startAt + 0.19);
-                    osc2.connect(gain);
-                    osc2.start(startAt + 0.19);
-                    osc2.stop(startAt + 0.42);
-
-                    setTimeout(resolve, 455);
-                } catch (e) {
-                    resolve();
-                }
+    async function playAnnouncement(tabIndex) {
+        if (isBusy) return;
+        isBusy = true;
+        await unlockMobileAudio();
+        setLoading(true); stopAudio();
+        setStatus("กำลังสร้างเสียง...", "work");
+        byId("previewBox").innerHTML = "<b>กำลังสร้างไฟล์เสียง</b><br><br>ระบบกำลังเตรียมเสียงประกาศ กรุณารอสักครู่";
+        try {
+            const response = await fetch("/announce", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(collectPayload(tabIndex))
             });
-        }
-
-        function playUrl(url, options = {}) {
-            return new Promise((resolve, reject) => {
-                const player = getMainPlayer();
-                const maxWaitMs = options.maxWaitMs || null;
-                const errorText = options.errorText || "เล่นไฟล์เสียงไม่สำเร็จ";
-                let finished = false;
-                let started = false;
-                let safetyTimer = null;
-                let startTimer = null;
-
-                function cleanup() {
-                    player.removeEventListener("ended", onEnded);
-                    player.removeEventListener("error", onError);
-                    player.removeEventListener("canplay", startPlay);
-                    if (safetyTimer) clearTimeout(safetyTimer);
-                    if (startTimer) clearTimeout(startTimer);
-                }
-
-                function finish() {
-                    if (finished) return;
-                    finished = true;
-                    cleanup();
-                    if (maxWaitMs) {
-                        try { player.pause(); player.currentTime = 0; } catch (e) {}
-                    }
-                    resolve();
-                }
-
-                function fail(e) {
-                    if (finished) return;
-                    finished = true;
-                    cleanup();
-                    reject(e instanceof Error ? e : new Error(errorText));
-                }
-
-                function onEnded() { finish(); }
-                function onError() { fail(new Error(errorText)); }
-
-                async function startPlay() {
-                    if (started || finished) return;
-                    started = true;
-                    try {
-                        player.muted = false;
-                        player.volume = 1;
-                        await player.play();
-                    } catch (e) {
-                        fail(e);
-                    }
-                }
-
-                try {
-                    player.pause();
-                    player.src = url;
-                    player.preload = "auto";
-                    player.muted = false;
-                    player.volume = 1;
-                    player.currentTime = 0;
-                    player.addEventListener("ended", onEnded, { once: true });
-                    player.addEventListener("error", onError, { once: true });
-                    player.addEventListener("canplay", startPlay, { once: true });
-                    player.load();
-                    startTimer = setTimeout(startPlay, 450);
-                    if (maxWaitMs) safetyTimer = setTimeout(finish, maxWaitMs);
-                } catch (e) {
-                    fail(e);
-                }
-            });
-        }
-
-        async function playOriginalChime() {
-            try {
-                await playUrl("/audio/chime.mp3?v=" + Date.now(), {
-                    maxWaitMs: 5200,
-                    errorText: "เล่นเสียงเตือนไม่สำเร็จ"
-                });
-            } catch (e) {
-                await playWarningTone();
+            const data = await response.json();
+            if (!response.ok || data.status !== "success") throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
+            renderServerPreview(data.text_preview || "-");
+            const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
+            const audioLabels = data.audio_labels || [];
+            if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
+            audioUrls.forEach(url => { try { fetch(url, { cache: "no-store" }).catch(() => {}); } catch (e) {} });
+            setStatus("เสียงเตือน...", "work");
+            await playOriginalChime();
+            for (let i = 0; i < audioUrls.length; i++) {
+                setStatus(`กำลังประกาศ ${audioLabels[i] || ""}`.trim(), "ok");
+                await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง" });
             }
-        }
-
-        document.addEventListener("DOMContentLoaded", updateLanguageFields);
-
-        async function playAnnouncement(tabIndex) {
-            if (isBusy) return;
-            isBusy = true;
-            await unlockMobileAudio();
-            setLoading(true);
-            stopAudio();
-            setStatus("กำลังสร้างเสียงประกาศ...", "work");
-            byId("previewBox").innerHTML = "<b>สถานะ:</b><br>กำลังสร้างไฟล์เสียง กรุณารอสักครู่";
-
-            try {
-                const response = await fetch("/announce", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(collectPayload(tabIndex))
-                });
-                const data = await response.json();
-
-                if (!response.ok || data.status !== "success") {
-                    throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
-                }
-
-                byId("previewBox").innerHTML = "<b>ข้อความประกาศ:</b><br>" + (data.text_preview || "-");
-                const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
-                if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
-
-                // โหลดไฟล์เข้าหน่วยความจำล่วงหน้าเล็กน้อย ลดการหน่วงระหว่างไทย-อังกฤษ
-                audioUrls.forEach(url => { try { fetch(url, { cache: "no-store" }).catch(() => {}); } catch (e) {} });
-
-                setStatus("เสียงเตือน...", "work");
-                await playOriginalChime();
-
-                const labels = (data.audio_labels && data.audio_labels.length) ? data.audio_labels : [];
-                for (let i = 0; i < audioUrls.length; i++) {
-                    const currentLabel = labels[i] || "เสียงประกาศ";
-                    setStatus("กำลังประกาศ " + currentLabel, "ok");
-                    await playUrl(audioUrls[i], { errorText: "มือถือบล็อกเสียงประกาศ กรุณาแตะปุ่มประกาศอีกครั้ง" });
-                }
-                setStatus("ประกาศเสร็จแล้ว", "ok");
-            } catch (err) {
-                console.error(err);
-                setStatus("เกิดข้อผิดพลาด", "error");
-                let message = err.message || String(err);
-                if (message.includes("not allowed") || message.includes("permission") || message.includes("บล็อก")) {
-                    message = "มือถือบล็อกการเล่นเสียงชั่วคราว ให้กดปุ่มประกาศเดิมอีกครั้ง หรือเปิดหน้านี้ผ่าน Chrome/Safari โดยตรง และตรวจว่าไม่ได้ปิดเสียงมือถือ";
-                }
-                byId("previewBox").innerHTML = "<b>เกิดข้อผิดพลาด:</b><br>" + message;
-            } finally {
-                setLoading(false);
-                isBusy = false;
+            setStatus("ประกาศเสร็จแล้ว", "ok");
+        } catch (err) {
+            console.error(err);
+            setStatus("เกิดข้อผิดพลาด", "error");
+            let message = err.message || String(err);
+            if (message.includes("not allowed") || message.includes("permission") || message.includes("บล็อก")) {
+                message = "มือถือบล็อกการเล่นเสียงชั่วคราว กรุณากดปุ่มประกาศอีกครั้ง หรือเปิดหน้านี้ผ่าน Chrome/Safari โดยตรง";
             }
+            byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(message)}`;
+        } finally {
+            setLoading(false); isBusy = false;
         }
-    </script>
+    }
+
+    function clearData() {
+        stopAudio();
+        ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "custom_text", "custom_text_en",
+         "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2"].forEach(id => { if (byId(id)) byId(id).value = ""; });
+        byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2";
+        byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
+        setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
+        selectedAnnouncement = null;
+        document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
+        ["delayFields", "passFields", "customFields", "secondTrainFields"].forEach(id => byId(id).classList.remove("show"));
+        byId("playButton").disabled = true;
+        byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
+        byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
+        refreshSummary(); setStatus("พร้อมใช้งาน");
+    }
+
+    updateCustomLanguageFields();
+    refreshSummary();
+</script>
 </body>
 </html>
 """
+
 
 
 def group_buttons(buttons):
