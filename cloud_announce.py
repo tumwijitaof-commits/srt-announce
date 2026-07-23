@@ -23,7 +23,10 @@ if VOICE_NAME not in THAI_VOICE_OPTIONS:
 TTS_RATE = os.environ.get("TTS_RATE", "-6%")
 TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
 TTS_PITCH = os.environ.get("TTS_PITCH", "+0Hz")
-EN_VOICE_NAME = os.environ.get("TTS_EN_VOICE", "en-US-GuyNeural")
+ENGLISH_VOICE_OPTIONS = {
+    "female": os.environ.get("TTS_EN_FEMALE_VOICE", "en-US-JennyNeural"),
+    "male": os.environ.get("TTS_EN_MALE_VOICE", "en-US-GuyNeural"),
+}
 TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-5%")
 TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+0%")
 TTS_EN_PITCH = os.environ.get("TTS_EN_PITCH", "+0Hz")
@@ -273,29 +276,69 @@ HTML_PAGE = r"""
         .primary:disabled { opacity: .45; cursor: not-allowed; }
         .two-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
         .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-        .voice-settings {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 10px;
-            align-items: end;
-            margin-top: 12px;
-            padding: 12px;
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            background: #fffaf1;
+        .voice-quick-panel {
+            margin-top: 14px;
+            padding: 16px;
+            border: 2px solid rgba(128,0,0,.24);
+            border-radius: 20px;
+            background: linear-gradient(145deg, #ffffff, #fff7e9);
+            box-shadow: var(--shadow);
         }
-        .voice-settings label { margin-top: 0; }
-        .voice-test-btn {
-            min-height: 46px;
-            padding: 10px 14px;
-            border: 1px solid #d7b45a;
-            border-radius: 13px;
+        .voice-quick-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .voice-quick-title {
+            margin: 0;
             color: var(--maroon-dark);
-            background: #fff;
-            font-weight: 800;
-            white-space: nowrap;
+            font-size: 18px;
+            font-weight: 900;
         }
-        .voice-test-btn:hover { background: #fff5d8; }
+        .voice-quick-note {
+            color: var(--muted);
+            font-size: 12.5px;
+        }
+        .voice-choice-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+            gap: 10px;
+        }
+        .voice-choice-btn, .voice-test-btn {
+            min-height: 58px;
+            padding: 11px 14px;
+            border: 1px solid #ddcfba;
+            border-radius: 15px;
+            background: white;
+            color: var(--ink);
+            font-weight: 900;
+            text-align: left;
+        }
+        .voice-choice-btn small {
+            display: block;
+            margin-top: 3px;
+            color: var(--muted);
+            font-weight: 600;
+        }
+        .voice-choice-btn.active {
+            border-color: var(--maroon);
+            color: var(--maroon-dark);
+            background: #fff0f0;
+            box-shadow: inset 0 0 0 1px var(--maroon);
+        }
+        .voice-test-btn {
+            min-width: 165px;
+            text-align: center;
+            color: white;
+            border-color: var(--maroon);
+            background: var(--maroon);
+        }
+        .voice-choice-btn:disabled, .voice-test-btn:disabled {
+            opacity: .45;
+            cursor: not-allowed;
+        }
         .hidden { display: none !important; }
 
         @media (max-width: 860px) {
@@ -314,8 +357,8 @@ HTML_PAGE = r"""
             .announce-grid, .field-grid, .platform-row { grid-template-columns: 1fr; }
             .train-summary { grid-template-columns: 64px 1fr; }
             .train-number { min-width: 64px; font-size: 19px; }
-            .voice-settings { grid-template-columns: 1fr; }
-            .voice-test-btn { width: 100%; }
+            .voice-choice-grid { grid-template-columns: 1fr; }
+            .voice-test-btn { width: 100%; min-width: 0; }
         }
     </style>
 </head>
@@ -326,12 +369,39 @@ HTML_PAGE = r"""
             <div class="logo">🚆</div>
             <div>
                 <h1>ระบบประกาศสถานีคลองบางพระ</h1>
-                <p class="subtitle">เลือกข้อมูลไม่กี่ขั้นตอน แล้วกดประกาศได้ทันที</p>
+                <p class="subtitle">เลือกภาษา เลือกเสียง แล้วกดประกาศได้ทันที</p>
             </div>
         </div>
         <div class="status" id="statusText">พร้อมใช้งาน</div>
         <div class="progress" id="loadingBar"></div>
     </header>
+
+    <section class="voice-quick-panel" id="thaiVoiceSettings">
+        <div class="voice-quick-head">
+            <div>
+                <h2 class="voice-quick-title">🔊 เลือกเสียงประกาศ</h2>
+                <div class="voice-quick-note" id="voiceHelper">เสียงที่เลือกจะใช้เพศเดียวกันทั้งภาษาไทยและภาษาอังกฤษ</div>
+            </div>
+        </div>
+        <input type="hidden" id="thai_voice" value="{{ voice_name }}">
+        <div class="voice-choice-grid">
+            <button type="button"
+                    class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}"
+                    data-voice="th-TH-PremwadeeNeural"
+                    onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">
+                👩 เสียงผู้หญิง
+                <small>ไทย: Premwadee · อังกฤษ: Jenny</small>
+            </button>
+            <button type="button"
+                    class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}"
+                    data-voice="th-TH-NiwatNeural"
+                    onclick="setThaiVoice('th-TH-NiwatNeural', this)">
+                👨 เสียงผู้ชาย
+                <small>ไทย: Niwat · อังกฤษ: Guy</small>
+            </button>
+            <button type="button" class="voice-test-btn" onclick="testStationVoice()">▶ ทดลองเสียง</button>
+        </div>
+    </section>
 
     <section class="layout">
         <div class="stack">
@@ -344,17 +414,7 @@ HTML_PAGE = r"""
                         <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
                         <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
                     </div>
-                    <div class="voice-settings" id="thaiVoiceSettings">
-                        <div>
-                            <label for="thai_voice">เสียงประกาศภาษาไทย</label>
-                            <select id="thai_voice">
-                                <option value="th-TH-PremwadeeNeural" {% if voice_name == "th-TH-PremwadeeNeural" %}selected{% endif %}>เสียงหญิง — ชัดเจน เป็นธรรมชาติ (แนะนำ)</option>
-                                <option value="th-TH-NiwatNeural" {% if voice_name == "th-TH-NiwatNeural" %}selected{% endif %}>เสียงชาย — สุภาพ เป็นทางการ</option>
-                            </select>
-                        </div>
-                        <button type="button" class="voice-test-btn" onclick="testStationVoice()">🔊 ทดลองชื่อสถานี</button>
-                    </div>
-                    <div class="helper" id="voiceHelper">ระบบจะอ่านชื่อเต็มว่า “สถานีคลองบางพระ” โดยไม่แยกคำจนฟังผิดธรรมชาติ</div>
+                    <div class="helper">เสียงภาษาอังกฤษจะเปลี่ยนเป็นผู้หญิงหรือผู้ชายให้ตรงกับเสียงที่เลือกด้านบนโดยอัตโนมัติ</div>
                 </div>
             </section>
 
@@ -568,7 +628,7 @@ HTML_PAGE = r"""
                         <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
                     </div>
                 </div>
-                <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ สามารถเลือกเสียงภาษาไทยได้ในขั้นตอนที่ 1 ส่วนเสียงอังกฤษใช้ <b>{{ en_voice_name }}</b></p>
+                <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ โดยเสียงภาษาไทยและภาษาอังกฤษจะใช้เพศเดียวกันตามปุ่มที่เลือกด้านบน</p>
             </div>
         </aside>
     </section>
@@ -590,8 +650,26 @@ HTML_PAGE = r"""
         document.querySelectorAll(".lang-btn").forEach(btn => btn.classList.remove("active"));
         if (button) button.classList.add("active");
         updateCustomLanguageFields();
-        byId("thaiVoiceSettings").classList.toggle("hidden", mode === "english_only");
-        byId("voiceHelper").classList.toggle("hidden", mode === "english_only");
+
+        document.querySelectorAll(".voice-choice-btn, .voice-test-btn").forEach(btn => {
+            btn.disabled = false;
+        });
+
+        if (mode === "english_only") {
+            byId("voiceHelper").innerText = "เสียงที่เลือกจะใช้กับภาษาอังกฤษ: ผู้หญิง = Jenny, ผู้ชาย = Guy";
+        } else if (mode === "bilingual") {
+            byId("voiceHelper").innerText = "โหมดสองภาษา: ไทยและอังกฤษจะใช้เพศเดียวกันตามเสียงที่เลือก";
+        } else {
+            byId("voiceHelper").innerText = "เสียงที่เลือกจะใช้กับภาษาไทย และคำลงท้ายจะเปลี่ยนเป็นครับหรือค่ะอัตโนมัติ";
+        }
+    }
+
+    function setThaiVoice(voice, button) {
+        byId("thai_voice").value = voice;
+        document.querySelectorAll(".voice-choice-btn").forEach(btn => btn.classList.remove("active"));
+        if (button) button.classList.add("active");
+        const voiceName = voice === "th-TH-NiwatNeural" ? "เสียงผู้ชาย" : "เสียงผู้หญิง";
+        setStatus("เลือก " + voiceName + " แล้ว", "ok");
     }
 
     function updateCustomLanguageFields() {
@@ -724,7 +802,7 @@ HTML_PAGE = r"""
 
     function setLoading(active) {
         byId("loadingBar").classList.toggle("active", active);
-        document.querySelectorAll(".announce-option, .lang-btn, .voice-test-btn").forEach(btn => btn.disabled = active);
+        document.querySelectorAll(".announce-option, .lang-btn, .voice-choice-btn, .voice-test-btn").forEach(btn => btn.disabled = active);
         byId("playButton").disabled = active || selectedAnnouncement === null;
     }
 
@@ -745,21 +823,30 @@ HTML_PAGE = r"""
         setLoading(true);
         stopAudio();
         setStatus("กำลังสร้างเสียงทดสอบ...", "work");
-        byId("previewBox").innerHTML = "<b>กำลังทดสอบเสียง</b><br><br>ขณะนี้ท่านอยู่ที่สถานีคลองบางพระ";
+        const testMode = value("announce_mode") || "thai_only";
+        byId("previewBox").innerHTML = "<b>กำลังทดสอบเสียง</b><br><br>ระบบกำลังสร้างเสียงตามภาษาและเพศที่เลือก";
 
         try {
             const response = await fetch("/test-station-voice", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural" })
+                body: JSON.stringify({
+                    thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
+                    announce_mode: testMode
+                })
             });
             const data = await response.json();
             if (!response.ok || data.status !== "success") {
                 throw new Error(data.message || "สร้างเสียงทดสอบไม่สำเร็จ");
             }
-            setStatus("กำลังเล่นเสียงทดสอบ", "ok");
-            await playUrl(data.audio_url, { errorText: "ไม่สามารถเล่นเสียงทดสอบได้" });
-            byId("previewBox").innerHTML = `<b>เสียงทดสอบ</b><br><br>${escapeHtml(data.text_preview || "ขณะนี้ท่านอยู่ที่สถานีคลองบางพระ")}`;
+            const testUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
+            const testLabels = data.audio_labels || [];
+            if (!testUrls.length) throw new Error("ไม่พบไฟล์เสียงทดสอบ");
+            for (let i = 0; i < testUrls.length; i++) {
+                setStatus(`กำลังทดสอบ ${testLabels[i] || "เสียง"}`, "ok");
+                await playUrl(testUrls[i], { errorText: "ไม่สามารถเล่นเสียงทดสอบได้" });
+            }
+            renderServerPreview(data.text_preview || "-");
             setStatus("ทดสอบเสียงเสร็จแล้ว", "ok");
         } catch (err) {
             console.error(err);
@@ -969,8 +1056,15 @@ def clean_space(text):
     return " ".join((text or "").split())
 
 
+def english_voice_for(thai_voice):
+    """เลือกเสียงอังกฤษให้เพศตรงกับเสียงไทยที่ผู้ใช้เลือก"""
+    if thai_voice == "th-TH-NiwatNeural":
+        return ENGLISH_VOICE_OPTIONS["male"]
+    return ENGLISH_VOICE_OPTIONS["female"]
+
+
 # แก้เฉพาะคำที่ระบบ TTS มักอ่านคลาดเคลื่อนจริง ๆ
-# ชื่อ “คลองบางพระ” คงไว้เป็นคำเต็ม ไม่แยกเป็น “คลอง... บาง พระ” เพราะฟังไม่เป็นธรรมชาติ
+# ไม่แยก ไม่ยืด และไม่เปลี่ยนรูปประโยคของคำว่า “คลองบางพระ”
 PRONUNCIATION_FIXES = {
     "กบินทร์บุรี": "กะบินบุรี",
     "จุกเสม็ด": "จุกสะเม็ด",
@@ -979,22 +1073,17 @@ PRONUNCIATION_FIXES = {
 
 def prepare_tts_text(text):
     tts_text = clean_space(text or "")
-
-    # เว้นจังหวะรอบชื่อสถานีแบบเบา ๆ แต่ไม่แยกคำภายในชื่อ
-    natural_phrases = {
-        "ที่นี่สถานีคลองบางพระ": "ที่นี่ สถานีคลองบางพระ",
-        "ถึงสถานีคลองบางพระแล้ว": "ถึง สถานีคลองบางพระ แล้ว",
-        "ถึงสถานีคลองบางพระ": "ถึง สถานีคลองบางพระ",
-        "ออกจากสถานีคลองบางพระ": "ออกจาก สถานีคลองบางพระ",
-        "อยู่ที่สถานีคลองบางพระ": "อยู่ที่ สถานีคลองบางพระ",
-    }
-    for official_phrase, spoken_phrase in natural_phrases.items():
-        tts_text = tts_text.replace(official_phrase, spoken_phrase)
-
     for official_word, spoken_word in PRONUNCIATION_FIXES.items():
         tts_text = tts_text.replace(official_word, spoken_word)
-
     return clean_space(tts_text)
+
+
+def apply_voice_politeness(text, thai_voice):
+    """เปลี่ยนเฉพาะคำลงท้ายตามเพศของเสียง โดยไม่เปลี่ยนโครงสร้างประโยค"""
+    result = text or ""
+    if thai_voice == "th-TH-PremwadeeNeural":
+        return result.replace("ครับ", "ค่ะ")
+    return result.replace("ค่ะ", "ครับ")
 
 
 
@@ -1179,7 +1268,7 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
-        text = f"โปรดทราบ ขณะนี้ขบวนรถถึง{station(current)}แล้ว ผู้โดยสารที่จะลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน และนำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบชานชาลาที่ {platform} คือขบวนที่ {t_num} ต้นทาง{station(origin)} ปลายทาง{station(dest)} เที่ยวกำหนดเวลา {t_time} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไป ขอบคุณครับ"
+        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
@@ -1191,24 +1280,21 @@ def build_announcement(data):
     elif idx == 9:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type}วิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 10:
-        trains = [
-            (platform, t_num, origin, dest, next_st),
-            (platform_2, t_num_2, origin_2, dest_2, next_st_2),
-        ]
-        if t_num_3:
-            trains.append((platform_3, t_num_3, origin_3, dest_3, next_st_3))
-        train_details = " ".join(
-            f"ขบวนรถที่จอดในชานชาลาที่ {p} เป็นขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)}"
-            for p, n, o, d, _ in trains
-        )
-        next_details = " ".join(
-            f"ขบวนรถในชานชาลาที่ {p} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {nxt} เป็นสถานีต่อไปตามลำดับ"
-            for p, _, _, _, nxt in trains
-        )
+        # ใช้แพตเทิร์นเดิมของประกาศรถเข้าพร้อมกัน และต่อประโยคแบบเดียวกันเมื่อมีขบวนที่ 3
         text = (
-            f"ผู้โดยสารโปรดทราบ ขณะนี้ท่านอยู่ที่{station(current)} ผู้โดยสารที่จะลงจากขบวนรถ "
-            f"โปรดตรวจสอบสิ่งของและสัมภาระของท่าน และนำลงให้ครบถ้วน {train_details} {next_details} ขอบคุณครับ"
+            f"ผู้โดยสารโปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ก่อนผู้โดยสารจะลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงให้ถูกต้องครบถ้วน "
+            f"ขบวนรถที่จอดในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
+            f"และขบวนรถที่จอดในชานชาลาที่ {platform_2} เป็นขบวนรถ ขบวนที่ {t_num_2} รับส่งผู้โดยสารต้นทาง {station(origin_2)} ปลายทาง {station(dest_2)} "
         )
+        if t_num_3:
+            text += f"และขบวนรถที่จอดในชานชาลาที่ {platform_3} เป็นขบวนรถ ขบวนที่ {t_num_3} รับส่งผู้โดยสารต้นทาง {station(origin_3)} ปลายทาง {station(dest_3)} "
+        text += (
+            f"ขบวนรถในชานชาลาที่ {platform} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ "
+            f"และขบวนรถในชานชาลาที่ {platform_2} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st_2} เป็นสถานีต่อไปตามลำดับ "
+        )
+        if t_num_3:
+            text += f"และขบวนรถในชานชาลาที่ {platform_3} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st_3} เป็นสถานีต่อไปตามลำดับ "
+        text += "ขอบคุณครับ"
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
@@ -1224,7 +1310,7 @@ def index():
         trains_json=json.dumps(TRAIN_DATA, ensure_ascii=False),
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
-        en_voice_name=EN_VOICE_NAME,
+        en_voice_name=english_voice_for(VOICE_NAME),
     )
 
 
@@ -1246,31 +1332,66 @@ def test_station_voice():
     if thai_voice not in THAI_VOICE_OPTIONS:
         thai_voice = VOICE_NAME
 
-    # ประโยคทดสอบใช้ชื่อเต็มต่อเนื่อง เพื่อให้ผู้ใช้เปรียบเทียบเสียงได้ตรง ๆ
-    display_text = "ท่านผู้โดยสารโปรดทราบ ขณะนี้ท่านอยู่ที่สถานีคลองบางพระ"
-    tts_text = prepare_tts_text(display_text)
-    filename = f"announce_test_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
-    output_path = AUDIO_DIR / filename
+    mode = (data.get("announce_mode") or "thai_only").strip()
+    if mode not in {"thai_only", "english_only", "bilingual"}:
+        mode = "thai_only"
 
+    english_voice = english_voice_for(thai_voice)
+    segments = []
+    thai_text = ""
+    english_text = ""
+
+    if mode in {"thai_only", "bilingual"}:
+        thai_text = "ผู้โดยสารโปรดทราบ ที่นี่สถานีคลองบางพระ ที่นี่สถานีคลองบางพระ ขอบคุณครับ"
+        thai_text = apply_voice_politeness(thai_text, thai_voice)
+        segments.append({
+            "code": "th_test",
+            "label": "ภาษาไทย",
+            "text": prepare_tts_text(thai_text),
+            "voice": thai_voice,
+            "rate": TTS_RATE,
+            "volume": TTS_VOLUME,
+            "pitch": TTS_PITCH,
+        })
+
+    if mode in {"english_only", "bilingual"}:
+        english_text = "Attention please. This is Khlong Bang Phra Station. Thank you."
+        segments.append({
+            "code": "en_test",
+            "label": "ภาษาอังกฤษ",
+            "text": clean_space(english_text),
+            "voice": english_voice,
+            "rate": TTS_EN_RATE,
+            "volume": TTS_EN_VOLUME,
+            "pitch": TTS_EN_PITCH,
+        })
+
+    audio_urls = []
+    audio_labels = []
     try:
-        subprocess.run(
-            [
-                "edge-tts",
-                f"--voice={thai_voice}",
-                f"--rate={TTS_RATE}",
-                f"--volume={TTS_VOLUME}",
-                f"--pitch={TTS_PITCH}",
-                "--text", tts_text,
-                "--write-media", str(output_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            raise RuntimeError("ระบบสร้างไฟล์เสียงทดสอบไม่สำเร็จ หรือไฟล์เสียงว่าง")
+        for segment in segments:
+            filename = f"announce_{segment['code']}_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp3"
+            output_path = AUDIO_DIR / filename
+            subprocess.run(
+                [
+                    "edge-tts",
+                    f"--voice={segment['voice']}",
+                    f"--rate={segment['rate']}",
+                    f"--volume={segment['volume']}",
+                    f"--pitch={segment['pitch']}",
+                    "--text", segment["text"],
+                    "--write-media", str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                raise RuntimeError(f"ระบบสร้างไฟล์เสียงทดสอบ {segment['label']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
+            audio_urls.append(f"/audio/{filename}?v={int(time.time())}")
+            audio_labels.append(segment["label"])
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts"}), 500
     except subprocess.CalledProcessError as exc:
@@ -1279,13 +1400,22 @@ def test_station_voice():
     except Exception as exc:
         return jsonify({"status": "error", "message": str(exc)}), 500
 
+    if mode == "bilingual":
+        preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
+    elif mode == "english_only":
+        preview = f"🇬🇧 {english_text}"
+    else:
+        preview = f"🇹🇭 {thai_text}"
+
     return jsonify({
         "status": "success",
-        "audio_url": f"/audio/{filename}?v={int(time.time())}",
-        "text_preview": display_text,
-        "voice": thai_voice,
+        "audio_url": audio_urls[0] if audio_urls else "",
+        "audio_urls": audio_urls,
+        "audio_labels": audio_labels,
+        "text_preview": preview,
+        "thai_voice": thai_voice,
+        "english_voice": english_voice,
     })
-
 
 @app.route("/announce", methods=["POST"])
 def announce():
@@ -1307,6 +1437,7 @@ def announce():
     if mode in {"thai_only", "bilingual"}:
         try:
             thai_text = build_announcement(data)
+            thai_text = apply_voice_politeness(thai_text, thai_voice)
         except Exception as exc:
             return jsonify({"status": "error", "message": f"สร้างข้อความไทยไม่สำเร็จ: {exc}"}), 400
 
@@ -1337,7 +1468,7 @@ def announce():
             "code": "en",
             "display_label": "ภาษาอังกฤษ",
             "text": english_text,
-            "voice": EN_VOICE_NAME,
+            "voice": english_voice_for(thai_voice),
             "rate": TTS_EN_RATE,
             "volume": TTS_EN_VOLUME,
             "pitch": TTS_EN_PITCH,
