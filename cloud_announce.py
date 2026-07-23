@@ -12,9 +12,13 @@ AUDIO_DIR = BASE_DIR / "audio_generated"
 AUDIO_DIR.mkdir(exist_ok=True)
 
 VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-NiwatNeural")
-TTS_RATE = os.environ.get("TTS_RATE", "-10%")
+TTS_RATE = os.environ.get("TTS_RATE", "-18%")
+TTS_VOLUME = os.environ.get("TTS_VOLUME", "+15%")
+TTS_PITCH = os.environ.get("TTS_PITCH", "-2Hz")
 EN_VOICE_NAME = os.environ.get("TTS_EN_VOICE", "en-US-GuyNeural")
 TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-5%")
+TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+0%")
+TTS_EN_PITCH = os.environ.get("TTS_EN_PITCH", "+0Hz")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
 
@@ -888,7 +892,9 @@ def clean_space(text):
 # คำอ่านสำหรับส่งให้ระบบ TTS เท่านั้น
 # ข้อความที่แสดงบนหน้าเว็บยังคงเป็นคำทางการเหมือนเดิม
 PRONUNCIATION_FIXES = {
-    "คลองบางพระ": "คลอง บางพระ",
+    # แยกพยางค์และเว้นจังหวะ เพื่อให้ชื่อสถานีเด่นและฟังชัดขึ้น
+    "สถานีคลองบางพระ": "สถานี... คลอง... บาง พระ",
+    "คลองบางพระ": "คลอง... บาง พระ",
     "คลองแขวงกลั่น": "คลอง แขวง กลั่น",
     "คลองเปรง": "คลอง เปรง",
     "ชุมทางฉะเชิงเทรา": "ชุมทาง ฉะเชิงเทรา",
@@ -1177,6 +1183,8 @@ def announce():
             "text": thai_text,
             "voice": VOICE_NAME,
             "rate": TTS_RATE,
+            "volume": TTS_VOLUME,
+            "pitch": TTS_PITCH,
             "prepare": prepare_tts_text,
         })
 
@@ -1195,6 +1203,8 @@ def announce():
             "text": english_text,
             "voice": EN_VOICE_NAME,
             "rate": TTS_EN_RATE,
+            "volume": TTS_EN_VOLUME,
+            "pitch": TTS_EN_PITCH,
             "prepare": clean_space,
         })
 
@@ -1215,6 +1225,8 @@ def announce():
                     "edge-tts",
                     "--voice", segment["voice"],
                     "--rate", segment["rate"],
+                    "--volume", segment["volume"],
+                    "--pitch", segment["pitch"],
                     "--text", tts_text,
                     "--write-media", str(output_path),
                 ],
