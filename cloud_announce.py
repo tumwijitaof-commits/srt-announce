@@ -22,7 +22,7 @@ except ImportError:
 import csv
 import io
 import shutil
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, date, time as dt_time, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -31,10 +31,18 @@ from concurrent.futures import ThreadPoolExecutor
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 
-# รหัสลับของ session เก็บถาวรข้างไฟล์โปรแกรม เพื่อให้ login ไม่หลุดเมื่อรีสตาร์ต
+# รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
+# บน Render ควรกำหนด SECRET_KEY ใน Environment เสมอ
 _SECRET_FILE = BASE_DIR / ".station_session_secret"
+_ENV_DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 if os.environ.get("SECRET_KEY"):
     app.secret_key = os.environ["SECRET_KEY"]
+elif os.environ.get("RENDER") and _ENV_DATABASE_URL:
+    # Fallback ที่คงที่สำหรับ Render กรณียังไม่ได้ตั้ง SECRET_KEY
+    # ใช้ค่า DATABASE_URL ซึ่งเป็นความลับใน Environment มาสร้างลายเซ็นแบบคงที่
+    app.secret_key = hashlib.sha256(
+        (_ENV_DATABASE_URL + "|bangphra-station-session-v3").encode("utf-8")
+    ).hexdigest()
 elif _SECRET_FILE.exists():
     app.secret_key = _SECRET_FILE.read_text(encoding="utf-8").strip()
 else:
@@ -43,11 +51,19 @@ else:
         _SECRET_FILE.write_text(app.secret_key, encoding="utf-8")
     except OSError:
         pass
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+
+SESSION_HOURS = max(1, int(os.environ.get("SESSION_HOURS", "24")))
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=str(os.environ.get("RENDER", "")).lower() == "true",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS),
+    SESSION_REFRESH_EACH_REQUEST=True,
+)
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 DB_PATH = BASE_DIR / "station_system.db"
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DATABASE_URL = _ENV_DATABASE_URL
 USE_POSTGRES = bool(DATABASE_URL)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
@@ -221,6 +237,7 @@ def get_postgres_pool():
                 max_idle=300,
                 max_lifetime=1800,
                 reconnect_timeout=30,
+                check=ConnectionPool.check_connection,
                 open=False,
                 name="bangphra-db-pool",
             )
@@ -534,6 +551,8 @@ def init_database():
 
 
 def _store_session_user(user):
+    # Sliding session: ทุก request ที่ใช้งานจะต่ออายุ cookie ให้ล็อกอินต่อเนื่อง
+    session.permanent = True
     profile = {
         "id": int(user["id"]),
         "username": user["username"],
@@ -2809,6 +2828,69 @@ function esc(v){const d=document.createElement('div');d.textContent=v??'';return
 """
 
 
+# ส่ง heartbeat ขณะหน้าเว็บเปิดอยู่ เพื่อไม่ให้ Render Free พักระบบกลางกะทำงาน
+# Endpoint นี้ไม่ยิงฐานข้อมูล จึงเบาและไม่เพิ่มภาระ Supabase
+@app.route("/api/session/ping", methods=["GET"])
+def session_ping():
+    if not session.get("user_id"):
+        return jsonify(status="expired", message="เซสชันหมดอายุ"), 401
+    session.permanent = True
+    session.modified = True
+    return jsonify(status="ok", server_time=now_iso(), session_hours=SESSION_HOURS)
+
+
+SESSION_KEEPALIVE_SCRIPT = r"""
+<script>
+(() => {
+    const pingEveryMs = 5 * 60 * 1000;
+    let pinging = false;
+
+    async function keepSessionAlive() {
+        if (pinging || document.visibilityState === "hidden" || !navigator.onLine) return;
+        pinging = true;
+        try {
+            const response = await fetch("/api/session/ping", {
+                method: "GET",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: { "X-Requested-With": "fetch" }
+            });
+            if (response.status === 401) {
+                const next = encodeURIComponent(location.pathname + location.search);
+                location.replace("/login?next=" + next);
+            }
+        } catch (error) {
+            // อินเทอร์เน็ตสะดุดชั่วคราวไม่ควรเด้งออกจากระบบ
+            console.warn("Session heartbeat failed:", error);
+        } finally {
+            pinging = false;
+        }
+    }
+
+    setTimeout(keepSessionAlive, 30 * 1000);
+    setInterval(keepSessionAlive, pingEveryMs);
+    window.addEventListener("online", keepSessionAlive);
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") keepSessionAlive();
+    });
+})();
+</script>
+"""
+
+
+def _attach_session_keepalive(html):
+    return html.replace("</body>", SESSION_KEEPALIVE_SCRIPT + "</body>")
+
+
+# เพิ่ม heartbeat เฉพาะหน้าที่ต้องล็อกอิน ไม่เพิ่มในหน้า Login
+HTML_PAGE = _attach_session_keepalive(HTML_PAGE)
+ADMIN_SCHEDULE_HTML = _attach_session_keepalive(ADMIN_SCHEDULE_HTML)
+USERS_HTML = _attach_session_keepalive(USERS_HTML)
+HISTORY_HTML = _attach_session_keepalive(HISTORY_HTML)
+HISTORY_DETAIL_HTML = _attach_session_keepalive(HISTORY_DETAIL_HTML)
+HEALTH_HTML = _attach_session_keepalive(HEALTH_HTML)
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if get_current_user():
@@ -2823,6 +2905,7 @@ def login():
             user = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
             if user and user["active"] and check_password_hash(user["password_hash"], password):
                 session.clear()
+                session.permanent = True
                 _store_session_user(user)
                 conn.execute("UPDATE users SET last_login=? WHERE id=?", (now_iso(), user["id"]))
                 destination = next_url
