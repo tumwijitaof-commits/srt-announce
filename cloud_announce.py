@@ -1,4 +1,5 @@
-from flask import Flask, request, render_template_string, send_from_directory, jsonify
+from flask import (Flask, request, render_template_string, send_from_directory, jsonify,
+                   session, redirect, url_for, flash, send_file, abort)
 from pathlib import Path
 import os
 import subprocess
@@ -8,10 +9,35 @@ import uuid
 import re
 import hashlib
 import threading
+import sqlite3
+import csv
+import io
+import shutil
+from datetime import datetime, date, time as dt_time
+from functools import wraps
+from zoneinfo import ZoneInfo
+from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
+
+# รหัสลับของ session เก็บถาวรข้างไฟล์โปรแกรม เพื่อให้ login ไม่หลุดเมื่อรีสตาร์ต
+_SECRET_FILE = BASE_DIR / ".station_session_secret"
+if os.environ.get("SECRET_KEY"):
+    app.secret_key = os.environ["SECRET_KEY"]
+elif _SECRET_FILE.exists():
+    app.secret_key = _SECRET_FILE.read_text(encoding="utf-8").strip()
+else:
+    app.secret_key = uuid.uuid4().hex + uuid.uuid4().hex
+    try:
+        _SECRET_FILE.write_text(app.secret_key, encoding="utf-8")
+    except OSError:
+        pass
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+
+BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+DB_PATH = BASE_DIR / "station_system.db"
 AUDIO_DIR = BASE_DIR / "audio_generated"
 AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -92,6 +118,559 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
 ]
 
+# ------------------------------------------------------------
+# ระบบฐานข้อมูล / ผู้ใช้ / ตารางรถ / ประวัติ / ตรวจสุขภาพ
+# เพิ่มแยกจากระบบ TTS เดิม เพื่อไม่เปลี่ยนจังหวะ เสียง หรือความเร็ว
+# ------------------------------------------------------------
+ROLE_LABELS = {
+    "announcer": "เจ้าหน้าที่ประกาศ",
+    "admin": "ผู้ดูแลระบบ",
+    "auditor": "ผู้ตรวจสอบประวัติ",
+}
+SERVICE_LABELS = {
+    "daily": "ทุกวัน",
+    "weekday": "วันธรรมดา (จันทร์–ศุกร์)",
+    "weekend": "วันเสาร์–อาทิตย์",
+    "holiday": "วันหยุดตามวันที่ระบุ",
+    "custom": "เฉพาะวันที่ระบุ",
+}
+DIRECTION_LABELS = {"inbound": "ขาเข้า กรุงเทพ", "outbound": "ขาออก ไปทางตะวันออก"}
+
+
+def now_bangkok():
+    return datetime.now(BANGKOK_TZ)
+
+
+def now_iso():
+    return now_bangkok().isoformat(timespec="seconds")
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+def _label_time(label):
+    match = re.search(r"\((\d{1,2}:\d{2})\)", label or "")
+    return match.group(1) if match else "00:00"
+
+
+def spoken_time_from_hhmm(value):
+    value = (value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    if not match:
+        return value
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if minute == 0:
+        return f"{hour} นาฬิกา"
+    return f"{hour} นาฬิกา {minute} นาที"
+
+
+def normalize_date_list(value):
+    raw = value or ""
+    parts = re.split(r"[,;\n\s]+", raw.strip()) if raw.strip() else []
+    normalized = []
+    for item in parts:
+        if not item:
+            continue
+        try:
+            normalized.append(date.fromisoformat(item).isoformat())
+        except ValueError:
+            raise ValueError(f"วันที่ {item} ไม่ถูกต้อง ต้องเป็นรูปแบบ YYYY-MM-DD")
+    return ",".join(sorted(set(normalized)))
+
+
+def init_database():
+    with get_db() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('announcer','admin','auditor')),
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_login TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS schedule_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                effective_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('draft','published')),
+                created_at TEXT NOT NULL,
+                created_by INTEGER,
+                FOREIGN KEY(created_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS trains (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+                num TEXT NOT NULL,
+                label TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                dest TEXT NOT NULL,
+                time_hhmm TEXT NOT NULL,
+                time_spoken TEXT NOT NULL,
+                next_station TEXT NOT NULL DEFAULT '',
+                service_pattern TEXT NOT NULL DEFAULT 'daily' CHECK(service_pattern IN ('daily','weekday','weekend','holiday','custom')),
+                service_dates TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(version_id) REFERENCES schedule_versions(id) ON DELETE CASCADE,
+                UNIQUE(version_id, direction, num, time_hhmm)
+            );
+
+            CREATE TABLE IF NOT EXISTS announcement_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                user_id INTEGER,
+                username TEXT NOT NULL,
+                train_num TEXT,
+                announcement_type TEXT NOT NULL,
+                announce_mode TEXT NOT NULL,
+                voice TEXT NOT NULL,
+                platform TEXT,
+                message TEXT,
+                generation_ms INTEGER,
+                playback_success INTEGER,
+                pause_times TEXT NOT NULL DEFAULT '[]',
+                stop_time TEXT,
+                completed_at TEXT,
+                failure_reason TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS announcement_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                history_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                event_at TEXT NOT NULL,
+                details TEXT,
+                FOREIGN KEY(history_id) REFERENCES announcement_history(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trains_version ON trains(version_id, direction, time_hhmm);
+            CREATE INDEX IF NOT EXISTS idx_history_started ON announcement_history(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_events_history ON announcement_events(history_id, event_at);
+            """
+        )
+
+        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            initial_password = os.environ.get("INITIAL_ADMIN_PASSWORD", "admin1234")
+            conn.execute(
+                "INSERT INTO users(username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,1,?)",
+                ("admin", generate_password_hash(initial_password), "ผู้ดูแลระบบ", "admin", now_iso()),
+            )
+
+        if conn.execute("SELECT COUNT(*) FROM schedule_versions").fetchone()[0] == 0:
+            admin_id = conn.execute("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1").fetchone()[0]
+            cursor = conn.execute(
+                "INSERT INTO schedule_versions(name,effective_date,status,created_at,created_by) VALUES(?,?,?,?,?)",
+                ("ตารางเริ่มต้นจากโค้ดเดิม", "2026-01-01", "published", now_iso(), admin_id),
+            )
+            version_id = cursor.lastrowid
+            rows = []
+            for direction, trains in (("inbound", INBOUND_TRAINS), ("outbound", OUTBOUND_TRAINS)):
+                for train in trains:
+                    hhmm = _label_time(train["label"])
+                    rows.append((
+                        version_id, direction, train["num"], train["label"], train["origin"], train["dest"],
+                        hhmm, train["time"], train.get("next", ""), "daily", "", 1, now_iso(), now_iso(),
+                    ))
+            conn.executemany(
+                """INSERT INTO trains(version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,
+                   service_pattern,service_dates,enabled,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+
+
+def get_current_user():
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id,username,display_name,role,active FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    if not row or not row["active"]:
+        session.clear()
+        return None
+    return dict(row)
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not get_current_user():
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def roles_required(*roles):
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            user = get_current_user()
+            if not user:
+                return redirect(url_for("login", next=request.path))
+            if user["role"] not in roles:
+                abort(403)
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def version_for_date(target_date=None):
+    target_date = target_date or now_bangkok().date()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT * FROM schedule_versions
+               WHERE status='published' AND effective_date<=?
+               ORDER BY effective_date DESC, id DESC LIMIT 1""",
+            (target_date.isoformat(),),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT * FROM schedule_versions WHERE status='published' ORDER BY effective_date ASC,id ASC LIMIT 1"
+            ).fetchone()
+    return dict(row) if row else None
+
+
+def train_operates_on(row, target_date):
+    pattern = row["service_pattern"]
+    weekday = target_date.weekday()
+    if pattern == "daily":
+        return True
+    if pattern == "weekday":
+        return weekday < 5
+    if pattern == "weekend":
+        return weekday >= 5
+    dates = {item for item in (row["service_dates"] or "").split(",") if item}
+    return target_date.isoformat() in dates
+
+
+def get_active_train_lists(target_date=None):
+    target_date = target_date or now_bangkok().date()
+    version = version_for_date(target_date)
+    if not version:
+        return [], [], {}, None
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trains WHERE version_id=? AND enabled=1 ORDER BY direction,time_hhmm,num",
+            (version["id"],),
+        ).fetchall()
+    inbound, outbound = [], []
+    for row in rows:
+        if not train_operates_on(row, target_date):
+            continue
+        item = {
+            "label": row["label"], "num": row["num"], "origin": row["origin"], "dest": row["dest"],
+            "time": row["time_spoken"], "next": row["next_station"],
+        }
+        (inbound if row["direction"] == "inbound" else outbound).append(item)
+    data = {train["label"]: train for train in inbound + outbound}
+    return inbound, outbound, data, version
+
+
+def build_train_label(num, hhmm, origin, dest):
+    return f"{num} ({hhmm}) {origin} - {dest}"
+
+
+def save_train_record(form):
+    train_id = (form.get("train_id") or "").strip()
+    version_id = int(form.get("version_id") or 0)
+    direction = (form.get("direction") or "").strip()
+    num = (form.get("num") or "").strip()
+    origin = (form.get("origin") or "").strip()
+    dest = (form.get("dest") or "").strip()
+    hhmm = (form.get("time_hhmm") or "").strip()
+    next_station = (form.get("next_station") or "").strip()
+    pattern = (form.get("service_pattern") or "daily").strip()
+    enabled = 1 if form.get("enabled") in {"1", "on", "true"} else 0
+    service_dates = normalize_date_list(form.get("service_dates") or "")
+
+    if not version_id or direction not in DIRECTION_LABELS or pattern not in SERVICE_LABELS:
+        raise ValueError("ข้อมูลประเภทตารางไม่ถูกต้อง")
+    if not all([num, origin, dest, hhmm]):
+        raise ValueError("กรุณากรอกเลขขบวน ต้นทาง ปลายทาง และเวลาให้ครบ")
+    if not re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", hhmm):
+        raise ValueError("เวลาต้องเป็นรูปแบบ HH:MM เช่น 05:30")
+    hhmm = f"{int(hhmm.split(':')[0]):02d}:{hhmm.split(':')[1]}"
+    if pattern in {"holiday", "custom"} and not service_dates:
+        raise ValueError("รูปแบบนี้ต้องระบุวันที่ให้บริการอย่างน้อย 1 วัน")
+
+    label = build_train_label(num, hhmm, origin, dest)
+    spoken = spoken_time_from_hhmm(hhmm)
+    with get_db() as conn:
+        duplicate = conn.execute(
+            """SELECT id FROM trains WHERE version_id=? AND direction=? AND num=? AND time_hhmm=?
+               AND id<>?""",
+            (version_id, direction, num, hhmm, int(train_id or 0)),
+        ).fetchone()
+        if duplicate:
+            raise ValueError(f"พบข้อมูลซ้ำ: ขบวน {num} เวลา {hhmm} มีอยู่ในตารางนี้แล้ว")
+        if train_id:
+            conn.execute(
+                """UPDATE trains SET direction=?,num=?,label=?,origin=?,dest=?,time_hhmm=?,time_spoken=?,
+                   next_station=?,service_pattern=?,service_dates=?,enabled=?,updated_at=? WHERE id=? AND version_id=?""",
+                (direction, num, label, origin, dest, hhmm, spoken, next_station, pattern,
+                 service_dates, enabled, now_iso(), int(train_id), version_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO trains(version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,
+                   service_pattern,service_dates,enabled,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (version_id, direction, num, label, origin, dest, hhmm, spoken, next_station,
+                 pattern, service_dates, enabled, now_iso(), now_iso()),
+            )
+
+
+def parse_bool(value, default=True):
+    if value is None or value == "":
+        return 1 if default else 0
+    return 0 if str(value).strip().lower() in {"0", "false", "no", "off", "ปิด"} else 1
+
+
+def canonical_import_row(row):
+    aliases = {
+        "direction": ["direction", "ทิศทาง", "ประเภทขา"],
+        "num": ["num", "train_no", "เลขขบวน", "ขบวน"],
+        "origin": ["origin", "ต้นทาง"],
+        "dest": ["dest", "destination", "ปลายทาง"],
+        "time_hhmm": ["time", "time_hhmm", "เวลา"],
+        "next_station": ["next", "next_station", "สถานีต่อไป"],
+        "service_pattern": ["service_pattern", "วันให้บริการ", "รูปแบบวัน"],
+        "service_dates": ["service_dates", "วันที่ให้บริการ", "วันที่ระบุ"],
+        "enabled": ["enabled", "active", "เปิดใช้งาน"],
+    }
+    clean = {str(k).strip(): v for k, v in row.items() if k is not None}
+    result = {}
+    for key, names in aliases.items():
+        result[key] = next((clean.get(name) for name in names if name in clean), "")
+    direction_map = {
+        "inbound": "inbound", "ขาเข้า": "inbound", "ขาเข้ากรุงเทพ": "inbound", "เข้า": "inbound",
+        "outbound": "outbound", "ขาออก": "outbound", "ขาออกตะวันออก": "outbound", "ออก": "outbound",
+    }
+    pattern_map = {
+        "daily": "daily", "ทุกวัน": "daily",
+        "weekday": "weekday", "วันธรรมดา": "weekday", "จันทร์-ศุกร์": "weekday",
+        "weekend": "weekend", "เสาร์-อาทิตย์": "weekend", "วันเสาร์-อาทิตย์": "weekend",
+        "holiday": "holiday", "วันหยุด": "holiday",
+        "custom": "custom", "วันที่ระบุ": "custom", "เฉพาะวันที่": "custom",
+    }
+    result["direction"] = direction_map.get(str(result["direction"]).strip().lower(), str(result["direction"]).strip().lower())
+    result["service_pattern"] = pattern_map.get(str(result["service_pattern"]).strip().lower(), str(result["service_pattern"]).strip().lower() or "daily")
+    value = result["time_hhmm"]
+    if isinstance(value, datetime):
+        value = value.strftime("%H:%M")
+    elif isinstance(value, dt_time):
+        value = value.strftime("%H:%M")
+    elif isinstance(value, (int, float)) and 0 <= value < 1:
+        total_minutes = round(value * 24 * 60)
+        value = f"{(total_minutes // 60) % 24:02d}:{total_minutes % 60:02d}"
+    else:
+        value = str(value or "").strip()
+        match = re.search(r"(\d{1,2}):(\d{2})", value)
+        if match:
+            value = f"{int(match.group(1)):02d}:{match.group(2)}"
+    result["time_hhmm"] = value
+    result["enabled"] = parse_bool(result["enabled"])
+    return result
+
+
+def import_schedule_file(file_storage, version_id):
+    filename = (file_storage.filename or "").lower()
+    rows = []
+    if filename.endswith(".csv"):
+        raw = file_storage.read()
+        text = None
+        for encoding in ("utf-8-sig", "utf-8", "cp874"):
+            try:
+                text = raw.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            raise ValueError("อ่านไฟล์ CSV ไม่ได้ กรุณาบันทึกเป็น UTF-8")
+        rows = list(csv.DictReader(io.StringIO(text)))
+    elif filename.endswith(".xlsx"):
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise ValueError("ยังไม่มี openpyxl ให้ติดตั้งด้วย pip install openpyxl") from exc
+        workbook = load_workbook(file_storage, read_only=True, data_only=True)
+        sheet = workbook.active
+        iterator = sheet.iter_rows(values_only=True)
+        headers = [str(v or "").strip() for v in next(iterator, [])]
+        rows = [dict(zip(headers, values)) for values in iterator if any(v not in (None, "") for v in values)]
+    else:
+        raise ValueError("รองรับเฉพาะไฟล์ .csv และ .xlsx")
+
+    inserted = 0
+    skipped = []
+    with get_db() as conn:
+        for line_no, raw_row in enumerate(rows, start=2):
+            try:
+                row = canonical_import_row(raw_row)
+                data = {
+                    "version_id": str(version_id), "direction": row["direction"], "num": str(row["num"] or "").strip(),
+                    "origin": str(row["origin"] or "").strip(), "dest": str(row["dest"] or "").strip(),
+                    "time_hhmm": row["time_hhmm"], "next_station": str(row["next_station"] or "").strip(),
+                    "service_pattern": row["service_pattern"], "service_dates": str(row["service_dates"] or "").strip(),
+                    "enabled": "1" if row["enabled"] else "0",
+                }
+                # ตรวจข้อมูลซ้ำก่อนเพิ่มทุกแถว
+                hhmm = data["time_hhmm"]
+                duplicate = conn.execute(
+                    "SELECT id FROM trains WHERE version_id=? AND direction=? AND num=? AND time_hhmm=?",
+                    (version_id, data["direction"], data["num"], hhmm),
+                ).fetchone()
+                if duplicate:
+                    skipped.append(f"แถว {line_no}: ขบวน {data['num']} เวลา {hhmm} ซ้ำ")
+                    continue
+                service_dates = normalize_date_list(data["service_dates"])
+                if data["direction"] not in DIRECTION_LABELS or data["service_pattern"] not in SERVICE_LABELS:
+                    raise ValueError("ทิศทางหรือรูปแบบวันไม่ถูกต้อง")
+                if not all([data["num"], data["origin"], data["dest"], hhmm]):
+                    raise ValueError("ข้อมูลไม่ครบ")
+                if not re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", hhmm):
+                    raise ValueError("เวลาไม่ใช่ HH:MM")
+                hhmm = f"{int(hhmm.split(':')[0]):02d}:{hhmm.split(':')[1]}"
+                label = build_train_label(data["num"], hhmm, data["origin"], data["dest"])
+                conn.execute(
+                    """INSERT INTO trains(version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,
+                       service_pattern,service_dates,enabled,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (version_id, data["direction"], data["num"], label, data["origin"], data["dest"], hhmm,
+                     spoken_time_from_hhmm(hhmm), data["next_station"], data["service_pattern"], service_dates,
+                     1 if data["enabled"] == "1" else 0, now_iso(), now_iso()),
+                )
+                inserted += 1
+            except Exception as exc:
+                skipped.append(f"แถว {line_no}: {exc}")
+    return inserted, skipped
+
+
+def announcement_title(tab_index):
+    try:
+        tab_index = int(tab_index)
+    except (TypeError, ValueError):
+        return "ไม่ทราบประเภท"
+    item = next((item for item in ANNOUNCEMENT_BUTTONS if item["idx"] == tab_index), None)
+    return item["title"] if item else "ไม่ทราบประเภท"
+
+
+def insert_history(payload, user):
+    with get_db() as conn:
+        cursor = conn.execute(
+            """INSERT INTO announcement_history(started_at,user_id,username,train_num,announcement_type,
+               announce_mode,voice,platform,message,pause_times)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (now_iso(), user["id"], user["display_name"], payload.get("num", ""),
+             announcement_title(payload.get("tab_index")), payload.get("announce_mode", "thai_only"),
+             payload.get("thai_voice", VOICE_NAME), payload.get("platform", ""), "", "[]"),
+        )
+        history_id = cursor.lastrowid
+        conn.execute(
+            "INSERT INTO announcement_events(history_id,event_type,event_at,details) VALUES(?,?,?,?)",
+            (history_id, "start", now_iso(), json.dumps(payload, ensure_ascii=False)),
+        )
+    return history_id
+
+
+def add_history_event(history_id, event_type, details=None):
+    event_at = now_iso()
+    details = details or {}
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM announcement_history WHERE id=?", (history_id,)).fetchone()
+        if not row:
+            raise ValueError("ไม่พบประวัติรายการนี้")
+        conn.execute(
+            "INSERT INTO announcement_events(history_id,event_type,event_at,details) VALUES(?,?,?,?)",
+            (history_id, event_type, event_at, json.dumps(details, ensure_ascii=False)),
+        )
+        if event_type == "generated":
+            conn.execute(
+                "UPDATE announcement_history SET message=?,generation_ms=? WHERE id=?",
+                (details.get("message", ""), details.get("generation_ms"), history_id),
+            )
+        elif event_type == "pause":
+            pauses = json.loads(row["pause_times"] or "[]")
+            pauses.append(event_at)
+            conn.execute("UPDATE announcement_history SET pause_times=? WHERE id=?", (json.dumps(pauses), history_id))
+        elif event_type == "stop":
+            conn.execute(
+                "UPDATE announcement_history SET stop_time=?,playback_success=0,completed_at=? WHERE id=?",
+                (event_at, event_at, history_id),
+            )
+        elif event_type == "success":
+            conn.execute(
+                "UPDATE announcement_history SET playback_success=1,completed_at=?,failure_reason=NULL WHERE id=?",
+                (event_at, history_id),
+            )
+        elif event_type == "failed":
+            conn.execute(
+                "UPDATE announcement_history SET playback_success=0,completed_at=?,failure_reason=? WHERE id=?",
+                (event_at, str(details.get("reason", ""))[:1000], history_id),
+            )
+    return event_at
+
+
+_HEALTH_CACHE = {"at": 0.0, "tts": None}
+
+
+def backend_health_checks():
+    chime = BASE_DIR / CHIME_FILENAME
+    disk = shutil.disk_usage(BASE_DIR)
+    used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0
+    audio_writable = os.access(AUDIO_DIR, os.W_OK)
+    tts_available = shutil.which("edge-tts") is not None
+    tts_connected = False
+    tts_detail = "ไม่พบโปรแกรม edge-tts"
+    now_ts = time.time()
+    if tts_available:
+        if now_ts - _HEALTH_CACHE["at"] > 60 or _HEALTH_CACHE["tts"] is None:
+            try:
+                result = subprocess.run(
+                    ["edge-tts", "--list-voices"], capture_output=True, text=True,
+                    timeout=8, encoding="utf-8", errors="replace",
+                )
+                _HEALTH_CACHE["tts"] = (result.returncode == 0, (result.stderr or "").strip())
+            except Exception as exc:
+                _HEALTH_CACHE["tts"] = (False, str(exc))
+            _HEALTH_CACHE["at"] = now_ts
+        tts_connected, error = _HEALTH_CACHE["tts"]
+        tts_detail = "เชื่อมต่อและเรียกรายการเสียงได้" if tts_connected else (error or "เชื่อมต่อ TTS ไม่สำเร็จ")
+
+    checks = [
+        {"key": "backend", "label": "Backend", "ok": True, "detail": "Flask ตอบสนองตามปกติ"},
+        {"key": "chime", "label": "ไฟล์เสียงเตือน", "ok": chime.exists() and chime.stat().st_size > 0,
+         "detail": "พบ chime.mp3" if chime.exists() else "ไม่พบ chime.mp3 ในโฟลเดอร์โปรแกรม"},
+        {"key": "tts", "label": "การเชื่อมต่อ TTS", "ok": tts_available and tts_connected, "detail": tts_detail},
+        {"key": "storage", "label": "พื้นที่จัดเก็บ", "ok": used_percent < 85,
+         "detail": f"ใช้งาน {used_percent}% · เหลือ {round(disk.free / (1024**3), 2)} GB"},
+        {"key": "audio_dir", "label": "โฟลเดอร์ไฟล์เสียง", "ok": AUDIO_DIR.exists() and audio_writable,
+         "detail": f"พร้อมเขียนไฟล์ · มีไฟล์เสียง {len(list(AUDIO_DIR.glob('*.mp3')))} ไฟล์"},
+        {"key": "database", "label": "ฐานข้อมูล", "ok": DB_PATH.exists() and os.access(DB_PATH, os.W_OK),
+         "detail": f"{DB_PATH.name} พร้อมใช้งาน"},
+    ]
+    return checks
+
+
+init_database()
+
 HTML_PAGE = r"""
 <!DOCTYPE html>
 <html lang="th">
@@ -126,6 +705,18 @@ HTML_PAGE = r"""
         button, input, select, textarea { font: inherit; }
         button { cursor: pointer; }
         .app { max-width: 1120px; margin: 0 auto; }
+        .system-nav {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+            margin-top: 11px; padding: 9px;
+            border: 1px solid var(--line); border-radius: 16px;
+            background: rgba(255,255,255,.92); box-shadow: var(--shadow);
+        }
+        .system-nav a {
+            padding: 9px 12px; border-radius: 11px; color: var(--maroon-dark);
+            text-decoration: none; font-weight: 850; background: #fff7ed;
+        }
+        .system-nav a.active, .system-nav a:hover { color: white; background: var(--maroon); }
+        .nav-user { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 750; }
         .topbar {
             display: flex;
             justify-content: space-between;
@@ -390,6 +981,20 @@ HTML_PAGE = r"""
         <div class="status" id="statusText">พร้อมใช้งาน</div>
         <div class="progress" id="loadingBar"></div>
     </header>
+
+    <nav class="system-nav">
+        <a class="active" href="{{ url_for('index') }}">📢 หน้าประกาศ</a>
+        {% if current_user.role == 'admin' %}
+        <a href="{{ url_for('admin_schedules') }}">🚆 จัดการตารางรถ</a>
+        <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
+        {% endif %}
+        {% if current_user.role in ['admin', 'auditor'] %}
+        <a href="{{ url_for('history_page') }}">🕘 ประวัติการประกาศ</a>
+        {% endif %}
+        <a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพระบบ</a>
+        <span class="nav-user">{{ current_user.display_name }} · {{ role_labels[current_user.role] }}</span>
+        <a href="{{ url_for('logout') }}">ออกจากระบบ</a>
+    </nav>
 
     <section class="voice-quick-panel" id="thaiVoiceSettings">
         <div class="voice-quick-head">
@@ -664,9 +1269,40 @@ HTML_PAGE = r"""
     let playbackState = "idle"; // idle | loading | playing | paused
     let playbackRunId = 0;
     let activePlaybackCancel = null;
+    let activeHistoryId = null;
+    let activeHistoryPromise = null;
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
+
+    function startHistoryRecord(tabIndex) {
+        const payload = collectPayload(tabIndex);
+        return fetch("/api/history/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }).then(async response => {
+            const data = await response.json();
+            if (!response.ok || data.status !== "success") throw new Error(data.message || "บันทึกประวัติไม่สำเร็จ");
+            return data.history_id;
+        }).catch(error => {
+            console.warn("History start failed:", error);
+            return null;
+        });
+    }
+
+    function logHistoryEvent(eventType, details = {}) {
+        const source = activeHistoryId ? Promise.resolve(activeHistoryId) : activeHistoryPromise;
+        if (!source) return Promise.resolve();
+        return source.then(historyId => {
+            if (!historyId) return;
+            return fetch("/api/history/event", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ history_id: historyId, event_type: eventType, details })
+            });
+        }).catch(error => console.warn("History event failed:", error));
+    }
 
     function setLanguage(mode, button) {
         byId("announce_mode").value = mode;
@@ -1027,6 +1663,7 @@ HTML_PAGE = r"""
                 await player.play();
                 setPlaybackState("playing");
                 setStatus("เล่นเสียงต่อแล้ว", "ok");
+                logHistoryEvent("resume");
             } catch (err) {
                 setStatus("เล่นเสียงต่อไม่สำเร็จ", "error");
             }
@@ -1042,16 +1679,22 @@ HTML_PAGE = r"""
             player.pause();
             setPlaybackState("paused");
             setStatus("พักเสียงชั่วคราว", "work");
+            logHistoryEvent("pause");
         } catch (e) {}
     }
 
     function stopAudio() {
+        if (["loading", "playing", "paused"].includes(playbackState)) {
+            logHistoryEvent("stop");
+        }
         playbackRunId += 1;
         cancelActivePlayback(true);
         isBusy = false;
         setLoading(false);
         setPlaybackState("idle");
         setStatus("หยุดเสียงแล้ว");
+        activeHistoryId = null;
+        activeHistoryPromise = null;
     }
 
     function getAudioContext() {
@@ -1190,6 +1833,8 @@ HTML_PAGE = r"""
         if (isBusy) return;
         const runId = beginPlaybackRun();
         isBusy = true;
+        activeHistoryId = null;
+        activeHistoryPromise = startHistoryRecord(tabIndex);
         await unlockMobileAudio();
         if (runId !== playbackRunId) return;
         setLoading(true);
@@ -1201,8 +1846,13 @@ HTML_PAGE = r"""
         try {
             const dataPromise = requestAnnouncementData(tabIndex, false);
             const chimePromise = playOriginalChime(runId);
-            const [data] = await Promise.all([dataPromise, chimePromise]);
+            const [data, , historyId] = await Promise.all([dataPromise, chimePromise, activeHistoryPromise]);
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
+            activeHistoryId = historyId;
+            logHistoryEvent("generated", {
+                message: data.text_preview || "",
+                generation_ms: data.generation_ms || 0
+            });
 
             renderServerPreview(data.text_preview || "-");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
@@ -1223,9 +1873,11 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             setStatus("ประกาศเสร็จแล้ว", "ok");
+            await logHistoryEvent("success");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
                 console.error(err);
+                logHistoryEvent("failed", { reason: err.message || String(err) });
                 setStatus("เกิดข้อผิดพลาด", "error");
                 let message = err.message || String(err);
                 if (message.includes("not allowed") || message.includes("permission") || message.includes("บล็อก")) {
@@ -1238,6 +1890,8 @@ HTML_PAGE = r"""
                 setLoading(false);
                 isBusy = false;
                 setPlaybackState("idle");
+                activeHistoryId = null;
+                activeHistoryPromise = null;
             }
         }
     }
@@ -1785,16 +2439,345 @@ def build_announcement(data):
     return clean_space(text)
 
 
+LOGIN_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>เข้าสู่ระบบ</title><style>
+:root{--m:#800000;--md:#5b0000;--line:#eadfce;--muted:#766969}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:18px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,#f2e6d7);color:#251d1d}.box{width:min(440px,100%);background:#fff;border:1px solid var(--line);border-radius:24px;padding:26px;box-shadow:0 18px 50px rgba(80,20,20,.13)}h1{margin:0;color:var(--md)}p{color:var(--muted);line-height:1.6}label{display:block;margin:14px 0 6px;font-weight:800}input{width:100%;padding:13px;border:1px solid #d8c9b7;border-radius:13px;font:inherit}button{width:100%;margin-top:18px;padding:14px;border:0;border-radius:14px;background:linear-gradient(135deg,var(--md),var(--m));color:#fff;font:inherit;font-weight:900;cursor:pointer}.flash{padding:11px;border-radius:12px;background:#fff0f0;color:#9b1c1c}.note{padding:11px;border-radius:12px;background:#fff8dc;font-size:13px}
+</style></head><body><form class="box" method="post"><h1>🚆 ระบบประกาศสถานี</h1><p>เข้าสู่ระบบเพื่อใช้งานและบันทึกประวัติผู้ประกาศ</p>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}{% if show_default %}<div class="note"><b>บัญชีเริ่มต้น:</b> admin / admin1234<br>ควรเปลี่ยนรหัสผ่านทันทีหลังเข้าสู่ระบบ</div>{% endif %}<input type="hidden" name="next" value="{{ next_url }}"><label>ชื่อผู้ใช้</label><input name="username" autocomplete="username" required autofocus><label>รหัสผ่าน</label><input type="password" name="password" autocomplete="current-password" required><button>เข้าสู่ระบบ</button></form></body></html>
+"""
+
+MANAGEMENT_CSS = r"""
+:root{--m:#800000;--md:#5b0000;--gold:#c7a12a;--bg:#f6eee3;--line:#e8dac6;--muted:#766969;--green:#177744;--red:#b42318}*{box-sizing:border-box}body{margin:0;padding:14px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,var(--bg));color:#251d1d}a{color:var(--m)}.wrap{max-width:1320px;margin:auto}.head{padding:18px 20px;border-radius:20px;color:#fff;background:linear-gradient(135deg,var(--md),var(--m));box-shadow:0 10px 30px rgba(80,20,20,.12)}.head h1{margin:0;font-size:clamp(22px,3vw,31px)}.head p{margin:5px 0 0;opacity:.88}.nav{display:flex;flex-wrap:wrap;gap:8px;margin:11px 0}.nav a{padding:9px 12px;border-radius:11px;background:#fff;color:var(--md);text-decoration:none;font-weight:850;border:1px solid var(--line)}.nav a.active,.nav a:hover{background:var(--m);color:#fff}.grid{display:grid;grid-template-columns:minmax(320px,.68fr) minmax(0,1.5fr);gap:14px}.card{background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(80,20,20,.08);margin-bottom:14px}.card h2{margin:0;padding:14px 17px;color:var(--md);font-size:18px;background:#fffdf9;border-bottom:1px solid var(--line)}.body{padding:16px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}label{display:block;margin:0 0 5px;font-weight:800}input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d8c9b7;border-radius:12px;background:#fff;font:inherit}textarea{min-height:75px;resize:vertical}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 13px;border:0;border-radius:11px;background:var(--m);color:#fff;text-decoration:none;font:inherit;font-weight:850;cursor:pointer}.btn.gray{background:#665b55}.btn.green{background:var(--green)}.btn.red{background:var(--red)}.btn.gold{background:#a86900}.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}.flash{padding:11px 13px;margin:10px 0;border-radius:12px;background:#fff3cd;color:#684f00;border:1px solid #ead28a}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 10px;border-bottom:1px solid #eee4d6;text-align:left;vertical-align:top;white-space:nowrap}th{position:sticky;top:0;background:#fff9ef;color:var(--md);z-index:1}.muted{color:var(--muted);font-size:12px}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:850;background:#eee}.ok{background:#e8f6ed;color:#116735}.off{background:#fdebea;color:#a31d16}.warn{background:#fff3cd;color:#785b00}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{padding:14px;border-radius:14px;background:#fffaf1;border:1px solid var(--line)}.stat b{display:block;font-size:24px;color:var(--m)}details summary{cursor:pointer;color:var(--m);font-weight:850}.message{white-space:normal;min-width:280px;max-width:520px;line-height:1.5}.health-list{display:grid;gap:10px}.health-item{display:grid;grid-template-columns:42px 1fr;gap:11px;padding:13px;border:1px solid var(--line);border-radius:14px}.health-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:12px;font-size:20px;background:#eee}@media(max-width:850px){.grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.stats{grid-template-columns:1fr}body{padding:8px}}
+"""
+
+ADMIN_SCHEDULE_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>จัดการตารางรถ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🚆 จัดการตารางรถ</h1><p>แก้ไขข้อมูลได้โดยไม่ต้องเปิดโค้ด · ตารางเก่ายังคงเก็บย้อนหลัง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a class="active" href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}
+<div class="grid"><section>
+<div class="card"><h2>สร้างตารางใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_schedule_version') }}"><div class="fields"><div class="full"><label>ชื่อตาราง</label><input name="name" placeholder="เช่น ตารางเดินรถเดือนตุลาคม 2569" required></div><div><label>วันที่เริ่มใช้</label><input type="date" name="effective_date" value="{{ today }}" required></div><div><label>สถานะ</label><select name="status"><option value="draft">ฉบับร่าง</option><option value="published">ประกาศใช้</option></select></div><div class="full"><label>คัดลอกจากตารางเดิม</label><select name="copy_from"><option value="">เริ่มตารางว่าง</option>{% for v in versions %}<option value="{{ v.id }}">{{ v.name }} ({{ v.effective_date }})</option>{% endfor %}</select></div></div><div class="actions"><button class="btn">＋ สร้างตาราง</button></div></form></div></div>
+<div class="card"><h2>ตารางย้อนหลัง</h2><div class="body"><form method="get"><label>เลือกตาราง</label><select name="version" onchange="this.form.submit()">{% for v in versions %}<option value="{{ v.id }}" {% if selected_version and v.id==selected_version.id %}selected{% endif %}>{{ v.effective_date }} · {{ v.name }} · {{ 'ใช้งาน' if v.status=='published' else 'ร่าง' }}</option>{% endfor %}</select></form>{% if selected_version %}<form method="post" action="{{ url_for('update_schedule_version', version_id=selected_version.id) }}" style="margin-top:12px"><div class="fields"><div class="full"><label>ชื่อ</label><input name="name" value="{{ selected_version.name }}" required></div><div><label>วันที่เริ่มใช้</label><input type="date" name="effective_date" value="{{ selected_version.effective_date }}" required></div><div><label>สถานะ</label><select name="status"><option value="draft" {% if selected_version.status=='draft' %}selected{% endif %}>ฉบับร่าง</option><option value="published" {% if selected_version.status=='published' %}selected{% endif %}>ประกาศใช้</option></select></div></div><div class="actions"><button class="btn gold">บันทึกข้อมูลตาราง</button></div></form>{% endif %}</div></div>
+<div class="card"><h2>นำเข้า / สำรอง / กู้คืน</h2><div class="body"><form method="post" enctype="multipart/form-data" action="{{ url_for('import_schedule') }}"><input type="hidden" name="version_id" value="{{ selected_version.id if selected_version else '' }}"><label>นำเข้า Excel หรือ CSV</label><input type="file" name="file" accept=".xlsx,.csv" required><p class="muted">หัวคอลัมน์: direction, num, origin, dest, time, next, service_pattern, service_dates, enabled</p><button class="btn green">นำเข้าข้อมูล</button></form><hr style="border:0;border-top:1px solid var(--line);margin:16px 0"><div class="actions"><a class="btn gray" href="{{ url_for('backup_data') }}">⬇ สำรองข้อมูล JSON</a></div><form method="post" enctype="multipart/form-data" action="{{ url_for('restore_data') }}" style="margin-top:12px" onsubmit="return confirm('ยืนยันกู้คืนข้อมูล? ตารางและประวัติปัจจุบันจะถูกแทนที่')"><label>กู้คืนจากไฟล์ JSON</label><input type="file" name="file" accept=".json" required><p class="muted">เพื่อป้องกันล็อกอินไม่ได้ ระบบจะไม่เขียนทับบัญชีผู้ใช้</p><button class="btn red">กู้คืนข้อมูล</button></form></div></div>
+</section><section>
+<div class="card"><h2>{{ 'แก้ไขขบวน '+edit_train.num if edit_train else 'เพิ่มขบวนรถ' }}</h2><div class="body"><form method="post" action="{{ url_for('save_train') }}"><input type="hidden" name="version_id" value="{{ selected_version.id if selected_version else '' }}"><input type="hidden" name="train_id" value="{{ edit_train.id if edit_train else '' }}"><div class="fields"><div><label>ทิศทาง</label><select name="direction"><option value="inbound" {% if edit_train and edit_train.direction=='inbound' %}selected{% endif %}>ขาเข้า กรุงเทพ</option><option value="outbound" {% if edit_train and edit_train.direction=='outbound' %}selected{% endif %}>ขาออก ไปทางตะวันออก</option></select></div><div><label>เลขขบวน</label><input name="num" value="{{ edit_train.num if edit_train else '' }}" required></div><div><label>ต้นทาง</label><input name="origin" value="{{ edit_train.origin if edit_train else '' }}" required></div><div><label>ปลายทาง</label><input name="dest" value="{{ edit_train.dest if edit_train else '' }}" required></div><div><label>เวลา HH:MM</label><input type="time" name="time_hhmm" value="{{ edit_train.time_hhmm if edit_train else '' }}" required></div><div><label>วันให้บริการ</label><select name="service_pattern">{% for key,label in service_labels.items() %}<option value="{{ key }}" {% if edit_train and edit_train.service_pattern==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div class="full"><label>สถานีต่อไป</label><input name="next_station" value="{{ edit_train.next_station if edit_train else '' }}"></div><div class="full"><label>วันที่ให้บริการเฉพาะ (YYYY-MM-DD คั่นด้วย comma)</label><textarea name="service_dates" placeholder="2026-07-28, 2026-08-12">{{ edit_train.service_dates if edit_train else '' }}</textarea></div><div class="full"><label><input style="width:auto" type="checkbox" name="enabled" value="1" {% if not edit_train or edit_train.enabled %}checked{% endif %}> เปิดใช้งานขบวนนี้</label></div></div><div class="actions"><button class="btn">บันทึกขบวน</button>{% if edit_train %}<a class="btn gray" href="{{ url_for('admin_schedules',version=selected_version.id) }}">ยกเลิกแก้ไข</a>{% endif %}</div></form></div></div>
+<div class="card"><h2>รายการขบวนในตาราง{% if selected_version %} · {{ selected_version.name }}{% endif %}</h2><div class="body"><div class="stats"><div class="stat"><span>ทั้งหมด</span><b>{{ trains|length }}</b></div><div class="stat"><span>เปิดใช้งาน</span><b>{{ trains|selectattr('enabled')|list|length }}</b></div><div class="stat"><span>วันที่เริ่มใช้</span><b style="font-size:17px">{{ selected_version.effective_date if selected_version else '-' }}</b></div></div></div><div class="table-wrap"><table><thead><tr><th>สถานะ</th><th>ขบวน</th><th>เวลา</th><th>เส้นทาง</th><th>วันให้บริการ</th><th>สถานีต่อไป</th><th>จัดการ</th></tr></thead><tbody>{% for t in trains %}<tr><td><span class="badge {{ 'ok' if t.enabled else 'off' }}">{{ 'เปิด' if t.enabled else 'ปิด' }}</span></td><td><b>{{ t.num }}</b><div class="muted">{{ direction_labels[t.direction] }}</div></td><td>{{ t.time_hhmm }}</td><td>{{ t.origin }} → {{ t.dest }}</td><td>{{ service_labels[t.service_pattern] }}{% if t.service_dates %}<div class="muted">{{ t.service_dates }}</div>{% endif %}</td><td>{{ t.next_station }}</td><td><div class="actions" style="margin:0"><a class="btn gold" href="{{ url_for('admin_schedules',version=selected_version.id,edit=t.id) }}">แก้ไข</a><form method="post" action="{{ url_for('toggle_train',train_id=t.id) }}"><input type="hidden" name="version_id" value="{{ selected_version.id }}"><button class="btn gray">{{ 'ปิดชั่วคราว' if t.enabled else 'เปิดขบวน' }}</button></form><form method="post" action="{{ url_for('delete_train',train_id=t.id) }}" onsubmit="return confirm('ลบขบวนนี้หรือไม่?')"><input type="hidden" name="version_id" value="{{ selected_version.id }}"><button class="btn red">ลบ</button></form></div></td></tr>{% else %}<tr><td colspan="7">ยังไม่มีขบวนรถในตารางนี้</td></tr>{% endfor %}</tbody></table></div></div>
+</section></div></main></body></html>
+"""
+
+USERS_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บัญชีผู้ใช้</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>👥 บัญชีผู้ใช้และสิทธิ์</h1><p>แยกผู้ประกาศ ผู้ดูแลระบบ และผู้ตรวจสอบประวัติ</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a class="active" href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}<div class="grid"><section><div class="card"><h2>เพิ่มบัญชีใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_user') }}"><label>ชื่อผู้ใช้</label><input name="username" required><label style="margin-top:10px">ชื่อที่แสดง</label><input name="display_name" required><label style="margin-top:10px">สิทธิ์</label><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select><label style="margin-top:10px">รหัสผ่านเริ่มต้น</label><input type="password" name="password" minlength="6" required><div class="actions"><button class="btn">เพิ่มบัญชี</button></div></form></div></div></section><section><div class="card"><h2>บัญชีทั้งหมด</h2><div class="table-wrap"><table><thead><tr><th>ผู้ใช้</th><th>สิทธิ์</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th>แก้ไข</th></tr></thead><tbody>{% for u in users %}<tr><td><b>{{ u.display_name }}</b><div class="muted">{{ u.username }}</div></td><td>{{ role_labels[u.role] }}</td><td><span class="badge {{ 'ok' if u.active else 'off' }}">{{ 'ใช้งาน' if u.active else 'ปิด' }}</span></td><td>{{ u.last_login or '-' }}</td><td><form method="post" action="{{ url_for('update_user',user_id=u.id) }}"><div class="fields" style="min-width:460px"><div><input name="display_name" value="{{ u.display_name }}" required></div><div><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}" {% if u.role==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><input type="password" name="password" placeholder="รหัสใหม่ (เว้นว่างได้)" minlength="6"></div><div><label><input style="width:auto" type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}> เปิดใช้งาน</label></div></div><button class="btn gold" style="margin-top:7px">บันทึก</button></form></td></tr>{% endfor %}</tbody></table></div></div></section></div></main></body></html>
+"""
+
+HISTORY_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ประวัติการประกาศ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🕘 ประวัติการประกาศ</h1><p>ใช้ตรวจหาสาเหตุเมื่อระบบมีปัญหา ไม่ใช่เพื่อจับผิดผู้ใช้งาน</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}<a class="active" href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ตัวกรอง</h2><div class="body"><form method="get"><div class="fields"><div><label>ตั้งแต่วันที่</label><input type="date" name="date_from" value="{{ filters.date_from }}"></div><div><label>ถึงวันที่</label><input type="date" name="date_to" value="{{ filters.date_to }}"></div><div><label>เลขขบวน</label><input name="train_num" value="{{ filters.train_num }}"></div><div><label>ผู้ประกาศ</label><input name="username" value="{{ filters.username }}"></div></div><div class="actions"><button class="btn">ค้นหา</button><a class="btn gray" href="{{ url_for('history_page') }}">ล้างตัวกรอง</a></div></form></div></div><div class="card"><h2>พบ {{ histories|length }} รายการล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>วันเวลา</th><th>ผู้ประกาศ</th><th>ขบวน/ประเภท</th><th>ภาษา/เสียง</th><th>ชานชาลา</th><th>สร้างเสียง</th><th>ผลการเล่น</th><th>Pause / Stop</th><th>ข้อความ</th></tr></thead><tbody>{% for h in histories %}<tr><td>{{ h.started_at }}</td><td>{{ h.username }}</td><td><b>{{ h.train_num or '-' }}</b><div class="muted">{{ h.announcement_type }}</div></td><td>{{ h.announce_mode }}<div class="muted">{{ h.voice }}</div></td><td>{{ h.platform or '-' }}</td><td>{{ h.generation_ms if h.generation_ms is not none else '-' }} ms</td><td>{% if h.playback_success==1 %}<span class="badge ok">สำเร็จ</span>{% elif h.playback_success==0 %}<span class="badge off">ไม่สำเร็จ/หยุด</span>{% else %}<span class="badge warn">ยังไม่จบ</span>{% endif %}{% if h.failure_reason %}<div class="muted">{{ h.failure_reason }}</div>{% endif %}</td><td>พัก {{ h.pause_count }} ครั้ง<div class="muted">Stop: {{ h.stop_time or '-' }}</div></td><td class="message"><details><summary>ดูข้อความและเหตุการณ์</summary><div style="margin:8px 0">{{ h.message|safe if h.message else '-' }}</div><a href="{{ url_for('history_detail',history_id=h.id) }}">ดูเหตุการณ์ทั้งหมด</a></details></td></tr>{% else %}<tr><td colspan="9">ยังไม่มีประวัติ</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
+"""
+
+HISTORY_DETAIL_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>รายละเอียดประวัติ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>รายละเอียดประวัติ #{{ history.id }}</h1><p>{{ history.started_at }} · {{ history.username }} · ขบวน {{ history.train_num or '-' }}</p></header><nav class="nav"><a href="{{ url_for('history_page') }}">← กลับหน้าประวัติ</a><a href="{{ url_for('index') }}">หน้าประกาศ</a></nav><div class="card"><h2>ข้อความประกาศ</h2><div class="body message">{{ history.message|safe if history.message else '-' }}</div></div><div class="card"><h2>ลำดับเหตุการณ์</h2><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>เหตุการณ์</th><th>รายละเอียด</th></tr></thead><tbody>{% for e in events %}<tr><td>{{ e.event_at }}</td><td>{{ e.event_type }}</td><td class="message">{{ e.details or '-' }}</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
+"""
+
+HEALTH_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ตรวจสุขภาพระบบ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🩺 ตรวจสุขภาพระบบ</h1><p>ตรวจ Backend, TTS, ไฟล์เสียง, พื้นที่จัดเก็บ, เวลาเครื่อง และอุปกรณ์เสียง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}{% if current_user.role in ['admin','auditor'] %}<a href="{{ url_for('history_page') }}">🕘 ประวัติ</a>{% endif %}<a class="active" href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ผลตรวจอัตโนมัติ</h2><div class="body"><div id="healthList" class="health-list"><div class="health-item"><div class="health-icon">⏳</div><div><b>กำลังตรวจสอบ...</b></div></div></div><div class="actions"><button class="btn" onclick="runHealth()">ตรวจใหม่</button><button class="btn gold" onclick="testSpeaker()">▶ ทดลองลำโพงด้วยเสียงเตือน</button></div><p class="muted">เบราว์เซอร์ไม่สามารถรับรองว่าลำโพงภายนอกเปิดอยู่จริงได้ จึงมีปุ่มทดลองเสียงสำหรับยืนยันด้วยการฟัง</p></div></div></main><script>
+function esc(v){const d=document.createElement('div');d.textContent=v??'';return d.innerHTML}function item(label,ok,detail){return `<div class="health-item"><div class="health-icon" style="background:${ok?'#e8f6ed':'#fdebea'}">${ok?'✓':'!'}</div><div><b>${esc(label)}</b><div class="muted">${esc(detail)}</div></div></div>`}async function runHealth(){const list=document.getElementById('healthList');list.innerHTML=item('กำลังตรวจสอบ',true,'กรุณารอสักครู่');try{const started=Date.now();const r=await fetch('/api/health',{cache:'no-store'});const data=await r.json();let html=data.checks.map(c=>item(c.label,c.ok,c.detail)).join('');const delta=Math.abs(Date.now()-data.server_epoch_ms);html+=item('เวลาเครื่อง',delta<120000,`เวลาต่างจาก Backend ${Math.round(delta/1000)} วินาที`);let audioOk=!!(window.Audio&&document.createElement('audio').canPlayType('audio/mpeg'));let detail=audioOk?'เบราว์เซอร์รองรับ MP3 และระบบเสียง':'เบราว์เซอร์ไม่รองรับการเล่น MP3';try{if(navigator.mediaDevices?.enumerateDevices){const devices=await navigator.mediaDevices.enumerateDevices();const outputs=devices.filter(d=>d.kind==='audiooutput');if(outputs.length)detail+=` · พบช่องเสียงออก ${outputs.length} รายการ`;}}catch(e){}html+=item('ลำโพง / อุปกรณ์เสียง',audioOk,detail);list.innerHTML=html}catch(e){list.innerHTML=item('Backend',false,e.message)}}async function testSpeaker(){try{const a=new Audio('/audio/chime.mp3');await a.play()}catch(e){alert('เล่นเสียงไม่ได้: '+e.message)}}runHealth();
+</script></body></html>
+"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if get_current_user():
+        return redirect(url_for("index"))
+    next_url = request.values.get("next") or url_for("index")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = url_for("index")
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        with get_db() as conn:
+            user = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
+            if user and user["active"] and check_password_hash(user["password_hash"], password):
+                session.clear()
+                session["user_id"] = user["id"]
+                conn.execute("UPDATE users SET last_login=? WHERE id=?", (now_iso(), user["id"]))
+                destination = next_url
+                if user["role"] == "auditor" and destination == url_for("index"):
+                    destination = url_for("history_page")
+                return redirect(destination)
+        flash("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+    with get_db() as conn:
+        show_default = (not os.environ.get("INITIAL_ADMIN_PASSWORD") and
+                        conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1 and
+                        not conn.execute("SELECT last_login FROM users LIMIT 1").fetchone()[0])
+    return render_template_string(LOGIN_HTML, next_url=next_url, show_default=show_default)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/admin/schedules")
+@roles_required("admin")
+def admin_schedules():
+    with get_db() as conn:
+        versions = [dict(row) for row in conn.execute("SELECT * FROM schedule_versions ORDER BY effective_date DESC,id DESC").fetchall()]
+        version_id = request.args.get("version", type=int) or (versions[0]["id"] if versions else None)
+        selected = next((v for v in versions if v["id"] == version_id), None)
+        trains = [dict(row) for row in conn.execute("SELECT * FROM trains WHERE version_id=? ORDER BY direction,time_hhmm,num", (version_id,)).fetchall()] if version_id else []
+        edit_id = request.args.get("edit", type=int)
+        edit_train = dict(conn.execute("SELECT * FROM trains WHERE id=? AND version_id=?", (edit_id, version_id)).fetchone()) if edit_id and version_id and conn.execute("SELECT 1 FROM trains WHERE id=? AND version_id=?", (edit_id, version_id)).fetchone() else None
+    return render_template_string(ADMIN_SCHEDULE_HTML, management_css=MANAGEMENT_CSS, versions=versions,
+                                  selected_version=selected, trains=trains, edit_train=edit_train,
+                                  service_labels=SERVICE_LABELS, direction_labels=DIRECTION_LABELS,
+                                  today=now_bangkok().date().isoformat())
+
+
+@app.route("/admin/schedules/version/create", methods=["POST"])
+@roles_required("admin")
+def create_schedule_version():
+    name = (request.form.get("name") or "").strip()
+    effective_date = (request.form.get("effective_date") or "").strip()
+    status = request.form.get("status") or "draft"
+    copy_from = request.form.get("copy_from", type=int)
+    try:
+        date.fromisoformat(effective_date)
+        if not name or status not in {"draft", "published"}:
+            raise ValueError("ข้อมูลตารางไม่ครบ")
+        user = get_current_user()
+        with get_db() as conn:
+            cursor = conn.execute("INSERT INTO schedule_versions(name,effective_date,status,created_at,created_by) VALUES(?,?,?,?,?)", (name,effective_date,status,now_iso(),user["id"]))
+            new_id = cursor.lastrowid
+            if copy_from:
+                conn.execute("""INSERT INTO trains(version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,created_at,updated_at)
+                              SELECT ?,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,?,? FROM trains WHERE version_id=?""", (new_id,now_iso(),now_iso(),copy_from))
+        flash("สร้างตารางใหม่แล้ว")
+        return redirect(url_for("admin_schedules", version=new_id))
+    except Exception as exc:
+        flash(str(exc))
+        return redirect(url_for("admin_schedules"))
+
+
+@app.route("/admin/schedules/version/<int:version_id>/update", methods=["POST"])
+@roles_required("admin")
+def update_schedule_version(version_id):
+    name = (request.form.get("name") or "").strip()
+    effective_date = (request.form.get("effective_date") or "").strip()
+    status = request.form.get("status") or "draft"
+    try:
+        date.fromisoformat(effective_date)
+        if not name or status not in {"draft", "published"}: raise ValueError("ข้อมูลไม่ถูกต้อง")
+        with get_db() as conn:
+            conn.execute("UPDATE schedule_versions SET name=?,effective_date=?,status=? WHERE id=?", (name,effective_date,status,version_id))
+        flash("บันทึกข้อมูลตารางแล้ว")
+    except Exception as exc: flash(str(exc))
+    return redirect(url_for("admin_schedules", version=version_id))
+
+
+@app.route("/admin/trains/save", methods=["POST"])
+@roles_required("admin")
+def save_train():
+    version_id = request.form.get("version_id", type=int)
+    try:
+        save_train_record(request.form)
+        flash("บันทึกขบวนรถแล้ว และตรวจสอบข้อมูลซ้ำเรียบร้อย")
+    except Exception as exc:
+        flash(str(exc))
+    return redirect(url_for("admin_schedules", version=version_id))
+
+
+@app.route("/admin/trains/<int:train_id>/toggle", methods=["POST"])
+@roles_required("admin")
+def toggle_train(train_id):
+    version_id = request.form.get("version_id", type=int)
+    with get_db() as conn:
+        conn.execute("UPDATE trains SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END,updated_at=? WHERE id=?", (now_iso(),train_id))
+    flash("เปลี่ยนสถานะขบวนแล้ว")
+    return redirect(url_for("admin_schedules", version=version_id))
+
+
+@app.route("/admin/trains/<int:train_id>/delete", methods=["POST"])
+@roles_required("admin")
+def delete_train(train_id):
+    version_id = request.form.get("version_id", type=int)
+    with get_db() as conn: conn.execute("DELETE FROM trains WHERE id=?", (train_id,))
+    flash("ลบขบวนแล้ว")
+    return redirect(url_for("admin_schedules", version=version_id))
+
+
+@app.route("/admin/schedules/import", methods=["POST"])
+@roles_required("admin")
+def import_schedule():
+    version_id = request.form.get("version_id", type=int)
+    file = request.files.get("file")
+    try:
+        if not version_id or not file: raise ValueError("กรุณาเลือกตารางและไฟล์")
+        inserted, skipped = import_schedule_file(file, version_id)
+        message = f"นำเข้าสำเร็จ {inserted} ขบวน"
+        if skipped: message += f" · ข้าม {len(skipped)} แถว: " + " | ".join(skipped[:5])
+        flash(message)
+    except Exception as exc: flash(str(exc))
+    return redirect(url_for("admin_schedules", version=version_id))
+
+
+@app.route("/admin/backup")
+@roles_required("admin")
+def backup_data():
+    tables = ["schedule_versions","trains","users","announcement_history","announcement_events"]
+    payload = {"schema_version":1,"created_at":now_iso(),"tables":{}}
+    with get_db() as conn:
+        for table in tables:
+            payload["tables"][table] = [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
+    stream = io.BytesIO(json.dumps(payload,ensure_ascii=False,indent=2).encode("utf-8"))
+    filename = f"station_backup_{now_bangkok().strftime('%Y%m%d_%H%M%S')}.json"
+    return send_file(stream,mimetype="application/json",as_attachment=True,download_name=filename)
+
+
+@app.route("/admin/restore", methods=["POST"])
+@roles_required("admin")
+def restore_data():
+    file = request.files.get("file")
+    try:
+        if not file: raise ValueError("ไม่พบไฟล์สำรอง")
+        payload = json.load(file)
+        tables = payload.get("tables") or {}
+        versions = tables.get("schedule_versions",[]); trains=tables.get("trains",[])
+        histories=tables.get("announcement_history",[]); events=tables.get("announcement_events",[])
+        if not isinstance(versions,list) or not isinstance(trains,list): raise ValueError("รูปแบบไฟล์สำรองไม่ถูกต้อง")
+        user=get_current_user()
+        with get_db() as conn:
+            conn.execute("DELETE FROM announcement_events"); conn.execute("DELETE FROM announcement_history"); conn.execute("DELETE FROM trains"); conn.execute("DELETE FROM schedule_versions")
+            for v in versions:
+                conn.execute("INSERT INTO schedule_versions(id,name,effective_date,status,created_at,created_by) VALUES(?,?,?,?,?,?)", (v.get('id'),v.get('name'),v.get('effective_date'),v.get('status','published'),v.get('created_at',now_iso()),user['id']))
+            for t in trains:
+                conn.execute("""INSERT INTO trains(id,version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (t.get('id'),t.get('version_id'),t.get('direction'),t.get('num'),t.get('label'),t.get('origin'),t.get('dest'),t.get('time_hhmm'),t.get('time_spoken'),t.get('next_station',''),t.get('service_pattern','daily'),t.get('service_dates',''),t.get('enabled',1),t.get('created_at',now_iso()),t.get('updated_at',now_iso())))
+            for h in histories:
+                conn.execute("""INSERT INTO announcement_history(id,started_at,user_id,username,train_num,announcement_type,announce_mode,voice,platform,message,generation_ms,playback_success,pause_times,stop_time,completed_at,failure_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (h.get('id'),h.get('started_at'),None,h.get('username','ไม่ทราบ'),h.get('train_num'),h.get('announcement_type',''),h.get('announce_mode',''),h.get('voice',''),h.get('platform'),h.get('message'),h.get('generation_ms'),h.get('playback_success'),h.get('pause_times','[]'),h.get('stop_time'),h.get('completed_at'),h.get('failure_reason')))
+            for e in events:
+                conn.execute("INSERT INTO announcement_events(id,history_id,event_type,event_at,details) VALUES(?,?,?,?,?)", (e.get('id'),e.get('history_id'),e.get('event_type'),e.get('event_at'),e.get('details')))
+        flash("กู้คืนตารางรถและประวัติแล้ว บัญชีผู้ใช้เดิมยังคงอยู่")
+    except Exception as exc: flash(f"กู้คืนไม่สำเร็จ: {exc}")
+    return redirect(url_for("admin_schedules"))
+
+
+@app.route("/admin/users")
+@roles_required("admin")
+def admin_users():
+    with get_db() as conn: users=[dict(r) for r in conn.execute("SELECT * FROM users ORDER BY active DESC,role,username").fetchall()]
+    return render_template_string(USERS_HTML,management_css=MANAGEMENT_CSS,users=users,role_labels=ROLE_LABELS)
+
+
+@app.route("/admin/users/create",methods=["POST"])
+@roles_required("admin")
+def create_user():
+    username=(request.form.get('username') or '').strip(); display=(request.form.get('display_name') or '').strip(); role=request.form.get('role'); password=request.form.get('password') or ''
+    try:
+        if not username or not display or role not in ROLE_LABELS or len(password)<6: raise ValueError("กรอกข้อมูลให้ครบ และรหัสผ่านอย่างน้อย 6 ตัว")
+        with get_db() as conn: conn.execute("INSERT INTO users(username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,1,?)",(username,generate_password_hash(password),display,role,now_iso()))
+        flash("เพิ่มบัญชีแล้ว")
+    except sqlite3.IntegrityError: flash("ชื่อผู้ใช้นี้มีอยู่แล้ว")
+    except Exception as exc: flash(str(exc))
+    return redirect(url_for('admin_users'))
+
+
+@app.route("/admin/users/<int:user_id>/update",methods=["POST"])
+@roles_required("admin")
+def update_user(user_id):
+    current=get_current_user(); display=(request.form.get('display_name') or '').strip(); role=request.form.get('role'); password=request.form.get('password') or ''; active=1 if request.form.get('active') else 0
+    try:
+        if not display or role not in ROLE_LABELS: raise ValueError("ข้อมูลไม่ถูกต้อง")
+        if user_id==current['id'] and not active: raise ValueError("ไม่สามารถปิดบัญชีที่กำลังใช้งาน")
+        with get_db() as conn:
+            existing=conn.execute("SELECT role,active FROM users WHERE id=?",(user_id,)).fetchone()
+            if not existing: raise ValueError("ไม่พบบัญชี")
+            if existing['role']=='admin' and (role!='admin' or not active):
+                count=conn.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0]
+                if count<=1: raise ValueError("ต้องมีผู้ดูแลระบบที่เปิดใช้งานอย่างน้อย 1 บัญชี")
+            conn.execute("UPDATE users SET display_name=?,role=?,active=? WHERE id=?",(display,role,active,user_id))
+            if password:
+                if len(password)<6: raise ValueError("รหัสผ่านอย่างน้อย 6 ตัว")
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?",(generate_password_hash(password),user_id))
+        flash("บันทึกบัญชีแล้ว")
+    except Exception as exc: flash(str(exc))
+    return redirect(url_for('admin_users'))
+
+
+@app.route("/history")
+@roles_required("admin","auditor")
+def history_page():
+    filters={k:(request.args.get(k) or '').strip() for k in ('date_from','date_to','train_num','username')}
+    where=[]; params=[]
+    if filters['date_from']: where.append("substr(started_at,1,10)>=?"); params.append(filters['date_from'])
+    if filters['date_to']: where.append("substr(started_at,1,10)<=?"); params.append(filters['date_to'])
+    if filters['train_num']: where.append("train_num LIKE ?"); params.append('%'+filters['train_num']+'%')
+    if filters['username']: where.append("username LIKE ?"); params.append('%'+filters['username']+'%')
+    sql="SELECT * FROM announcement_history"+(" WHERE "+" AND ".join(where) if where else "")+" ORDER BY id DESC LIMIT 500"
+    with get_db() as conn: rows=[dict(r) for r in conn.execute(sql,params).fetchall()]
+    for row in rows:
+        try: row['pause_count']=len(json.loads(row.get('pause_times') or '[]'))
+        except Exception: row['pause_count']=0
+    return render_template_string(HISTORY_HTML,management_css=MANAGEMENT_CSS,histories=rows,filters=filters,current_user=get_current_user())
+
+
+@app.route("/history/<int:history_id>")
+@roles_required("admin","auditor")
+def history_detail(history_id):
+    with get_db() as conn:
+        history=conn.execute("SELECT * FROM announcement_history WHERE id=?",(history_id,)).fetchone()
+        events=[dict(r) for r in conn.execute("SELECT * FROM announcement_events WHERE history_id=? ORDER BY id",(history_id,)).fetchall()]
+    if not history: abort(404)
+    return render_template_string(HISTORY_DETAIL_HTML,management_css=MANAGEMENT_CSS,history=dict(history),events=events)
+
+
+@app.route("/health")
+@login_required
+def health_page():
+    return render_template_string(HEALTH_HTML,management_css=MANAGEMENT_CSS,current_user=get_current_user())
+
+
+@app.route("/api/health")
+@login_required
+def api_health():
+    return jsonify(status="success",checks=backend_health_checks(),server_epoch_ms=int(time.time()*1000),server_time=now_iso())
+
+
+@app.route("/api/history/start",methods=["POST"])
+@roles_required("announcer", "admin")
+def api_history_start():
+    try:
+        payload=request.get_json(silent=True) or {}
+        history_id=insert_history(payload,get_current_user())
+        return jsonify(status="success",history_id=history_id)
+    except Exception as exc:
+        return jsonify(status="error",message=str(exc)),500
+
+
+@app.route("/api/history/event",methods=["POST"])
+@roles_required("announcer", "admin")
+def api_history_event():
+    try:
+        data=request.get_json(silent=True) or {}; history_id=int(data.get('history_id')); event_type=(data.get('event_type') or '').strip()
+        if event_type not in {'generated','pause','resume','stop','success','failed'}: raise ValueError("ประเภทเหตุการณ์ไม่ถูกต้อง")
+        event_at=add_history_event(history_id,event_type,data.get('details') or {})
+        return jsonify(status="success",event_at=event_at)
+    except Exception as exc:
+        return jsonify(status="error",message=str(exc)),400
+
+
 @app.route("/")
+@roles_required("announcer", "admin")
 def index():
+    inbound, outbound, train_data, schedule_version = get_active_train_lists()
+    user = get_current_user()
     return render_template_string(
         HTML_PAGE,
-        inbound=INBOUND_TRAINS,
-        outbound=OUTBOUND_TRAINS,
-        trains_json=json.dumps(TRAIN_DATA, ensure_ascii=False),
+        inbound=inbound,
+        outbound=outbound,
+        trains_json=json.dumps(train_data, ensure_ascii=False),
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
         en_voice_name=english_voice_for(VOICE_NAME),
+        current_user=user,
+        role_labels=ROLE_LABELS,
+        schedule_version=schedule_version,
     )
 
 
@@ -1809,6 +2792,7 @@ def serve_audio(filename):
 
 
 @app.route("/test-station-voice", methods=["POST"])
+@roles_required("announcer", "admin")
 def test_station_voice():
     cleanup_old_audio()
     data = request.get_json(silent=True) or {}
@@ -1883,7 +2867,9 @@ def test_station_voice():
     })
 
 @app.route("/announce", methods=["POST"])
+@roles_required("announcer", "admin")
 def announce():
+    generation_started = time.perf_counter()
     cleanup_old_audio()
     data = request.get_json(silent=True) or {}
 
@@ -1990,6 +2976,7 @@ def announce():
         "audio_labels": audio_labels,
         "announce_mode": mode,
         "text_preview": preview,
+        "generation_ms": int((time.perf_counter() - generation_started) * 1000),
     })
 
 if __name__ == "__main__":

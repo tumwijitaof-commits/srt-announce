@@ -1,3 +1,5 @@
-Flask
-edge-tts
-gunicorn
+Flask>=3.0,<4
+edge-tts>=6.1
+openpyxl>=3.1
+tzdata>=2025.2
+gunicorn>=22

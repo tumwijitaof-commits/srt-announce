@@ -1,0 +1,15 @@
+# ข้อมูลใช้งานจริงและไฟล์ลับ
+station_system.db
+.station_session_secret
+
+# ไฟล์เสียงที่ระบบสร้างอัตโนมัติ
+audio_generated/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local environments
+.venv/
+venv/
+.env
