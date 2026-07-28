@@ -1,5 +1,5 @@
 from flask import (Flask, request, render_template_string, send_from_directory, jsonify,
-                   session, redirect, url_for, flash, send_file, abort)
+                   session, redirect, url_for, flash, send_file, abort, g)
 from pathlib import Path
 import os
 import subprocess
@@ -9,11 +9,16 @@ import uuid
 import re
 import hashlib
 import threading
+import atexit
 import sqlite3
 try:
     import psycopg
 except ImportError:
     psycopg = None
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:
+    ConnectionPool = None
 import csv
 import io
 import shutil
@@ -49,6 +54,14 @@ if DATABASE_URL.startswith("postgres://"):
 # Supabase requires encrypted PostgreSQL connections. Add sslmode only when absent.
 if USE_POSTGRES and "supabase" in DATABASE_URL and "sslmode=" not in DATABASE_URL:
     DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "sslmode=require"
+
+# ค่าประสิทธิภาพฐานข้อมูล: ใช้ connection เดิมซ้ำ ลดเวลาจับมือกับ Supabase ทุกครั้งที่กดเมนู
+POSTGRES_POOL_MIN_SIZE = max(1, int(os.environ.get("POSTGRES_POOL_MIN_SIZE", "1")))
+POSTGRES_POOL_MAX_SIZE = max(POSTGRES_POOL_MIN_SIZE, int(os.environ.get("POSTGRES_POOL_MAX_SIZE", "3")))
+POSTGRES_POOL_TIMEOUT = max(3, int(os.environ.get("POSTGRES_POOL_TIMEOUT", "10")))
+USER_SESSION_CACHE_SECONDS = max(15, int(os.environ.get("USER_SESSION_CACHE_SECONDS", "90")))
+TRAIN_CACHE_SECONDS = max(0, int(os.environ.get("TRAIN_CACHE_SECONDS", "30")))
+
 AUDIO_DIR = BASE_DIR / "audio_generated"
 AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -187,26 +200,73 @@ class PostgresCursor:
         return [CompatRow(zip(columns, row)) for row in rows]
 
 
+_POSTGRES_POOL = None
+_POSTGRES_POOL_LOCK = threading.Lock()
+
+
+def get_postgres_pool():
+    """สร้าง pool เพียงครั้งเดียวต่อ Gunicorn worker แล้วนำ connection กลับมาใช้ซ้ำ"""
+    global _POSTGRES_POOL
+    if _POSTGRES_POOL is not None:
+        return _POSTGRES_POOL
+    if psycopg is None or ConnectionPool is None:
+        raise RuntimeError("ยังไม่มี psycopg pool กรุณาติดตั้ง psycopg[binary] และ psycopg_pool")
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is None:
+            pool = ConnectionPool(
+                conninfo=DATABASE_URL,
+                min_size=POSTGRES_POOL_MIN_SIZE,
+                max_size=POSTGRES_POOL_MAX_SIZE,
+                timeout=POSTGRES_POOL_TIMEOUT,
+                max_idle=300,
+                max_lifetime=1800,
+                reconnect_timeout=30,
+                open=False,
+                name="bangphra-db-pool",
+            )
+            # เปิด pool และเตรียม connection แรกตั้งแต่ตอนเริ่มระบบ แทนที่จะรอเมื่อผู้ใช้กดเมนูครั้งแรก
+            pool.open()
+            pool.wait(timeout=POSTGRES_POOL_TIMEOUT + 5)
+            _POSTGRES_POOL = pool
+    return _POSTGRES_POOL
+
+
+def _close_postgres_pool():
+    global _POSTGRES_POOL
+    pool = _POSTGRES_POOL
+    _POSTGRES_POOL = None
+    if pool is not None:
+        try:
+            pool.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_postgres_pool)
+
+
 class PostgresConnection:
-    """ตัวแปลงคำสั่ง SQLite เดิมให้ทำงานกับ PostgreSQL โดยไม่แตะระบบเสียง"""
+    """ตัวแปลงคำสั่ง SQLite เดิมให้ทำงานกับ PostgreSQL ผ่าน connection pool"""
 
     def __init__(self, database_url):
-        if psycopg is None:
-            raise RuntimeError("ยังไม่มี psycopg กรุณาเพิ่ม psycopg[binary] ใน requirements.txt")
-        self._conn = psycopg.connect(database_url, connect_timeout=12)
+        self._database_url = database_url
+        self._pool_context = None
+        self._conn = None
 
     def __enter__(self):
+        # pool.connection() จะ commit/rollback และคืน connection ให้ pool ให้อัตโนมัติ
+        self._pool_context = get_postgres_pool().connection(timeout=POSTGRES_POOL_TIMEOUT)
+        self._conn = self._pool_context.__enter__()
         return self
 
     def __exit__(self, exc_type, exc, traceback):
+        if self._pool_context is None:
+            return False
         try:
-            if exc_type is None:
-                self._conn.commit()
-            else:
-                self._conn.rollback()
+            return self._pool_context.__exit__(exc_type, exc, traceback)
         finally:
-            self._conn.close()
-        return False
+            self._conn = None
+            self._pool_context = None
 
     @staticmethod
     def _convert_sql(sql):
@@ -221,6 +281,8 @@ class PostgresConnection:
         return sql.replace("?", "%s")
 
     def execute(self, sql, params=()):
+        if self._conn is None:
+            raise RuntimeError("ยังไม่ได้เปิดการเชื่อมต่อฐานข้อมูล")
         converted = self._convert_sql(sql)
         cursor = self._conn.cursor()
         # เฉพาะ INSERT ที่โค้ดเดิมอ่าน lastrowid
@@ -236,11 +298,15 @@ class PostgresConnection:
         return PostgresCursor(cursor, lastrowid=lastrowid)
 
     def executemany(self, sql, rows):
+        if self._conn is None:
+            raise RuntimeError("ยังไม่ได้เปิดการเชื่อมต่อฐานข้อมูล")
         cursor = self._conn.cursor()
         cursor.executemany(self._convert_sql(sql), rows)
         return PostgresCursor(cursor)
 
     def executescript(self, script):
+        if self._conn is None:
+            raise RuntimeError("ยังไม่ได้เปิดการเชื่อมต่อฐานข้อมูล")
         cursor = self._conn.cursor()
         for statement in script.split(";"):
             statement = statement.strip()
@@ -467,18 +533,58 @@ def init_database():
             )
 
 
+def _store_session_user(user):
+    profile = {
+        "id": int(user["id"]),
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "role": user["role"],
+        "active": int(user["active"]),
+    }
+    session["user_id"] = profile["id"]
+    session["user_profile"] = profile
+    session["user_checked_at"] = time.time()
+    g._current_user = profile
+    return profile
+
+
+def _invalidate_session_user_cache():
+    session.pop("user_profile", None)
+    session.pop("user_checked_at", None)
+    if hasattr(g, "_current_user"):
+        delattr(g, "_current_user")
+
+
 def get_current_user():
+    # ภายใน request เดียวกัน decorator และหน้าเว็บใช้ข้อมูลเดียวกัน ไม่ยิง query ซ้ำ
+    if hasattr(g, "_current_user"):
+        return g._current_user
+
     user_id = session.get("user_id")
     if not user_id:
+        g._current_user = None
         return None
+
+    cached = session.get("user_profile")
+    checked_at = float(session.get("user_checked_at") or 0)
+    if (
+        isinstance(cached, dict)
+        and cached.get("id") == user_id
+        and cached.get("active")
+        and time.time() - checked_at < USER_SESSION_CACHE_SECONDS
+    ):
+        g._current_user = dict(cached)
+        return g._current_user
+
     with get_db() as conn:
         row = conn.execute(
             "SELECT id,username,display_name,role,active FROM users WHERE id=?", (user_id,)
         ).fetchone()
     if not row or not row["active"]:
         session.clear()
+        g._current_user = None
         return None
-    return dict(row)
+    return _store_session_user(row)
 
 
 def login_required(view):
@@ -504,20 +610,45 @@ def roles_required(*roles):
     return decorator
 
 
-def version_for_date(target_date=None):
+_TRAIN_LIST_CACHE = {}
+_TRAIN_LIST_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_train_cache():
+    with _TRAIN_LIST_CACHE_LOCK:
+        _TRAIN_LIST_CACHE.clear()
+
+
+def _clone_train_result(result):
+    inbound, outbound, data, version = result
+    return (
+        [dict(item) for item in inbound],
+        [dict(item) for item in outbound],
+        {key: dict(item) for key, item in data.items()},
+        dict(version) if version else None,
+    )
+
+
+def version_for_date(target_date=None, conn=None):
     target_date = target_date or now_bangkok().date()
-    with get_db() as conn:
-        row = conn.execute(
+
+    def _read(active_conn):
+        row = active_conn.execute(
             """SELECT * FROM schedule_versions
                WHERE status='published' AND effective_date<=?
                ORDER BY effective_date DESC, id DESC LIMIT 1""",
             (target_date.isoformat(),),
         ).fetchone()
         if not row:
-            row = conn.execute(
+            row = active_conn.execute(
                 "SELECT * FROM schedule_versions WHERE status='published' ORDER BY effective_date ASC,id ASC LIMIT 1"
             ).fetchone()
-    return dict(row) if row else None
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _read(conn)
+    with get_db() as db_conn:
+        return _read(db_conn)
 
 
 def train_operates_on(row, target_date):
@@ -535,25 +666,39 @@ def train_operates_on(row, target_date):
 
 def get_active_train_lists(target_date=None):
     target_date = target_date or now_bangkok().date()
-    version = version_for_date(target_date)
-    if not version:
-        return [], [], {}, None
+    cache_key = target_date.isoformat()
+    if TRAIN_CACHE_SECONDS:
+        with _TRAIN_LIST_CACHE_LOCK:
+            cached = _TRAIN_LIST_CACHE.get(cache_key)
+            if cached and time.monotonic() - cached[0] < TRAIN_CACHE_SECONDS:
+                return _clone_train_result(cached[1])
+
+    # อ่าน version และขบวนด้วย connection เดียว ลดรอบการเดินทาง Virginia ↔ Supabase
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM trains WHERE version_id=? AND enabled=1 ORDER BY direction,time_hhmm,num",
-            (version["id"],),
-        ).fetchall()
-    inbound, outbound = [], []
-    for row in rows:
-        if not train_operates_on(row, target_date):
-            continue
-        item = {
-            "label": row["label"], "num": row["num"], "origin": row["origin"], "dest": row["dest"],
-            "time": row["time_spoken"], "next": row["next_station"],
-        }
-        (inbound if row["direction"] == "inbound" else outbound).append(item)
-    data = {train["label"]: train for train in inbound + outbound}
-    return inbound, outbound, data, version
+        version = version_for_date(target_date, conn=conn)
+        if not version:
+            result = ([], [], {}, None)
+        else:
+            rows = conn.execute(
+                "SELECT * FROM trains WHERE version_id=? AND enabled=1 ORDER BY direction,time_hhmm,num",
+                (version["id"],),
+            ).fetchall()
+            inbound, outbound = [], []
+            for row in rows:
+                if not train_operates_on(row, target_date):
+                    continue
+                item = {
+                    "label": row["label"], "num": row["num"], "origin": row["origin"], "dest": row["dest"],
+                    "time": row["time_spoken"], "next": row["next_station"],
+                }
+                (inbound if row["direction"] == "inbound" else outbound).append(item)
+            data = {train["label"]: train for train in inbound + outbound}
+            result = (inbound, outbound, data, version)
+
+    if TRAIN_CACHE_SECONDS:
+        with _TRAIN_LIST_CACHE_LOCK:
+            _TRAIN_LIST_CACHE[cache_key] = (time.monotonic(), _clone_train_result(result))
+    return _clone_train_result(result)
 
 
 def build_train_label(num, hhmm, origin, dest):
@@ -833,7 +978,7 @@ def backend_health_checks():
         with get_db() as conn:
             conn.execute("SELECT 1").fetchone()
         database_ok = True
-        database_detail = "Supabase PostgreSQL เชื่อมต่อสำเร็จ" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน"
+        database_detail = (f"Supabase PostgreSQL พร้อมใช้ · connection pool {POSTGRES_POOL_MIN_SIZE}–{POSTGRES_POOL_MAX_SIZE}" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน")
     except Exception as exc:
         database_detail = f"เชื่อมต่อฐานข้อมูลไม่สำเร็จ: {str(exc)[:180]}"
 
@@ -2678,7 +2823,7 @@ def login():
             user = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
             if user and user["active"] and check_password_hash(user["password_hash"], password):
                 session.clear()
-                session["user_id"] = user["id"]
+                _store_session_user(user)
                 conn.execute("UPDATE users SET last_login=? WHERE id=?", (now_iso(), user["id"]))
                 destination = next_url
                 if user["role"] == "auditor" and destination == url_for("index"):
@@ -2707,7 +2852,8 @@ def admin_schedules():
         selected = next((v for v in versions if v["id"] == version_id), None)
         trains = [dict(row) for row in conn.execute("SELECT * FROM trains WHERE version_id=? ORDER BY direction,time_hhmm,num", (version_id,)).fetchall()] if version_id else []
         edit_id = request.args.get("edit", type=int)
-        edit_train = dict(conn.execute("SELECT * FROM trains WHERE id=? AND version_id=?", (edit_id, version_id)).fetchone()) if edit_id and version_id and conn.execute("SELECT 1 FROM trains WHERE id=? AND version_id=?", (edit_id, version_id)).fetchone() else None
+        edit_row = conn.execute("SELECT * FROM trains WHERE id=? AND version_id=?", (edit_id, version_id)).fetchone() if edit_id and version_id else None
+        edit_train = dict(edit_row) if edit_row else None
     return render_template_string(ADMIN_SCHEDULE_HTML, management_css=MANAGEMENT_CSS, versions=versions,
                                   selected_version=selected, trains=trains, edit_train=edit_train,
                                   service_labels=SERVICE_LABELS, direction_labels=DIRECTION_LABELS,
@@ -2732,6 +2878,7 @@ def create_schedule_version():
             if copy_from:
                 conn.execute("""INSERT INTO trains(version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,created_at,updated_at)
                               SELECT ?,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,?,? FROM trains WHERE version_id=?""", (new_id,now_iso(),now_iso(),copy_from))
+        invalidate_train_cache()
         flash("สร้างตารางใหม่แล้ว")
         return redirect(url_for("admin_schedules", version=new_id))
     except Exception as exc:
@@ -2750,6 +2897,7 @@ def update_schedule_version(version_id):
         if not name or status not in {"draft", "published"}: raise ValueError("ข้อมูลไม่ถูกต้อง")
         with get_db() as conn:
             conn.execute("UPDATE schedule_versions SET name=?,effective_date=?,status=? WHERE id=?", (name,effective_date,status,version_id))
+        invalidate_train_cache()
         flash("บันทึกข้อมูลตารางแล้ว")
     except Exception as exc: flash(str(exc))
     return redirect(url_for("admin_schedules", version=version_id))
@@ -2761,6 +2909,7 @@ def save_train():
     version_id = request.form.get("version_id", type=int)
     try:
         save_train_record(request.form)
+        invalidate_train_cache()
         flash("บันทึกขบวนรถแล้ว และตรวจสอบข้อมูลซ้ำเรียบร้อย")
     except Exception as exc:
         flash(str(exc))
@@ -2773,6 +2922,7 @@ def toggle_train(train_id):
     version_id = request.form.get("version_id", type=int)
     with get_db() as conn:
         conn.execute("UPDATE trains SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END,updated_at=? WHERE id=?", (now_iso(),train_id))
+    invalidate_train_cache()
     flash("เปลี่ยนสถานะขบวนแล้ว")
     return redirect(url_for("admin_schedules", version=version_id))
 
@@ -2782,6 +2932,7 @@ def toggle_train(train_id):
 def delete_train(train_id):
     version_id = request.form.get("version_id", type=int)
     with get_db() as conn: conn.execute("DELETE FROM trains WHERE id=?", (train_id,))
+    invalidate_train_cache()
     flash("ลบขบวนแล้ว")
     return redirect(url_for("admin_schedules", version=version_id))
 
@@ -2794,6 +2945,7 @@ def import_schedule():
     try:
         if not version_id or not file: raise ValueError("กรุณาเลือกตารางและไฟล์")
         inserted, skipped = import_schedule_file(file, version_id)
+        invalidate_train_cache()
         message = f"นำเข้าสำเร็จ {inserted} ขบวน"
         if skipped: message += f" · ข้าม {len(skipped)} แถว: " + " | ".join(skipped[:5])
         flash(message)
@@ -2843,6 +2995,7 @@ def restore_data():
                         f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
                         f"EXISTS(SELECT 1 FROM {table}))"
                     )
+        invalidate_train_cache()
         flash("กู้คืนตารางรถและประวัติแล้ว บัญชีผู้ใช้เดิมยังคงอยู่")
     except Exception as exc: flash(f"กู้คืนไม่สำเร็จ: {exc}")
     return redirect(url_for("admin_schedules"))
@@ -2885,6 +3038,8 @@ def update_user(user_id):
             if password:
                 if len(password)<6: raise ValueError("รหัสผ่านอย่างน้อย 6 ตัว")
                 conn.execute("UPDATE users SET password_hash=? WHERE id=?",(generate_password_hash(password),user_id))
+        if user_id == current["id"]:
+            _store_session_user({"id": user_id, "username": current["username"], "display_name": display, "role": role, "active": active})
         flash("บันทึกบัญชีแล้ว")
     except Exception as exc: flash(str(exc))
     return redirect(url_for('admin_users'))
