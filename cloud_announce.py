@@ -72,9 +72,10 @@ if USE_POSTGRES and "supabase" in DATABASE_URL and "sslmode=" not in DATABASE_UR
     DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "sslmode=require"
 
 # ค่าประสิทธิภาพฐานข้อมูล: ใช้ connection เดิมซ้ำ ลดเวลาจับมือกับ Supabase ทุกครั้งที่กดเมนู
-POSTGRES_POOL_MIN_SIZE = max(1, int(os.environ.get("POSTGRES_POOL_MIN_SIZE", "1")))
-POSTGRES_POOL_MAX_SIZE = max(POSTGRES_POOL_MIN_SIZE, int(os.environ.get("POSTGRES_POOL_MAX_SIZE", "3")))
-POSTGRES_POOL_TIMEOUT = max(3, int(os.environ.get("POSTGRES_POOL_TIMEOUT", "10")))
+POSTGRES_POOL_MIN_SIZE = max(0, int(os.environ.get("POSTGRES_POOL_MIN_SIZE", "0")))
+POSTGRES_POOL_MAX_SIZE = max(1, POSTGRES_POOL_MIN_SIZE, int(os.environ.get("POSTGRES_POOL_MAX_SIZE", "3")))
+POSTGRES_POOL_TIMEOUT = max(10, int(os.environ.get("POSTGRES_POOL_TIMEOUT", "20")))
+POSTGRES_POOL_RETRIES = max(1, int(os.environ.get("POSTGRES_POOL_RETRIES", "3")))
 USER_SESSION_CACHE_SECONDS = max(15, int(os.environ.get("USER_SESSION_CACHE_SECONDS", "90")))
 TRAIN_CACHE_SECONDS = max(0, int(os.environ.get("TRAIN_CACHE_SECONDS", "30")))
 
@@ -236,14 +237,14 @@ def get_postgres_pool():
                 timeout=POSTGRES_POOL_TIMEOUT,
                 max_idle=300,
                 max_lifetime=1800,
-                reconnect_timeout=30,
+                reconnect_timeout=60,
                 check=ConnectionPool.check_connection,
                 open=False,
                 name="bangphra-db-pool",
             )
-            # เปิด pool และเตรียม connection แรกตั้งแต่ตอนเริ่มระบบ แทนที่จะรอเมื่อผู้ใช้กดเมนูครั้งแรก
-            pool.open()
-            pool.wait(timeout=POSTGRES_POOL_TIMEOUT + 5)
+            # เปิด pool แบบไม่บังคับรอ connection ตอน Gunicorn กำลังเริ่มระบบ
+            # หาก Supabase ตอบช้าชั่วคราว เว็บจะยังเริ่มทำงานได้และ pool จะเชื่อมต่อเบื้องหลัง
+            pool.open(wait=False)
             _POSTGRES_POOL = pool
     return _POSTGRES_POOL
 
@@ -272,9 +273,20 @@ class PostgresConnection:
 
     def __enter__(self):
         # pool.connection() จะ commit/rollback และคืน connection ให้ pool ให้อัตโนมัติ
-        self._pool_context = get_postgres_pool().connection(timeout=POSTGRES_POOL_TIMEOUT)
-        self._conn = self._pool_context.__enter__()
-        return self
+        # ลองซ้ำเมื่อ Supabase เพิ่งตื่นหรือเครือข่ายสะดุด โดยไม่ทำให้ Deploy ล้มทันที
+        last_error = None
+        for attempt in range(POSTGRES_POOL_RETRIES):
+            try:
+                self._pool_context = get_postgres_pool().connection(timeout=POSTGRES_POOL_TIMEOUT)
+                self._conn = self._pool_context.__enter__()
+                return self
+            except Exception as exc:
+                last_error = exc
+                self._pool_context = None
+                self._conn = None
+                if attempt + 1 < POSTGRES_POOL_RETRIES:
+                    time.sleep(min(1.5 * (attempt + 1), 4.0))
+        raise last_error
 
     def __exit__(self, exc_type, exc, traceback):
         if self._pool_context is None:
