@@ -1,5 +1,5 @@
 from flask import (Flask, request, render_template_string, send_from_directory, jsonify,
-                   session, redirect, url_for, flash, send_file, abort, g)
+                   session, redirect, url_for, flash, send_file, abort, g, has_request_context)
 from pathlib import Path
 import os
 import subprocess
@@ -9,16 +9,11 @@ import uuid
 import re
 import hashlib
 import threading
-import atexit
 import sqlite3
 try:
     import psycopg
 except ImportError:
     psycopg = None
-try:
-    from psycopg_pool import ConnectionPool
-except ImportError:
-    ConnectionPool = None
 import csv
 import io
 import shutil
@@ -71,11 +66,10 @@ if DATABASE_URL.startswith("postgres://"):
 if USE_POSTGRES and "supabase" in DATABASE_URL and "sslmode=" not in DATABASE_URL:
     DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "sslmode=require"
 
-# ค่าประสิทธิภาพฐานข้อมูล: ใช้ connection เดิมซ้ำ ลดเวลาจับมือกับ Supabase ทุกครั้งที่กดเมนู
-POSTGRES_POOL_MIN_SIZE = max(0, int(os.environ.get("POSTGRES_POOL_MIN_SIZE", "0")))
-POSTGRES_POOL_MAX_SIZE = max(1, POSTGRES_POOL_MIN_SIZE, int(os.environ.get("POSTGRES_POOL_MAX_SIZE", "3")))
-POSTGRES_POOL_TIMEOUT = max(10, int(os.environ.get("POSTGRES_POOL_TIMEOUT", "20")))
-POSTGRES_POOL_RETRIES = max(1, int(os.environ.get("POSTGRES_POOL_RETRIES", "3")))
+# ค่าความเสถียรฐานข้อมูล: ใช้ connection เดียวกันภายใน request แล้วปิดอย่างถูกต้อง
+# ไม่ซ้อน application pool ทับ Supabase Supavisor เพื่อลด PoolTimeout
+POSTGRES_CONNECT_TIMEOUT = max(5, int(os.environ.get("POSTGRES_CONNECT_TIMEOUT", "15")))
+POSTGRES_CONNECT_RETRIES = max(1, int(os.environ.get("POSTGRES_CONNECT_RETRIES", "3")))
 USER_SESSION_CACHE_SECONDS = max(15, int(os.environ.get("USER_SESSION_CACHE_SECONDS", "90")))
 TRAIN_CACHE_SECONDS = max(0, int(os.environ.get("TRAIN_CACHE_SECONDS", "30")))
 
@@ -217,85 +211,90 @@ class PostgresCursor:
         return [CompatRow(zip(columns, row)) for row in rows]
 
 
-_POSTGRES_POOL = None
-_POSTGRES_POOL_LOCK = threading.Lock()
+def _open_postgres_connection(database_url):
+    """เปิด PostgreSQL โดยลองใหม่เมื่อ Supabase เพิ่งตื่นหรือเครือข่ายสะดุด"""
+    if psycopg is None:
+        raise RuntimeError("ยังไม่มี psycopg กรุณาติดตั้ง psycopg[binary]")
 
-
-def get_postgres_pool():
-    """สร้าง pool เพียงครั้งเดียวต่อ Gunicorn worker แล้วนำ connection กลับมาใช้ซ้ำ"""
-    global _POSTGRES_POOL
-    if _POSTGRES_POOL is not None:
-        return _POSTGRES_POOL
-    if psycopg is None or ConnectionPool is None:
-        raise RuntimeError("ยังไม่มี psycopg pool กรุณาติดตั้ง psycopg[binary] และ psycopg_pool")
-    with _POSTGRES_POOL_LOCK:
-        if _POSTGRES_POOL is None:
-            pool = ConnectionPool(
-                conninfo=DATABASE_URL,
-                min_size=POSTGRES_POOL_MIN_SIZE,
-                max_size=POSTGRES_POOL_MAX_SIZE,
-                timeout=POSTGRES_POOL_TIMEOUT,
-                max_idle=300,
-                max_lifetime=1800,
-                reconnect_timeout=60,
-                check=ConnectionPool.check_connection,
-                open=False,
-                name="bangphra-db-pool",
-            )
-            # เปิด pool แบบไม่บังคับรอ connection ตอน Gunicorn กำลังเริ่มระบบ
-            # หาก Supabase ตอบช้าชั่วคราว เว็บจะยังเริ่มทำงานได้และ pool จะเชื่อมต่อเบื้องหลัง
-            pool.open(wait=False)
-            _POSTGRES_POOL = pool
-    return _POSTGRES_POOL
-
-
-def _close_postgres_pool():
-    global _POSTGRES_POOL
-    pool = _POSTGRES_POOL
-    _POSTGRES_POOL = None
-    if pool is not None:
+    last_error = None
+    for attempt in range(POSTGRES_CONNECT_RETRIES):
         try:
-            pool.close()
+            return psycopg.connect(
+                database_url,
+                connect_timeout=POSTGRES_CONNECT_TIMEOUT,
+                prepare_threshold=None,
+                application_name="bangphra-station",
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=3,
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < POSTGRES_CONNECT_RETRIES:
+                time.sleep(min(1.5 * (attempt + 1), 4.0))
+    raise last_error
+
+
+def _acquire_postgres_connection(database_url):
+    """ใช้ connection เดียวกันตลอด request เพื่อลดการเชื่อมซ้ำ แต่ไม่เก็บ connection ค้างข้าม request"""
+    if has_request_context():
+        conn = getattr(g, "_station_postgres_conn", None)
+        if conn is not None and not conn.closed:
+            return conn, False
+        conn = _open_postgres_connection(database_url)
+        g._station_postgres_conn = conn
+        return conn, False
+    return _open_postgres_connection(database_url), True
+
+
+@app.teardown_appcontext
+def _close_request_postgres_connection(_error=None):
+    conn = getattr(g, "_station_postgres_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            delattr(g, "_station_postgres_conn")
         except Exception:
             pass
 
 
-atexit.register(_close_postgres_pool)
-
-
 class PostgresConnection:
-    """ตัวแปลงคำสั่ง SQLite เดิมให้ทำงานกับ PostgreSQL ผ่าน connection pool"""
+    """ตัวแปลงคำสั่ง SQLite เดิมให้ทำงานกับ PostgreSQL โดยไม่แตะระบบเสียง"""
 
     def __init__(self, database_url):
         self._database_url = database_url
-        self._pool_context = None
         self._conn = None
+        self._owned = False
 
     def __enter__(self):
-        # pool.connection() จะ commit/rollback และคืน connection ให้ pool ให้อัตโนมัติ
-        # ลองซ้ำเมื่อ Supabase เพิ่งตื่นหรือเครือข่ายสะดุด โดยไม่ทำให้ Deploy ล้มทันที
-        last_error = None
-        for attempt in range(POSTGRES_POOL_RETRIES):
-            try:
-                self._pool_context = get_postgres_pool().connection(timeout=POSTGRES_POOL_TIMEOUT)
-                self._conn = self._pool_context.__enter__()
-                return self
-            except Exception as exc:
-                last_error = exc
-                self._pool_context = None
-                self._conn = None
-                if attempt + 1 < POSTGRES_POOL_RETRIES:
-                    time.sleep(min(1.5 * (attempt + 1), 4.0))
-        raise last_error
+        self._conn, self._owned = _acquire_postgres_connection(self._database_url)
+        return self
 
     def __exit__(self, exc_type, exc, traceback):
-        if self._pool_context is None:
+        if self._conn is None:
             return False
         try:
-            return self._pool_context.__exit__(exc_type, exc, traceback)
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
         finally:
+            if self._owned:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+            elif self._conn.closed and has_request_context():
+                try:
+                    delattr(g, "_station_postgres_conn")
+                except Exception:
+                    pass
             self._conn = None
-            self._pool_context = None
+        return False
 
     @staticmethod
     def _convert_sql(sql):
@@ -1009,7 +1008,7 @@ def backend_health_checks():
         with get_db() as conn:
             conn.execute("SELECT 1").fetchone()
         database_ok = True
-        database_detail = (f"Supabase PostgreSQL พร้อมใช้ · connection pool {POSTGRES_POOL_MIN_SIZE}–{POSTGRES_POOL_MAX_SIZE}" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน")
+        database_detail = ("Supabase PostgreSQL พร้อมใช้ · เชื่อมต่อแบบ request-scoped" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน")
     except Exception as exc:
         database_detail = f"เชื่อมต่อฐานข้อมูลไม่สำเร็จ: {str(exc)[:180]}"
 
@@ -1028,7 +1027,25 @@ def backend_health_checks():
     return checks
 
 
-init_database()
+def _initialize_database_at_startup():
+    last_error = None
+    for attempt in range(POSTGRES_CONNECT_RETRIES if USE_POSTGRES else 1):
+        try:
+            init_database()
+            print("Database initialization completed.", flush=True)
+            return True
+        except Exception as exc:
+            last_error = exc
+            print(f"Database initialization attempt {attempt + 1} failed: {exc}", flush=True)
+            if attempt + 1 < (POSTGRES_CONNECT_RETRIES if USE_POSTGRES else 1):
+                time.sleep(min(2.0 * (attempt + 1), 5.0))
+    # ตารางใน Supabase ถูกสร้างไว้แล้วจาก Deploy ก่อนหน้า จึงไม่ควรทำให้ Gunicorn ล้ม
+    # การเชื่อมต่อครั้งถัดไปใน request จะลองใหม่อัตโนมัติ
+    print(f"WARNING: starting web service before database initialization: {last_error}", flush=True)
+    return False
+
+
+_DATABASE_INITIALIZED = _initialize_database_at_startup()
 
 HTML_PAGE = r"""
 <!DOCTYPE html>
