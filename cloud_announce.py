@@ -10,6 +10,10 @@ import re
 import hashlib
 import threading
 import sqlite3
+try:
+    import psycopg
+except ImportError:
+    psycopg = None
 import csv
 import io
 import shutil
@@ -38,6 +42,13 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 DB_PATH = BASE_DIR / "station_system.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+# Supabase requires encrypted PostgreSQL connections. Add sslmode only when absent.
+if USE_POSTGRES and "supabase" in DATABASE_URL and "sslmode=" not in DATABASE_URL:
+    DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "sslmode=require"
 AUDIO_DIR = BASE_DIR / "audio_generated"
 AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -145,13 +156,251 @@ def now_iso():
     return now_bangkok().isoformat(timespec="seconds")
 
 
+class CompatRow(dict):
+    """แถวข้อมูลที่อ่านได้ทั้ง row["column"] และ row[0] เหมือน sqlite3.Row"""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+class PostgresCursor:
+    def __init__(self, cursor, lastrowid=None):
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+
+    def _wrap(self, row):
+        if row is None:
+            return None
+        columns = [item.name if hasattr(item, "name") else item[0] for item in self._cursor.description]
+        return CompatRow(zip(columns, row))
+
+    def fetchone(self):
+        return self._wrap(self._cursor.fetchone())
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not rows:
+            return []
+        columns = [item.name if hasattr(item, "name") else item[0] for item in self._cursor.description]
+        return [CompatRow(zip(columns, row)) for row in rows]
+
+
+class PostgresConnection:
+    """ตัวแปลงคำสั่ง SQLite เดิมให้ทำงานกับ PostgreSQL โดยไม่แตะระบบเสียง"""
+
+    def __init__(self, database_url):
+        if psycopg is None:
+            raise RuntimeError("ยังไม่มี psycopg กรุณาเพิ่ม psycopg[binary] ใน requirements.txt")
+        self._conn = psycopg.connect(database_url, connect_timeout=12)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
+
+    @staticmethod
+    def _convert_sql(sql):
+        # SQLite ใช้ ? แต่ psycopg ใช้ %s
+        sql = re.sub(
+            r"username\s*=\s*\?\s+COLLATE\s+NOCASE",
+            "LOWER(username)=LOWER(%s)",
+            sql,
+            flags=re.IGNORECASE,
+        )
+        sql = re.sub(r"\s+COLLATE\s+NOCASE", "", sql, flags=re.IGNORECASE)
+        return sql.replace("?", "%s")
+
+    def execute(self, sql, params=()):
+        converted = self._convert_sql(sql)
+        cursor = self._conn.cursor()
+        # เฉพาะ INSERT ที่โค้ดเดิมอ่าน lastrowid
+        insert_match = re.match(r"\s*INSERT\s+INTO\s+(schedule_versions|announcement_history)\b", converted, re.I)
+        needs_id = bool(insert_match and " returning " not in converted.lower() and " select " not in converted.lower())
+        if needs_id:
+            converted = converted.rstrip().rstrip(";") + " RETURNING id"
+        cursor.execute(converted, tuple(params or ()))
+        lastrowid = None
+        if needs_id:
+            returned = cursor.fetchone()
+            lastrowid = returned[0] if returned else None
+        return PostgresCursor(cursor, lastrowid=lastrowid)
+
+    def executemany(self, sql, rows):
+        cursor = self._conn.cursor()
+        cursor.executemany(self._convert_sql(sql), rows)
+        return PostgresCursor(cursor)
+
+    def executescript(self, script):
+        cursor = self._conn.cursor()
+        for statement in script.split(";"):
+            statement = statement.strip()
+            if statement:
+                cursor.execute(statement)
+        return PostgresCursor(cursor)
+
+
 def get_db():
+    if USE_POSTGRES:
+        return PostgresConnection(DATABASE_URL)
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
+
+SQLITE_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('announcer','admin','auditor')),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_login TEXT
+);
+CREATE TABLE IF NOT EXISTS schedule_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    effective_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('draft','published')),
+    created_at TEXT NOT NULL,
+    created_by INTEGER,
+    FOREIGN KEY(created_by) REFERENCES users(id)
+);
+CREATE TABLE IF NOT EXISTS trains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id INTEGER NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+    num TEXT NOT NULL,
+    label TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    dest TEXT NOT NULL,
+    time_hhmm TEXT NOT NULL,
+    time_spoken TEXT NOT NULL,
+    next_station TEXT NOT NULL DEFAULT '',
+    service_pattern TEXT NOT NULL DEFAULT 'daily' CHECK(service_pattern IN ('daily','weekday','weekend','holiday','custom')),
+    service_dates TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(version_id) REFERENCES schedule_versions(id) ON DELETE CASCADE,
+    UNIQUE(version_id, direction, num, time_hhmm)
+);
+CREATE TABLE IF NOT EXISTS announcement_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    user_id INTEGER,
+    username TEXT NOT NULL,
+    train_num TEXT,
+    announcement_type TEXT NOT NULL,
+    announce_mode TEXT NOT NULL,
+    voice TEXT NOT NULL,
+    platform TEXT,
+    message TEXT,
+    generation_ms INTEGER,
+    playback_success INTEGER,
+    pause_times TEXT NOT NULL DEFAULT '[]',
+    stop_time TEXT,
+    completed_at TEXT,
+    failure_reason TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE TABLE IF NOT EXISTS announcement_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    event_at TEXT NOT NULL,
+    details TEXT,
+    FOREIGN KEY(history_id) REFERENCES announcement_history(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_trains_version ON trains(version_id, direction, time_hhmm);
+CREATE INDEX IF NOT EXISTS idx_history_started ON announcement_history(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_history ON announcement_events(history_id, event_at);
+"""
+
+POSTGRES_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+    username TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('announcer','admin','auditor')),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_login TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username_lower ON users (LOWER(username));
+CREATE TABLE IF NOT EXISTS schedule_versions (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    effective_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('draft','published')),
+    created_at TEXT NOT NULL,
+    created_by BIGINT REFERENCES users(id)
+);
+CREATE TABLE IF NOT EXISTS trains (
+    id BIGSERIAL PRIMARY KEY,
+    version_id BIGINT NOT NULL REFERENCES schedule_versions(id) ON DELETE CASCADE,
+    direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+    num TEXT NOT NULL,
+    label TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    dest TEXT NOT NULL,
+    time_hhmm TEXT NOT NULL,
+    time_spoken TEXT NOT NULL,
+    next_station TEXT NOT NULL DEFAULT '',
+    service_pattern TEXT NOT NULL DEFAULT 'daily' CHECK(service_pattern IN ('daily','weekday','weekend','holiday','custom')),
+    service_dates TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(version_id, direction, num, time_hhmm)
+);
+CREATE TABLE IF NOT EXISTS announcement_history (
+    id BIGSERIAL PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    user_id BIGINT REFERENCES users(id),
+    username TEXT NOT NULL,
+    train_num TEXT,
+    announcement_type TEXT NOT NULL,
+    announce_mode TEXT NOT NULL,
+    voice TEXT NOT NULL,
+    platform TEXT,
+    message TEXT,
+    generation_ms INTEGER,
+    playback_success INTEGER,
+    pause_times TEXT NOT NULL DEFAULT '[]',
+    stop_time TEXT,
+    completed_at TEXT,
+    failure_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS announcement_events (
+    id BIGSERIAL PRIMARY KEY,
+    history_id BIGINT NOT NULL REFERENCES announcement_history(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    event_at TEXT NOT NULL,
+    details TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trains_version ON trains(version_id, direction, time_hhmm);
+CREATE INDEX IF NOT EXISTS idx_history_started ON announcement_history(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_history ON announcement_events(history_id, event_at);
+"""
+
+DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+if psycopg is not None:
+    DB_INTEGRITY_ERRORS = DB_INTEGRITY_ERRORS + (psycopg.IntegrityError,)
 
 def _label_time(label):
     match = re.search(r"\((\d{1,2}:\d{2})\)", label or "")
@@ -186,83 +435,7 @@ def normalize_date_list(value):
 
 def init_database():
     with get_db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('announcer','admin','auditor')),
-                active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                last_login TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS schedule_versions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                effective_date TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('draft','published')),
-                created_at TEXT NOT NULL,
-                created_by INTEGER,
-                FOREIGN KEY(created_by) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS trains (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                version_id INTEGER NOT NULL,
-                direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
-                num TEXT NOT NULL,
-                label TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                dest TEXT NOT NULL,
-                time_hhmm TEXT NOT NULL,
-                time_spoken TEXT NOT NULL,
-                next_station TEXT NOT NULL DEFAULT '',
-                service_pattern TEXT NOT NULL DEFAULT 'daily' CHECK(service_pattern IN ('daily','weekday','weekend','holiday','custom')),
-                service_dates TEXT NOT NULL DEFAULT '',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(version_id) REFERENCES schedule_versions(id) ON DELETE CASCADE,
-                UNIQUE(version_id, direction, num, time_hhmm)
-            );
-
-            CREATE TABLE IF NOT EXISTS announcement_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at TEXT NOT NULL,
-                user_id INTEGER,
-                username TEXT NOT NULL,
-                train_num TEXT,
-                announcement_type TEXT NOT NULL,
-                announce_mode TEXT NOT NULL,
-                voice TEXT NOT NULL,
-                platform TEXT,
-                message TEXT,
-                generation_ms INTEGER,
-                playback_success INTEGER,
-                pause_times TEXT NOT NULL DEFAULT '[]',
-                stop_time TEXT,
-                completed_at TEXT,
-                failure_reason TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS announcement_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                history_id INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                event_at TEXT NOT NULL,
-                details TEXT,
-                FOREIGN KEY(history_id) REFERENCES announcement_history(id) ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_trains_version ON trains(version_id, direction, time_hhmm);
-            CREATE INDEX IF NOT EXISTS idx_history_started ON announcement_history(started_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_events_history ON announcement_events(history_id, event_at);
-            """
-        )
+        conn.executescript(POSTGRES_SCHEMA if USE_POSTGRES else SQLITE_SCHEMA)
 
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             initial_password = os.environ.get("INITIAL_ADMIN_PASSWORD", "admin1234")
@@ -654,6 +827,16 @@ def backend_health_checks():
         tts_connected, error = _HEALTH_CACHE["tts"]
         tts_detail = "เชื่อมต่อและเรียกรายการเสียงได้" if tts_connected else (error or "เชื่อมต่อ TTS ไม่สำเร็จ")
 
+    database_ok = False
+    database_detail = ""
+    try:
+        with get_db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        database_ok = True
+        database_detail = "Supabase PostgreSQL เชื่อมต่อสำเร็จ" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน"
+    except Exception as exc:
+        database_detail = f"เชื่อมต่อฐานข้อมูลไม่สำเร็จ: {str(exc)[:180]}"
+
     checks = [
         {"key": "backend", "label": "Backend", "ok": True, "detail": "Flask ตอบสนองตามปกติ"},
         {"key": "chime", "label": "ไฟล์เสียงเตือน", "ok": chime.exists() and chime.stat().st_size > 0,
@@ -663,8 +846,8 @@ def backend_health_checks():
          "detail": f"ใช้งาน {used_percent}% · เหลือ {round(disk.free / (1024**3), 2)} GB"},
         {"key": "audio_dir", "label": "โฟลเดอร์ไฟล์เสียง", "ok": AUDIO_DIR.exists() and audio_writable,
          "detail": f"พร้อมเขียนไฟล์ · มีไฟล์เสียง {len(list(AUDIO_DIR.glob('*.mp3')))} ไฟล์"},
-        {"key": "database", "label": "ฐานข้อมูล", "ok": DB_PATH.exists() and os.access(DB_PATH, os.W_OK),
-         "detail": f"{DB_PATH.name} พร้อมใช้งาน"},
+        {"key": "database", "label": "ฐานข้อมูล", "ok": database_ok,
+         "detail": database_detail},
     ]
     return checks
 
@@ -2653,6 +2836,13 @@ def restore_data():
                 conn.execute("""INSERT INTO announcement_history(id,started_at,user_id,username,train_num,announcement_type,announce_mode,voice,platform,message,generation_ms,playback_success,pause_times,stop_time,completed_at,failure_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (h.get('id'),h.get('started_at'),None,h.get('username','ไม่ทราบ'),h.get('train_num'),h.get('announcement_type',''),h.get('announce_mode',''),h.get('voice',''),h.get('platform'),h.get('message'),h.get('generation_ms'),h.get('playback_success'),h.get('pause_times','[]'),h.get('stop_time'),h.get('completed_at'),h.get('failure_reason')))
             for e in events:
                 conn.execute("INSERT INTO announcement_events(id,history_id,event_type,event_at,details) VALUES(?,?,?,?,?)", (e.get('id'),e.get('history_id'),e.get('event_type'),e.get('event_at'),e.get('details')))
+            if USE_POSTGRES:
+                for table in ("schedule_versions", "trains", "announcement_history", "announcement_events"):
+                    conn.execute(
+                        f"SELECT setval(pg_get_serial_sequence('{table}','id'), "
+                        f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
+                        f"EXISTS(SELECT 1 FROM {table}))"
+                    )
         flash("กู้คืนตารางรถและประวัติแล้ว บัญชีผู้ใช้เดิมยังคงอยู่")
     except Exception as exc: flash(f"กู้คืนไม่สำเร็จ: {exc}")
     return redirect(url_for("admin_schedules"))
@@ -2673,7 +2863,7 @@ def create_user():
         if not username or not display or role not in ROLE_LABELS or len(password)<6: raise ValueError("กรอกข้อมูลให้ครบ และรหัสผ่านอย่างน้อย 6 ตัว")
         with get_db() as conn: conn.execute("INSERT INTO users(username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,1,?)",(username,generate_password_hash(password),display,role,now_iso()))
         flash("เพิ่มบัญชีแล้ว")
-    except sqlite3.IntegrityError: flash("ชื่อผู้ใช้นี้มีอยู่แล้ว")
+    except DB_INTEGRITY_ERRORS: flash("ชื่อผู้ใช้นี้มีอยู่แล้ว")
     except Exception as exc: flash(str(exc))
     return redirect(url_for('admin_users'))
 
