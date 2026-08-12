@@ -144,14 +144,15 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
     {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
-    {"idx": 4, "title": "รถจอดรับส่ง", "hint": "ใช้ตอนขบวนรถจอดเทียบสถานี", "group": "รถเข้า-ออก"},
+    {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "เหตุการณ์พิเศษ"},
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
     {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "เลือกประเภทรถวิ่งผ่าน", "group": "เหตุการณ์พิเศษ"},
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
-    {"idx": 11, "title": "รถออก / สถานีถัดไป", "hint": "กดเมื่อขบวนรถเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
+    {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
+    {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
 ]
 
 # ------------------------------------------------------------
@@ -1904,7 +1905,7 @@ HTML_PAGE = r"""
     function validateSelection() {
         if (selectedAnnouncement === null) return "กรุณาเลือกประเภทประกาศ";
         if (![7, 8].includes(selectedAnnouncement) && !value("num") && ![3, 9].includes(selectedAnnouncement)) return "กรุณาเลือกขบวนรถ";
-        if (selectedAnnouncement === 11 && !value("next_station")) return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+        if ([4, 12].includes(selectedAnnouncement) && !value("next_station")) return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
         if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
         if (selectedAnnouncement === 8) {
             const mode = value("announce_mode");
@@ -2553,6 +2554,7 @@ def prepare_tts_text(text):
     tts_text = tts_text.replace("สิ่งของและสัมภาระของท่าน นำลง", "สิ่งของและสัมภาระของท่าน, นำลง")
     tts_text = tts_text.replace("นำลงจากขบวนรถให้ครบถ้วน ขบวนรถ", "นำลงจากขบวนรถให้ครบถ้วน. ขบวนรถ")
     tts_text = tts_text.replace("นำลงให้ถูกต้องครบถ้วน ขบวนรถ", "นำลงให้ถูกต้องครบถ้วน. ขบวนรถ")
+    tts_text = tts_text.replace("นำลงให้ครบถ้วนและถูกต้อง ขบวนรถ", "นำลงให้ครบถ้วนและถูกต้อง. ขบวนรถ")
     tts_text = tts_text.replace("ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวัง", "ผู้โดยสารที่ลงจากขบวนรถ, โปรดระมัดระวัง")
 
     # ประกาศหลายขบวน: เว้นจังหวะระหว่างรายละเอียดแต่ละขบวน
@@ -2567,6 +2569,8 @@ def prepare_tts_text(text):
     tts_text = tts_text.replace(" และ สถานี", " และสถานี")
     tts_text = tts_text.replace(" และ ป้ายหยุดรถ", " และป้ายหยุดรถ")
     tts_text = tts_text.replace(" เป็นสถานีต่อไปตามลำดับ", ", เป็นสถานีต่อไปตามลำดับ")
+    tts_text = tts_text.replace(" ขบวนรถเที่ยวนี้ เมื่อออกจาก", ". ขบวนรถเที่ยวนี้, เมื่อออกจาก")
+    tts_text = tts_text.replace(" และทุกสถานีตลอดปลายทาง", ", และทุกสถานีตลอดปลายทาง")
     tts_text = tts_text.replace(" ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง", " ล่าช้ากว่ากำหนดเวลาเดิม. คาดว่าจะถึง")
     tts_text = tts_text.replace(" ในนามของการรถไฟแห่งประเทศไทย", ". ในนามของการรถไฟแห่งประเทศไทย")
     tts_text = tts_text.replace(" ต้องขออภัย", ", ต้องขออภัย")
@@ -2710,7 +2714,11 @@ def build_english_announcement(data):
     elif idx == 3:
         text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
-        text = f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. The train at platform {platform} is train number {t_num}, from {origin} to {dest}. After departing {current} Station, the next stops will be {next_st}."
+        text = (
+            f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
+            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}. "
+            f"After departing {current} Station, the train will stop at {next_st}, and at all scheduled stops through to {dest} Station."
+        )
     elif idx == 5:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
@@ -2742,8 +2750,12 @@ def build_english_announcement(data):
         )
     elif idx == 11:
         text = (
-            f"Attention please. Train number {t_num}, from {origin} to {dest}. "
-            f"After departing {current} Station, the train will stop at {next_st}, "
+            f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
+            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
+        )
+    elif idx == 12:
+        text = (
+            f"After departing {current} Station, this train will stop at {next_st}, "
             f"and at all scheduled stops through to {dest} Station."
         )
     else:
@@ -2790,7 +2802,15 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
-        text = f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระของท่าน นำลงจากขบวนรถให้ครบถ้วน ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} ขบวนรถเที่ยวนี้เมื่อออกจาก{station(current)} แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} เป็นสถานีต่อไปตามลำดับ ขอบคุณครับ"
+        text = (
+            f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
+            f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
+            f"นำลงให้ครบถ้วนและถูกต้อง "
+            f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
+            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
+            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+            f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+        )
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
@@ -2819,12 +2839,16 @@ def build_announcement(data):
         text += "ขอบคุณครับ"
     elif idx == 11:
         text = (
-            f"โปรดทราบ ขบวนรถ ขบวนที่ {t_num} "
-            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
-            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว "
-            f"จะหยุดรับส่งผู้โดยสารที่ {next_st} "
-            f"และทุกสถานี ตลอดปลายทาง{station(dest)} "
-            f"ขอบคุณครับ"
+            f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
+            f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
+            f"นำลงให้ครบถ้วนและถูกต้อง "
+            f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
+            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} ครับ"
+        )
+    elif idx == 12:
+        text = (
+            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+            f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
         )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
