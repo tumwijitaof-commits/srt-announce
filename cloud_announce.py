@@ -144,13 +144,14 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
     {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
-    {"idx": 4, "title": "รถจอดรับส่ง / ออก", "hint": "ประกาศสถานีถัดไปและให้ขึ้นรถ", "group": "รถเข้า-ออก"},
+    {"idx": 4, "title": "รถจอดรับส่ง", "hint": "ใช้ตอนขบวนรถจอดเทียบสถานี", "group": "รถเข้า-ออก"},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "เหตุการณ์พิเศษ"},
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
     {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "เลือกประเภทรถวิ่งผ่าน", "group": "เหตุการณ์พิเศษ"},
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 11, "title": "รถออก / สถานีถัดไป", "hint": "กดเมื่อขบวนรถเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
 ]
 
 # ------------------------------------------------------------
@@ -1903,6 +1904,7 @@ HTML_PAGE = r"""
     function validateSelection() {
         if (selectedAnnouncement === null) return "กรุณาเลือกประเภทประกาศ";
         if (![7, 8].includes(selectedAnnouncement) && !value("num") && ![3, 9].includes(selectedAnnouncement)) return "กรุณาเลือกขบวนรถ";
+        if (selectedAnnouncement === 11 && !value("next_station")) return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
         if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
         if (selectedAnnouncement === 8) {
             const mode = value("announce_mode");
@@ -2738,6 +2740,12 @@ def build_english_announcement(data):
             f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. "
             f"{train_details} {next_details}"
         )
+    elif idx == 11:
+        text = (
+            f"Attention please. Train number {t_num}, from {origin} to {dest}. "
+            f"After departing {current} Station, the train will stop at {next_st}, "
+            f"and at all scheduled stops through to {dest} Station."
+        )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
@@ -2809,6 +2817,15 @@ def build_announcement(data):
         if t_num_3:
             text += f"และขบวนรถในชานชาลาที่ {platform_3} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st_3} เป็นสถานีต่อไปตามลำดับ "
         text += "ขอบคุณครับ"
+    elif idx == 11:
+        text = (
+            f"โปรดทราบ ขบวนรถ ขบวนที่ {t_num} "
+            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
+            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว "
+            f"จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+            f"และทุกสถานี ตลอดปลายทาง{station(dest)} "
+            f"ขอบคุณครับ"
+        )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
