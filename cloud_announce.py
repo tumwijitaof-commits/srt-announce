@@ -3288,12 +3288,49 @@ def join_english_platforms(platforms):
     return ", ".join(labels[:-1]) + ", and " + labels[-1]
 
 
+def is_chachoengsao_terminal(name):
+    """ตรวจว่าปลายทางคือสถานีชุมทางฉะเชิงเทรา เพื่อใช้ถ้อยคำสถานีปลายทางโดยไม่พูดซ้ำ"""
+    cleaned = (name or "").strip()
+    for prefix in ("สถานี", "ป้ายหยุดรถ", "ที่หยุดรถ"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+    return cleaned in {"ชุมทางฉะเชิงเทรา", "ฉะเชิงเทรา"}
+
+
+def thai_departure_route_text(current, next_st, dest):
+    """สร้างเฉพาะช่วงหลังรถออก โดยคงสำนวนเดิมและเปลี่ยนเฉพาะกรณีปลายทางฉะเชิงเทรา"""
+    if is_chachoengsao_terminal(dest):
+        return (
+            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+            f"ซึ่งเป็นสถานีปลายทาง"
+        )
+    return (
+        f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+        f"และทุกสถานีตลอดปลายทาง{station(dest)}"
+    )
+
+
+def english_departure_route_text(current, next_st, dest_th, dest_en):
+    """English equivalent of the departure-route suffix."""
+    if is_chachoengsao_terminal(dest_th):
+        return (
+            f"After departing {current} Station, the train will stop at {next_st}, "
+            f"with Chachoengsao Junction Station as the terminal station."
+        )
+    return (
+        f"After departing {current} Station, the train will stop at {next_st}, "
+        f"and at all scheduled stops through to {dest_en} Station."
+    )
+
+
 def build_english_announcement(data):
     idx = int(data.get("tab_index", -1))
 
     t_num = train_number_en(data.get("num", ""))
     origin = station_en(data.get("origin", ""))
-    dest = station_en(data.get("dest", ""))
+    dest_th_raw = data.get("dest", "")
+    dest = station_en(dest_th_raw)
     t_time = time_en(tidy_time(data.get("time", "")))
     platform = data.get("platform", "")
     pass_platform = data.get("pass_platform") or platform
@@ -3342,7 +3379,7 @@ def build_english_announcement(data):
         if stop_mode == "wait":
             text = base
         else:
-            text = base + f" After departing {current} Station, the train will stop at {next_st}, and at all scheduled stops through to {dest} Station."
+            text = base + " " + english_departure_route_text(current, next_st, dest_th_raw, dest)
     elif idx == 5:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
@@ -3404,10 +3441,7 @@ def build_english_announcement(data):
             f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
         )
     elif idx == 12:
-        text = (
-            f"After departing {current} Station, this train will stop at {next_st}, "
-            f"and at all scheduled stops through to {dest} Station."
-        )
+        text = english_departure_route_text(current, next_st, dest_th_raw, dest)
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
@@ -3476,11 +3510,7 @@ def build_announcement(data):
         if stop_mode == "wait":
             text = base + " ครับ"
         else:
-            text = (
-                base +
-                f" ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
-                f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
-            )
+            text = base + " " + thai_departure_route_text(current, next_st, dest) + " ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
@@ -3546,10 +3576,7 @@ def build_announcement(data):
             f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} ครับ"
         )
     elif idx == 12:
-        text = (
-            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
-            f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
-        )
+        text = thai_departure_route_text(current, next_st, dest) + " ขอบคุณครับ"
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
