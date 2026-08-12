@@ -149,7 +149,7 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
-    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "เลือกประเภทรถวิ่งผ่าน", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "รองรับรถผ่านพร้อมกัน 1–3 ทาง", "group": "เหตุการณ์พิเศษ"},
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
     {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
     {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
@@ -1322,6 +1322,20 @@ HTML_PAGE = r"""
             opacity: .45;
             cursor: not-allowed;
         }
+        .pass-train-list { display: grid; gap: 10px; }
+        .pass-train-item {
+            padding: 12px; border: 1px solid #eadcc5; border-radius: 14px; background: #fff;
+        }
+        .pass-train-head {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px;
+            color: var(--maroon-dark);
+        }
+        .pass-actions { display: grid; gap: 7px; margin-top: 10px; }
+        .pass-add-btn, .pass-remove-btn {
+            border: 1px solid #d8c9b7; border-radius: 11px; padding: 9px 12px; font-weight: 850;
+        }
+        .pass-add-btn { color: white; background: var(--maroon); }
+        .pass-remove-btn { color: var(--red); background: #fff3f2; }
         .hidden { display: none !important; }
 
         @media (max-width: 860px) {
@@ -1577,24 +1591,91 @@ HTML_PAGE = r"""
 
                     <div class="conditional" id="passFields">
                         <p class="conditional-title">ข้อมูลรถวิ่งผ่าน</p>
-                        <div class="field-grid">
-                            <div id="trainTypeWrap">
-                                <label for="train_type">ประเภทรถ</label>
-                                <select id="train_type">
-                                    <option value="สินค้า">สินค้า</option>
-                                    <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
-                                    <option value="พิเศษ">พิเศษ</option>
-                                    <option value="รถจักรเปล่า">รถจักรเปล่า</option>
-                                </select>
+                        <input type="hidden" id="pass_count" value="1">
+
+                        <div class="pass-train-list">
+                            <div class="pass-train-item" id="passTrain1">
+                                <div class="pass-train-head">
+                                    <b>รถผ่านทางที่ 1</b>
+                                    <span class="train-role">รายการหลัก</span>
+                                </div>
+                                <div class="field-grid">
+                                    <div id="trainTypeWrap">
+                                        <label for="train_type">ประเภทรถ</label>
+                                        <select id="train_type">
+                                            <option value="สินค้า">สินค้า</option>
+                                            <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
+                                            <option value="พิเศษ">พิเศษ</option>
+                                            <option value="รถจักรเปล่า">รถจักรเปล่า</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="pass_platform">ชานชาลาที่รถผ่าน</label>
+                                        <select id="pass_platform">
+                                            <option value="1" selected>ชานชาลาที่ 1</option>
+                                            <option value="2">ชานชาลาที่ 2</option>
+                                            <option value="3">ชานชาลาที่ 3</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
-                            <div>
-                                <label for="pass_platform">ชานชาลาที่รถผ่าน</label>
-                                <select id="pass_platform">
-                                    <option value="1" selected>ชานชาลาที่ 1</option>
-                                    <option value="2">ชานชาลาที่ 2</option>
-                                    <option value="3">ชานชาลาที่ 3</option>
-                                </select>
+
+                            <div class="pass-train-item hidden" id="passTrain2">
+                                <div class="pass-train-head">
+                                    <b>รถผ่านทางที่ 2</b>
+                                    <button type="button" class="pass-remove-btn" onclick="removePassTrain(2)">− ลบ</button>
+                                </div>
+                                <div class="field-grid">
+                                    <div>
+                                        <label for="train_type_2">ประเภทรถ</label>
+                                        <select id="train_type_2">
+                                            <option value="สินค้า">สินค้า</option>
+                                            <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
+                                            <option value="พิเศษ">พิเศษ</option>
+                                            <option value="รถจักรเปล่า">รถจักรเปล่า</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="pass_platform_2">ชานชาลาที่รถผ่าน</label>
+                                        <select id="pass_platform_2">
+                                            <option value="1">ชานชาลาที่ 1</option>
+                                            <option value="2" selected>ชานชาลาที่ 2</option>
+                                            <option value="3">ชานชาลาที่ 3</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
+
+                            <div class="pass-train-item hidden" id="passTrain3">
+                                <div class="pass-train-head">
+                                    <b>รถผ่านทางที่ 3</b>
+                                    <button type="button" class="pass-remove-btn" onclick="removePassTrain(3)">− ลบ</button>
+                                </div>
+                                <div class="field-grid">
+                                    <div>
+                                        <label for="train_type_3">ประเภทรถ</label>
+                                        <select id="train_type_3">
+                                            <option value="สินค้า">สินค้า</option>
+                                            <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
+                                            <option value="พิเศษ">พิเศษ</option>
+                                            <option value="รถจักรเปล่า">รถจักรเปล่า</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="pass_platform_3">ชานชาลาที่รถผ่าน</label>
+                                        <select id="pass_platform_3">
+                                            <option value="1">ชานชาลาที่ 1</option>
+                                            <option value="2">ชานชาลาที่ 2</option>
+                                            <option value="3" selected>ชานชาลาที่ 3</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="multiPassControls" class="pass-actions">
+                            <button type="button" class="pass-add-btn" id="addPassTrainButton" onclick="addPassTrain()">＋ เพิ่มรถผ่านอีกทาง</button>
+                            <div class="helper">เพิ่มได้สูงสุด 3 ทาง ระบบจะรวมข้อความให้อัตโนมัติเมื่อรถผ่านพร้อมกัน</div>
                         </div>
                     </div>
 
@@ -1775,6 +1856,45 @@ HTML_PAGE = r"""
         schedulePrepareAnnouncement();
     }
 
+    function resetPassTrainUI(singleOnly = false) {
+        byId("pass_count").value = "1";
+        byId("passTrain2").classList.add("hidden");
+        byId("passTrain3").classList.add("hidden");
+        byId("train_type_2").value = "สินค้า";
+        byId("train_type_3").value = "สินค้า";
+        byId("pass_platform_2").value = "2";
+        byId("pass_platform_3").value = "3";
+        byId("multiPassControls").classList.toggle("hidden", singleOnly);
+        byId("addPassTrainButton").classList.remove("hidden");
+    }
+
+    function addPassTrain() {
+        let count = parseInt(value("pass_count") || "1", 10);
+        if (count >= 3) return;
+        count += 1;
+        byId("pass_count").value = String(count);
+        byId(`passTrain${count}`).classList.remove("hidden");
+        if (count >= 3) byId("addPassTrainButton").classList.add("hidden");
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(120);
+    }
+
+    function removePassTrain(index) {
+        let count = parseInt(value("pass_count") || "1", 10);
+        if (index < 2 || index > count) return;
+
+        if (index === 2 && count === 3) {
+            byId("train_type_2").value = value("train_type_3") || "สินค้า";
+            byId("pass_platform_2").value = value("pass_platform_3") || "3";
+        }
+        byId(`passTrain${count}`).classList.add("hidden");
+        count -= 1;
+        byId("pass_count").value = String(Math.max(1, count));
+        byId("addPassTrainButton").classList.remove("hidden");
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(120);
+    }
+
     function selectAnnouncement(index, button) {
         selectedAnnouncement = index;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
@@ -1787,6 +1907,7 @@ HTML_PAGE = r"""
         if (index === 5) byId("delayFields").classList.add("show");
         if (index === 3 || index === 9) {
             byId("passFields").classList.add("show");
+            resetPassTrainUI(index === 3);
             if (index === 3) byId("trainTypeWrap").classList.add("hidden");
         }
         if (index === 8) {
@@ -1820,6 +1941,11 @@ HTML_PAGE = r"""
             custom_text: value("custom_text"), custom_text_en: value("custom_text_en"),
             train_type: value("train_type") || "สินค้า",
             pass_platform: value("pass_platform") || value("platform") || "1",
+            pass_count: value("pass_count") || "1",
+            train_type_2: value("train_type_2") || "สินค้า",
+            pass_platform_2: value("pass_platform_2") || "2",
+            train_type_3: value("train_type_3") || "สินค้า",
+            pass_platform_3: value("pass_platform_3") || "3",
             num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
             time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2"),
             num_3: value("num_3"), origin_3: value("origin_3"), dest_3: value("dest_3"),
@@ -1906,6 +2032,13 @@ HTML_PAGE = r"""
         if (selectedAnnouncement === null) return "กรุณาเลือกประเภทประกาศ";
         if (![7, 8].includes(selectedAnnouncement) && !value("num") && ![3, 9].includes(selectedAnnouncement)) return "กรุณาเลือกขบวนรถ";
         if ([4, 12].includes(selectedAnnouncement) && !value("next_station")) return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+        if (selectedAnnouncement === 9) {
+            const count = Math.max(1, Math.min(3, parseInt(value("pass_count") || "1", 10)));
+            const platforms = [value("pass_platform")];
+            if (count >= 2) platforms.push(value("pass_platform_2"));
+            if (count >= 3) platforms.push(value("pass_platform_3"));
+            if (new Set(platforms).size !== platforms.length) return "กรุณาเลือกชานชาลาของรถที่ผ่านแต่ละทางไม่ให้ซ้ำกัน";
+        }
         if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
         if (selectedAnnouncement === 8) {
             const mode = value("announce_mode");
@@ -2283,6 +2416,9 @@ HTML_PAGE = r"""
          "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
         byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2"; byId("platform_3").value = "3";
         byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
+        byId("train_type_2").value = "สินค้า"; byId("train_type_3").value = "สินค้า";
+        byId("pass_platform_2").value = "2"; byId("pass_platform_3").value = "3";
+        resetPassTrainUI(false);
         setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
         selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
@@ -2678,6 +2814,50 @@ def time_en(text):
     return f"{hour12}:{minute:02d} {suffix}"
 
 
+def pass_train_items(data):
+    """อ่านรายการรถสินค้า/รถพิเศษที่ผ่านพร้อมกัน สูงสุด 3 ทาง"""
+    try:
+        count = int(data.get("pass_count", 1) or 1)
+    except (TypeError, ValueError):
+        count = 1
+    count = max(1, min(3, count))
+
+    allowed_types = set(EN_TRAIN_TYPES)
+    items = []
+    for index in range(1, count + 1):
+        suffix = "" if index == 1 else f"_{index}"
+        train_type = str(data.get(f"train_type{suffix}", "สินค้า") or "สินค้า").strip()
+        platform = str(data.get(f"pass_platform{suffix}", "") or "").strip()
+        if train_type not in allowed_types:
+            train_type = "สินค้า"
+        if platform not in {"1", "2", "3"}:
+            raise ValueError(f"ชานชาลาของรถผ่านทางที่ {index} ไม่ถูกต้อง")
+        items.append({"train_type": train_type, "platform": platform})
+
+    platforms = [item["platform"] for item in items]
+    if len(set(platforms)) != len(platforms):
+        raise ValueError("ชานชาลาของรถที่ผ่านพร้อมกันต้องไม่ซ้ำกัน")
+    return items
+
+
+def join_thai_platforms(platforms):
+    labels = [f"ชานชาลาที่ {p}" for p in platforms]
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return " และ".join(labels)
+    return ", ".join(labels[:-1]) + " และ" + labels[-1]
+
+
+def join_english_platforms(platforms):
+    labels = [f"platform {p}" for p in platforms]
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return " and ".join(labels)
+    return ", ".join(labels[:-1]) + ", and " + labels[-1]
+
+
 def build_english_announcement(data):
     idx = int(data.get("tab_index", -1))
 
@@ -2728,7 +2908,33 @@ def build_english_announcement(data):
     elif idx == 8:
         text = custom_text_en.strip() if custom_text_en.strip() else "Attention please. Please listen carefully to the station announcement."
     elif idx == 9:
-        text = f"Attention please. A {train_type} will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+        pass_items = pass_train_items(data)
+        if len(pass_items) == 1:
+            item = pass_items[0]
+            en_type = EN_TRAIN_TYPES[item["train_type"]]
+            text = (
+                f"Attention please. A {en_type} will shortly pass through {join_english_platforms([item['platform']])}. "
+                "For your safety, please stand behind the yellow line and do not cross the tracks while the train is passing."
+            )
+        elif len({item["train_type"] for item in pass_items}) == 1:
+            en_type = EN_TRAIN_TYPES[pass_items[0]["train_type"]]
+            platforms_text = join_english_platforms([item["platform"] for item in pass_items])
+            text = (
+                f"Attention please. {len(pass_items)} {en_type}s will shortly pass through the station at the same time, on {platforms_text}. "
+                "For your safety, please stand behind the yellow line and do not cross the tracks while the trains are passing."
+            )
+        else:
+            details = []
+            for item in pass_items:
+                details.append(f"a {EN_TRAIN_TYPES[item['train_type']]} on platform {item['platform']}")
+            if len(details) == 2:
+                detail_text = " and ".join(details)
+            else:
+                detail_text = ", ".join(details[:-1]) + ", and " + details[-1]
+            text = (
+                f"Attention please. The following trains will shortly pass through the station at the same time: {detail_text}. "
+                "For your safety, please stand behind the yellow line and do not cross the tracks while the trains are passing."
+            )
     elif idx == 10:
         trains = [
             (platform, t_num, origin, dest, next_st),
@@ -2820,7 +3026,36 @@ def build_announcement(data):
     elif idx == 8:
         text = custom_text if custom_text.strip() else "กรุณาพิมพ์ข้อความที่ต้องการประกาศในช่องข้อความประกาศเองก่อนกดปุ่มครับ"
     elif idx == 9:
-        text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type}วิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
+        pass_items = pass_train_items(data)
+        if len(pass_items) == 1:
+            item = pass_items[0]
+            text = (
+                f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{item['train_type']}วิ่งผ่านสถานี "
+                f"บริเวณชานชาลาที่ {item['platform']} เพื่อความปลอดภัย "
+                "กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และงดเดินข้ามทางรถไฟในขณะขบวนรถกำลังผ่าน ขอบคุณครับ"
+            )
+        elif len({item["train_type"] for item in pass_items}) == 1:
+            train_type_name = pass_items[0]["train_type"]
+            platforms_text = join_thai_platforms([item["platform"] for item in pass_items])
+            text = (
+                f"โปรดทราบ อีกสักครู่จะมีขบวนรถ{train_type_name}วิ่งผ่านสถานีพร้อมกัน "
+                f"บริเวณ{platforms_text} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา "
+                "และงดเดินข้ามทางรถไฟในขณะขบวนรถกำลังผ่าน ขอบคุณครับ"
+            )
+        else:
+            details = [
+                f"ขบวนรถ{item['train_type']}บริเวณชานชาลาที่ {item['platform']}"
+                for item in pass_items
+            ]
+            if len(details) == 2:
+                detail_text = " และ".join(details)
+            else:
+                detail_text = ", ".join(details[:-1]) + " และ" + details[-1]
+            text = (
+                f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานีพร้อมกัน ได้แก่ {detail_text} "
+                "เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา "
+                "และงดเดินข้ามทางรถไฟในขณะขบวนรถกำลังผ่าน ขอบคุณครับ"
+            )
     elif idx == 10:
         # ใช้แพตเทิร์นเดิมของประกาศรถเข้าพร้อมกัน และต่อประโยคแบบเดียวกันเมื่อมีขบวนที่ 3
         text = (
