@@ -144,6 +144,7 @@ TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAIN
 ANNOUNCEMENT_BUTTONS = [
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 11, "title": "รถเปลี่ยนเส้นทาง", "hint": "แจ้งกรณีเปลี่ยนทางหรือชานชาลาเข้าเทียบจากปกติ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับพร้อมกัน 1–3 ทาง", "group": "ใช้บ่อย", "visible": True},
@@ -3294,6 +3295,12 @@ def build_english_announcement(data):
         text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
     elif idx == 1:
         text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
+    elif idx == 11:
+        text = (
+            f"Attention please. Today, train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, "
+            f"will arrive at platform {platform}. Passengers traveling on this train, "
+            f"please wait with your belongings on platform {platform}."
+        )
     elif idx == 2:
         arriving = [(platform, t_num, origin, dest, t_time)]
         if t_num_2:
@@ -3408,6 +3415,14 @@ def build_announcement(data):
         text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
     elif idx == 1:
         text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
+    elif idx == 11:
+        text = (
+            f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} "
+            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
+            f"เที่ยวกำหนดเวลา {t_time} จะเข้าเทียบรับส่งผู้โดยสารในชานชาลาที่ {platform} "
+            f"ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} "
+            f"ขอบคุณครับ"
+        )
     elif idx == 2:
         arriving = [(platform, t_num, origin, dest, t_time)]
         if t_num_2:
