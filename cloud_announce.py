@@ -145,7 +145,7 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
-    {"idx": 4, "title": "รถจอดที่สถานี", "hint": "เลือกจอดรับส่งปกติ หรือจอดรอเวลาออก", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับพร้อมกัน 1–3 ทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย", "visible": True},
@@ -154,8 +154,6 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 3, "title": "รถผ่านสถานี (เดิม)", "hint": "", "group": "ซ่อน", "visible": False},
     {"idx": 6, "title": "ระวังคนลงรถ (ยกเลิก)", "hint": "", "group": "ซ่อน", "visible": False},
     {"idx": 10, "title": "รถเข้าเทียบพร้อมกัน 2–3 ขบวน", "hint": "", "group": "ซ่อน", "visible": False},
-    {"idx": 11, "title": "จอดรอเวลาออก", "hint": "", "group": "ซ่อน", "visible": False},
-    {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "", "group": "ซ่อน", "visible": False},
 ]
 
 # ------------------------------------------------------------
@@ -1776,15 +1774,6 @@ HTML_PAGE = r"""
                     </div>
                     {% endfor %}
 
-                    <div class="conditional" id="stopFields">
-                        <p class="conditional-title">ลักษณะการจอด</p>
-                        <input type="hidden" id="stop_mode" value="normal">
-                        <div class="stop-mode-grid">
-                            <button type="button" class="stop-mode-btn active" data-stop-mode="normal" onclick="setStopMode('normal', this)">🚉 จอดรับส่งปกติ<div class="helper">ประกาศต่อเนื่องจนถึงสถานีถัดไปและปลายทาง</div></button>
-                            <button type="button" class="stop-mode-btn" data-stop-mode="wait" onclick="setStopMode('wait', this)">⏱️ จอดรอเวลาออก<div class="helper">ประกาศข้อมูลขบวนแล้วหยุด รอกดรถออก</div></button>
-                        </div>
-                    </div>
-
                     <div class="conditional" id="delayFields">
                         <p class="conditional-title">ข้อมูลรถล่าช้า</p>
                         <label for="delay_time">คาดว่าจะถึงเวลา</label>
@@ -1912,10 +1901,6 @@ HTML_PAGE = r"""
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
-                    <div class="departure-action" id="departureAction">
-                        <button type="button" class="departure-btn" id="departureButton" onclick="playDepartureAfterWait()">🚆 รถออกแล้ว · ประกาศต่อ</button>
-                        <div class="helper">ใช้เฉพาะขบวนที่เลือก “จอดรอเวลาออก”</div>
-                    </div>
                     <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
                 </div>
                 <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ โดยเสียงภาษาไทยและภาษาอังกฤษจะใช้เพศเดียวกันตามปุ่มที่เลือกด้านบน</p>
@@ -1946,7 +1931,6 @@ HTML_PAGE = r"""
     let activeHistoryId = null;
     let activeHistoryPromise = null;
     let previewTimer = null;
-    let waitingDepartureReady = false;
     let activeTrainPickerCount = 1;
 
     function byId(id) { return document.getElementById(id); }
@@ -2022,34 +2006,6 @@ HTML_PAGE = r"""
         invalidatePreparedAudio();
         schedulePreview();
         schedulePrepareAnnouncement(500);
-    }
-
-    function setStopMode(mode, button) {
-        byId("stop_mode").value = mode;
-        document.querySelectorAll(".stop-mode-btn").forEach(btn => btn.classList.remove("active"));
-        if (button) button.classList.add("active");
-        waitingDepartureReady = false;
-        updateDepartureAction();
-        invalidatePreparedAudio();
-        schedulePreview(50);
-        schedulePrepareAnnouncement(500);
-    }
-
-    function updateDepartureAction() {
-        const shouldShow = selectedAnnouncement === 4 && value("stop_mode") === "wait";
-        byId("departureAction")?.classList.toggle("show", shouldShow);
-        if (byId("departureButton")) byId("departureButton").disabled = !waitingDepartureReady;
-    }
-
-    async function playDepartureAfterWait() {
-        if (!waitingDepartureReady) return;
-        const error = validateSelection(12);
-        if (error) {
-            setStatus("ข้อมูลไม่ครบ", "error");
-            byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
-            return;
-        }
-        await playAnnouncement(12);
     }
 
     function startHistoryRecord(tabIndex) {
@@ -2233,14 +2189,12 @@ HTML_PAGE = r"""
 
     function selectAnnouncement(index, button) {
         selectedAnnouncement = index;
-        waitingDepartureReady = false;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
         refreshPlaybackControls();
         byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>ตรวจข้อความด้านล่างก่อนกดประกาศ`;
 
-        ["stopFields", "delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
-        if (index === 4) byId("stopFields").classList.add("show");
+        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         if (index === 5) byId("delayFields").classList.add("show");
         if (index === 9) {
             byId("passFields").classList.add("show");
@@ -2250,7 +2204,6 @@ HTML_PAGE = r"""
             byId("customFields").classList.add("show");
             updateCustomLanguageFields();
         }
-        updateDepartureAction();
         byId("audioReadyBadge").textContent = "";
         invalidatePreparedAudio();
         schedulePreview(30);
@@ -2284,7 +2237,6 @@ HTML_PAGE = r"""
             pass_platform_2: value("pass_platform_2") || "2",
             train_type_3: value("train_type_3") || "สินค้า",
             pass_platform_3: value("pass_platform_3") || "3",
-            stop_mode: value("stop_mode") || "normal",
             num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
             time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2"),
             num_3: value("num_3"), origin_3: value("origin_3"), dest_3: value("dest_3"),
@@ -2406,10 +2358,8 @@ HTML_PAGE = r"""
         if (index === null || index === undefined) return "กรุณาเลือกประเภทประกาศ";
         if (![7, 8, 9].includes(index) && !value("num")) return "กรุณาเลือกขบวนรถ";
 
-        // จอดรับส่งปกติต้องมีสถานีถัดไป แต่จอดรอเวลาออกยังไม่ต้องใช้จนกด “รถออกแล้ว”
-        if (index === 4 && value("stop_mode") !== "wait" && !value("next_station"))
-            return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
-        if (index === 12 && !value("next_station"))
+        // รถจอด / ออก ต้องมีข้อมูลสถานีถัดไปเพื่อประกาศเส้นทางต่อเนื่อง
+        if (index === 4 && !value("next_station"))
             return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
 
         if (index === 2) {
@@ -2460,7 +2410,6 @@ HTML_PAGE = r"""
         if (byId("mobilePlayButton")) { byId("mobilePlayButton").textContent = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ ประกาศ"; byId("mobilePlayButton").disabled = playDisabled; }
         if (byId("mobilePauseButton")) byId("mobilePauseButton").disabled = pauseDisabled;
         if (byId("mobileStopButton")) byId("mobileStopButton").disabled = stopDisabled;
-        updateDepartureAction();
     }
 
     function setPlaybackState(state) {
@@ -2778,14 +2727,6 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             setStatus("ประกาศเสร็จแล้ว", "ok");
-            if (tabIndex === 4 && value("stop_mode") === "wait") {
-                waitingDepartureReady = true;
-                updateDepartureAction();
-                setStatus("รอเวลาออก · พร้อมกดรถออกแล้ว", "ok");
-            } else if (tabIndex === 12) {
-                waitingDepartureReady = false;
-                updateDepartureAction();
-            }
             await logHistoryEvent("success");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -2820,16 +2761,13 @@ HTML_PAGE = r"""
         byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
         byId("train_type_2").value = "สินค้า"; byId("train_type_3").value = "สินค้า";
         byId("pass_platform_2").value = "2"; byId("pass_platform_3").value = "3";
-        byId("stop_mode").value = "normal";
-        document.querySelectorAll(".stop-mode-btn").forEach((btn, i) => btn.classList.toggle("active", i === 0));
         resetPassTrainUI(false);
         activeTrainPickerCount = 1;
         byId("trainPicker2").classList.add("hidden"); byId("trainPicker3").classList.add("hidden");
         byId("addTrain2Button").disabled = false; byId("addTrain2Button").textContent = "＋ เพิ่มขบวนที่ 2";
-        selectedAnnouncement = null; waitingDepartureReady = false;
+        selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
-        ["stopFields", "delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
-        updateDepartureAction();
+        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         refreshPlaybackControls();
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 2 ก่อน";
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง";
@@ -3371,15 +3309,11 @@ def build_english_announcement(data):
     elif idx == 3:
         text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
-        stop_mode = str(data.get("stop_mode", "normal") or "normal").strip()
         base = (
             f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
             f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
         )
-        if stop_mode == "wait":
-            text = base
-        else:
-            text = base + " " + english_departure_route_text(current, next_st, dest_th_raw, dest)
+        text = base + " " + english_departure_route_text(current, next_st, dest_th_raw, dest)
     elif idx == 5:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
@@ -3435,13 +3369,6 @@ def build_english_announcement(data):
             f"Attention please. This is {current} Station. Before leaving the train, please check all your belongings. "
             f"{train_details} {next_details}"
         )
-    elif idx == 11:
-        text = (
-            f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
-            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
-        )
-    elif idx == 12:
-        text = english_departure_route_text(current, next_st, dest_th_raw, dest)
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
@@ -3499,7 +3426,6 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
-        stop_mode = str(data.get("stop_mode", "normal") or "normal").strip()
         base = (
             f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
             f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
@@ -3507,10 +3433,7 @@ def build_announcement(data):
             f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
             f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)}"
         )
-        if stop_mode == "wait":
-            text = base + " ครับ"
-        else:
-            text = base + " " + thai_departure_route_text(current, next_st, dest) + " ขอบคุณครับ"
+        text = base + " " + thai_departure_route_text(current, next_st, dest) + " ขอบคุณครับ"
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
@@ -3567,16 +3490,6 @@ def build_announcement(data):
         if t_num_3:
             text += f"และขบวนรถในชานชาลาที่ {platform_3} เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st_3} เป็นสถานีต่อไปตามลำดับ "
         text += "ขอบคุณครับ"
-    elif idx == 11:
-        text = (
-            f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
-            f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
-            f"นำลงให้ครบถ้วนและถูกต้อง "
-            f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
-            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} ครับ"
-        )
-    elif idx == 12:
-        text = thai_departure_route_text(current, next_st, dest) + " ขอบคุณครับ"
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
