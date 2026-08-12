@@ -17,6 +17,7 @@ except ImportError:
 import csv
 import io
 import shutil
+import secrets
 from datetime import datetime, date, time as dt_time, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -104,6 +105,7 @@ _AUDIO_CACHE_LOCKS_GUARD = threading.Lock()
 _AUDIO_CLEANUP_LOCK = threading.Lock()
 _LAST_AUDIO_CLEANUP = 0.0
 AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60))
+TTS_GENERATION_TIMEOUT = max(10, int(os.environ.get("TTS_GENERATION_TIMEOUT", "30")))
 
 
 # ------------------------------------------------------------
@@ -140,19 +142,20 @@ OUTBOUND_TRAINS = [
 TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
 
 ANNOUNCEMENT_BUTTONS = [
-    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ก่อนรถเข้า"},
-    {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
-    {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
-    {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
-    {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
-    {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "เหตุการณ์พิเศษ"},
-    {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
-    {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
-    {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
-    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "รองรับรถผ่านพร้อมกัน 1–3 ทาง", "group": "เหตุการณ์พิเศษ"},
-    {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
-    {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
-    {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
+    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 4, "title": "รถจอดที่สถานี", "hint": "เลือกจอดรับส่งปกติ หรือจอดรอเวลาออก", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับพร้อมกัน 1–3 ทาง", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย", "visible": True},
+    {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศอื่น", "visible": True},
+    # รายการซ่อนสำหรับ History/ความเข้ากันได้กับเวอร์ชันเดิม
+    {"idx": 3, "title": "รถผ่านสถานี (เดิม)", "hint": "", "group": "ซ่อน", "visible": False},
+    {"idx": 6, "title": "ระวังคนลงรถ (ยกเลิก)", "hint": "", "group": "ซ่อน", "visible": False},
+    {"idx": 10, "title": "รถเข้าเทียบพร้อมกัน 2–3 ขบวน", "hint": "", "group": "ซ่อน", "visible": False},
+    {"idx": 11, "title": "จอดรอเวลาออก", "hint": "", "group": "ซ่อน", "visible": False},
+    {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "", "group": "ซ่อน", "visible": False},
 ]
 
 # ------------------------------------------------------------
@@ -180,6 +183,33 @@ def now_bangkok():
 
 def now_iso():
     return now_bangkok().isoformat(timespec="seconds")
+
+
+def csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+@app.before_request
+def protect_csrf():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    # Login ใช้ rate-limit + SameSite cookie และยังไม่มี session ที่เชื่อถือได้ จึงยกเว้นที่นี่
+    if request.endpoint == "login":
+        return None
+    expected = session.get("csrf_token")
+    supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+    if not expected or not supplied or not secrets.compare_digest(str(expected), str(supplied)):
+        if request.is_json or request.path.startswith("/api/") or request.path in {"/announce", "/preview", "/test-station-voice"}:
+            return jsonify(status="error", message="คำขอหมดอายุหรือไม่ปลอดภัย กรุณารีเฟรชหน้าแล้วลองใหม่"), 400
+        abort(400)
+    return None
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
 
 
 class CompatRow(dict):
@@ -345,14 +375,69 @@ class PostgresConnection:
         return PostgresCursor(cursor)
 
 
-def get_db():
-    if USE_POSTGRES:
-        return PostgresConnection(DATABASE_URL)
+def _open_sqlite_connection():
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+class SQLiteConnection:
+    """ใช้ SQLite connection เดียวกันภายใน request และปิดที่ teardown เช่นเดียวกับ PostgreSQL"""
+    def __init__(self):
+        self._conn = None
+        self._owned = False
+
+    def __enter__(self):
+        if has_request_context():
+            conn = getattr(g, "_station_sqlite_conn", None)
+            if conn is None:
+                conn = _open_sqlite_connection()
+                g._station_sqlite_conn = conn
+            self._conn = conn
+            self._owned = False
+        else:
+            self._conn = _open_sqlite_connection()
+            self._owned = True
+        return self._conn
+
+    def __exit__(self, exc_type, exc, traceback):
+        if self._conn is None:
+            return False
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            if self._owned:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+            self._conn = None
+        return False
+
+
+@app.teardown_appcontext
+def _close_request_sqlite_connection(_error=None):
+    conn = getattr(g, "_station_sqlite_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            delattr(g, "_station_sqlite_conn")
+        except Exception:
+            pass
+
+
+def get_db():
+    if USE_POSTGRES:
+        return PostgresConnection(DATABASE_URL)
+    return SQLiteConnection()
 
 
 SQLITE_SCHEMA = r"""
@@ -421,6 +506,16 @@ CREATE TABLE IF NOT EXISTS announcement_events (
     details TEXT,
     FOREIGN KEY(history_id) REFERENCES announcement_history(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS admin_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_at TEXT NOT NULL,
+    user_id INTEGER,
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit(event_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trains_version ON trains(version_id, direction, time_hhmm);
 CREATE INDEX IF NOT EXISTS idx_history_started ON announcement_history(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_history ON announcement_events(history_id, event_at);
@@ -489,6 +584,15 @@ CREATE TABLE IF NOT EXISTS announcement_events (
     event_at TEXT NOT NULL,
     details TEXT
 );
+CREATE TABLE IF NOT EXISTS admin_audit (
+    id BIGSERIAL PRIMARY KEY,
+    event_at TEXT NOT NULL,
+    user_id BIGINT REFERENCES users(id),
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit(event_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trains_version ON trains(version_id, direction, time_hhmm);
 CREATE INDEX IF NOT EXISTS idx_history_started ON announcement_history(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_history ON announcement_events(history_id, event_at);
@@ -534,7 +638,10 @@ def init_database():
         conn.executescript(POSTGRES_SCHEMA if USE_POSTGRES else SQLITE_SCHEMA)
 
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-            initial_password = os.environ.get("INITIAL_ADMIN_PASSWORD", "admin1234")
+            initial_password = os.environ.get("INITIAL_ADMIN_PASSWORD")
+            if not initial_password:
+                initial_password = secrets.token_urlsafe(16)
+                print("SECURITY: INITIAL_ADMIN_PASSWORD was not set. Generated one-time admin password: " + initial_password, flush=True)
             conn.execute(
                 "INSERT INTO users(username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,1,?)",
                 ("admin", generate_password_hash(initial_password), "ผู้ดูแลระบบ", "admin", now_iso()),
@@ -644,6 +751,10 @@ def roles_required(*roles):
 
 _TRAIN_LIST_CACHE = {}
 _TRAIN_LIST_CACHE_LOCK = threading.Lock()
+_LOGIN_ATTEMPTS = {}
+_LOGIN_ATTEMPTS_LOCK = threading.Lock()
+LOGIN_WINDOW_SECONDS = max(60, int(os.environ.get("LOGIN_WINDOW_SECONDS", "600")))
+LOGIN_MAX_ATTEMPTS = max(3, int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5")))
 
 
 def invalidate_train_cache():
@@ -721,7 +832,8 @@ def get_active_train_lists(target_date=None):
                     continue
                 item = {
                     "label": row["label"], "num": row["num"], "origin": row["origin"], "dest": row["dest"],
-                    "time": row["time_spoken"], "next": row["next_station"],
+                    "time": row["time_spoken"], "time_hhmm": row["time_hhmm"], "next": row["next_station"],
+                    "direction": row["direction"],
                 }
                 (inbound if row["direction"] == "inbound" else outbound).append(item)
             data = {train["label"]: train for train in inbound + outbound}
@@ -731,6 +843,28 @@ def get_active_train_lists(target_date=None):
         with _TRAIN_LIST_CACHE_LOCK:
             _TRAIN_LIST_CACHE[cache_key] = (time.monotonic(), _clone_train_result(result))
     return _clone_train_result(result)
+
+
+def get_quick_trains(inbound, outbound, limit=3):
+    """เลือกขบวนถัดไปตามเวลา Bangkok; ถ้าหมดวันแล้วแสดงเที่ยวต้นวันถัดไป"""
+    trains = [dict(t) for t in inbound + outbound]
+    now = now_bangkok()
+    current_minutes = now.hour * 60 + now.minute
+
+    def minutes(item):
+        value = item.get("time_hhmm") or _label_time(item.get("label", ""))
+        try:
+            h, m = value.split(":", 1)
+            return int(h) * 60 + int(m)
+        except Exception:
+            return 24 * 60
+
+    upcoming = sorted((t for t in trains if minutes(t) >= current_minutes), key=minutes)
+    if len(upcoming) < limit:
+        used = {t.get("label") for t in upcoming}
+        early = [t for t in sorted(trains, key=minutes) if t.get("label") not in used]
+        upcoming.extend(early[:limit - len(upcoming)])
+    return upcoming[:limit]
 
 
 def build_train_label(num, hhmm, origin, dest):
@@ -976,6 +1110,21 @@ def add_history_event(history_id, event_type, details=None):
                 (event_at, str(details.get("reason", ""))[:1000], history_id),
             )
     return event_at
+
+
+def log_admin_audit(action, details=None, user=None):
+    user = user or (get_current_user() if has_request_context() else None)
+    if not user:
+        return
+    try:
+        payload = details if isinstance(details, str) else json.dumps(details or {}, ensure_ascii=False)
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO admin_audit(event_at,user_id,username,action,details) VALUES(?,?,?,?,?)",
+                (now_iso(), user["id"], user["display_name"], action, payload),
+            )
+    except Exception as exc:
+        print(f"Audit log failed: {exc}", flush=True)
 
 
 _HEALTH_CACHE = {"at": 0.0, "tts": None}
@@ -1345,6 +1494,40 @@ HTML_PAGE = r"""
             .layout { grid-template-columns: 1fr; }
             .sticky { position: static; }
         }
+        .quick-card { margin-top: 14px; }
+        .quick-trains { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin-top:10px; }
+        .quick-train { border:1px solid #e4d4bf; background:#fff; border-radius:14px; padding:11px; text-align:left; min-height:74px; }
+        .quick-train:hover { border-color:var(--maroon); background:#fff5f5; }
+        .quick-time { font-weight:900; color:var(--maroon); font-size:17px; }
+        .quick-route { margin-top:3px; font-weight:800; }
+        .train-search-results { display:grid; gap:6px; margin-top:7px; max-height:240px; overflow:auto; }
+        .train-search-result { border:1px solid #eadcc5; background:#fffaf1; padding:9px 11px; border-radius:11px; text-align:left; }
+        .compact-settings { margin-top:12px; border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:var(--shadow); overflow:hidden; }
+        .compact-settings summary { padding:12px 15px; cursor:pointer; font-weight:900; color:var(--maroon-dark); list-style:none; display:flex; justify-content:space-between; gap:10px; }
+        .compact-settings summary::-webkit-details-marker { display:none; }
+        .compact-settings-body { padding:0 15px 15px; }
+        .group-title { margin:14px 0 7px; font-size:13px; color:var(--muted); font-weight:900; text-transform:none; }
+        .group-title:first-child { margin-top:0; }
+        .train-add-controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+        .small-action { border:1px solid #d8c9b7; background:#fff; color:var(--maroon-dark); padding:9px 12px; border-radius:11px; font-weight:850; }
+        .remove-train-btn { border:0; background:#f8e7e6; color:var(--red); border-radius:10px; padding:6px 9px; font-weight:850; }
+        .stop-mode-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .stop-mode-btn { border:1px solid #dfd1bd; border-radius:13px; background:#fff; padding:11px; text-align:left; font-weight:850; }
+        .stop-mode-btn.active { border-color:var(--maroon); background:#fff0f0; color:var(--maroon-dark); box-shadow:inset 0 0 0 1px var(--maroon); }
+        .preview-ready { margin-top:8px; min-height:22px; font-size:12.5px; font-weight:800; color:var(--green); }
+        .departure-action { display:none; margin-top:10px; }
+        .departure-action.show { display:block; }
+        .departure-btn { width:100%; border:0; border-radius:14px; padding:14px; background:#17633a; color:#fff; font-weight:900; font-size:16px; }
+        .mobile-controls { display:none; }
+        body.has-mobile-controls { padding-bottom:92px; }
+        @media (max-width: 860px) {
+            .quick-trains { grid-template-columns:1fr; }
+            .mobile-controls { position:fixed; display:grid; grid-template-columns:1.5fr 1fr 1fr; gap:7px; left:8px; right:8px; bottom:8px; z-index:1000; padding:8px; background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:16px; box-shadow:0 14px 36px rgba(40,20,20,.2); backdrop-filter:blur(10px); }
+            .mobile-controls button { border:0; border-radius:11px; padding:11px 7px; color:#fff; font-weight:900; }
+            .mobile-play { background:var(--maroon); } .mobile-pause{background:#b06b00}.mobile-stop{background:var(--red)}
+            body { padding-bottom:88px; }
+        }
+
         @media (max-width: 560px) {
             .topbar { align-items: flex-start; }
             .logo { width: 44px; height: 44px; font-size: 23px; }
@@ -1379,6 +1562,7 @@ HTML_PAGE = r"""
         {% if current_user.role == 'admin' %}
         <a href="{{ url_for('admin_schedules') }}">🚆 จัดการตารางรถ</a>
         <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
+        <a href="{{ url_for('admin_audit_page') }}">🧾 บันทึกผู้ดูแล</a>
         {% endif %}
         {% if current_user.role in ['admin', 'auditor'] %}
         <a href="{{ url_for('history_page') }}">🕘 ประวัติการประกาศ</a>
@@ -1388,52 +1572,57 @@ HTML_PAGE = r"""
         <a href="{{ url_for('logout') }}">ออกจากระบบ</a>
     </nav>
 
-    <section class="voice-quick-panel" id="thaiVoiceSettings">
-        <div class="voice-quick-head">
-            <div>
-                <h2 class="voice-quick-title">🔊 เลือกเสียงประกาศ</h2>
-                <div class="voice-quick-note" id="voiceHelper">เสียงที่เลือกจะใช้เพศเดียวกันทั้งภาษาไทยและภาษาอังกฤษ</div>
+    <details class="compact-settings" id="announceSettings">
+        <summary><span id="settingsSummary">🇹🇭 ภาษาไทย · 👩 เสียงผู้หญิง</span><span>⚙️ ตั้งค่า</span></summary>
+        <div class="compact-settings-body">
+            <input type="hidden" id="announce_mode" value="thai_only">
+            <input type="hidden" id="thai_voice" value="{{ voice_name }}">
+            <label>ภาษา</label>
+            <div class="language-grid">
+                <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ภาษาไทย<small>ประกาศภาษาเดียว</small></button>
+                <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
+                <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
             </div>
+            <label style="margin-top:12px">เสียงประกาศ</label>
+            <div class="voice-choice-grid">
+                <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}" data-voice="th-TH-PremwadeeNeural" onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">👩 เสียงผู้หญิง<small>Premwadee · Jenny</small></button>
+                <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}" data-voice="th-TH-NiwatNeural" onclick="setThaiVoice('th-TH-NiwatNeural', this)">👨 เสียงผู้ชาย<small>Niwat · Guy</small></button>
+                <button type="button" class="voice-test-btn" onclick="testStationVoice()">▶ ทดลองเสียง</button>
+            </div>
+            <div class="voice-quick-note" id="voiceHelper" style="margin-top:8px">ระบบจะจำภาษาและเสียงที่ใช้ล่าสุดในอุปกรณ์นี้</div>
         </div>
-        <input type="hidden" id="thai_voice" value="{{ voice_name }}">
-        <div class="voice-choice-grid">
-            <button type="button"
-                    class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}"
-                    data-voice="th-TH-PremwadeeNeural"
-                    onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">
-                👩 เสียงผู้หญิง
-                <small>ไทย: Premwadee · อังกฤษ: Jenny</small>
-            </button>
-            <button type="button"
-                    class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}"
-                    data-voice="th-TH-NiwatNeural"
-                    onclick="setThaiVoice('th-TH-NiwatNeural', this)">
-                👨 เสียงผู้ชาย
-                <small>ไทย: Niwat · อังกฤษ: Guy</small>
-            </button>
-            <button type="button" class="voice-test-btn" onclick="testStationVoice()">▶ ทดลองเสียง</button>
+    </details>
+
+    <section class="card quick-card">
+        <div class="card-head"><h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2></div>
+        <div class="card-body">
+            <div class="quick-trains">
+                {% for train in quick_trains %}
+                <button type="button" class="quick-train" onclick='selectTrainByLabel({{ train.label|tojson }}, 1)'>
+                    <div class="quick-time">{{ train.time_hhmm }} · ข.{{ train.num }}</div>
+                    <div class="quick-route">→ {{ train.dest }}</div>
+                    <div class="helper">{{ train.origin }} → {{ train.dest }}</div>
+                </button>
+                {% else %}
+                <div class="helper">วันนี้ไม่มีขบวนถัดไปในตารางที่เปิดใช้งาน</div>
+                {% endfor %}
+            </div>
+            <div style="margin-top:11px">
+                <label for="trainSearch">ค้นหาขบวนอื่น</label>
+                <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
+                <div class="train-search-results" id="trainSearchResults"></div>
+            </div>
         </div>
     </section>
 
     <section class="layout">
         <div class="stack">
-            <section class="card">
-                <div class="card-head"><h2 class="step-title"><span class="step">1</span> เลือกภาษาประกาศ</h2></div>
-                <div class="card-body">
-                    <input type="hidden" id="announce_mode" value="thai_only">
-                    <div class="language-grid">
-                        <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ภาษาไทย<small>ประกาศภาษาเดียว</small></button>
-                        <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
-                        <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
-                    </div>
-                    <div class="helper">เสียงภาษาอังกฤษจะเปลี่ยนเป็นผู้หญิงหรือผู้ชายให้ตรงกับเสียงที่เลือกด้านบนโดยอัตโนมัติ</div>
-                </div>
-            </section>
+
 
             <section class="card">
-                <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกขบวนและชานชาลา</h2></div>
+                <div class="card-head"><h2 class="step-title"><span class="step">1</span> เลือกขบวนและชานชาลา</h2></div>
                 <div class="card-body">
-                    <p class="helper" style="margin:0 0 12px;">เลือกได้สูงสุด 3 ขบวน โดยขบวนที่ 1 ใช้กับประกาศทั่วไป ส่วนปุ่ม “รถเข้าพร้อมกัน 2–3 ขบวน” จะนำขบวนที่เลือกทั้งหมดมาประกาศร่วมกัน</p>
+                    <p class="helper" style="margin:0 0 12px;">เลือกขบวนหลักก่อน หากมีรถเข้าเทียบพร้อมกันค่อยกด “เพิ่มขบวน” ได้สูงสุด 3 ขบวน</p>
 
                     <div class="train-pickers">
                         <div class="train-picker primary-train">
@@ -1478,10 +1667,10 @@ HTML_PAGE = r"""
                             </details>
                         </div>
 
-                        <div class="train-picker">
+                        <div class="train-picker hidden" id="trainPicker2">
                             <div class="train-picker-head">
                                 <div class="train-picker-title"><span class="train-order">2</span> ขบวนที่ 2</div>
-                                <span class="train-role">ไม่บังคับ</span>
+                                <button type="button" class="remove-train-btn" onclick="removeTrainPicker(2)">− ลบ</button>
                             </div>
                             <label for="train_select_2">เลือกขบวนรถ</label>
                             <select id="train_select_2" onchange="autoFill(2)">
@@ -1520,10 +1709,10 @@ HTML_PAGE = r"""
                             </details>
                         </div>
 
-                        <div class="train-picker">
+                        <div class="train-picker hidden" id="trainPicker3">
                             <div class="train-picker-head">
                                 <div class="train-picker-title"><span class="train-order">3</span> ขบวนที่ 3</div>
-                                <span class="train-role">ไม่บังคับ</span>
+                                <button type="button" class="remove-train-btn" onclick="removeTrainPicker(3)">− ลบ</button>
                             </div>
                             <label for="train_select_3">เลือกขบวนรถ</label>
                             <select id="train_select_3" onchange="autoFill(3)">
@@ -1562,6 +1751,9 @@ HTML_PAGE = r"""
                             </details>
                         </div>
                     </div>
+                    <div class="train-add-controls" id="trainAddControls">
+                        <button type="button" class="small-action" id="addTrain2Button" onclick="addTrainPicker()">＋ เพิ่มขบวนที่ 2</button>
+                    </div>
 
                     <div class="station-row">
                         <label for="current">สถานีปัจจุบัน</label>
@@ -1571,16 +1763,26 @@ HTML_PAGE = r"""
             </section>
 
             <section class="card">
-                <div class="card-head"><h2 class="step-title"><span class="step">3</span> เลือกประเภทประกาศ</h2></div>
+                <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกประเภทประกาศ</h2></div>
                 <div class="card-body">
+                    {% for group, buttons in grouped_buttons.items() %}
+                    <div class="group-title">{{ group }}</div>
                     <div class="announce-grid">
-                        {% for group, buttons in grouped_buttons.items() %}
-                            {% for button in buttons %}
-                            <button type="button" class="announce-option" data-index="{{ button.idx }}" data-title="{{ button.title }}" onclick="selectAnnouncement({{ button.idx }}, this)">
-                                <strong>{{ button.title }}</strong><span>{{ button.hint }}</span>
-                            </button>
-                            {% endfor %}
+                        {% for button in buttons %}
+                        <button type="button" class="announce-option" data-index="{{ button.idx }}" data-title="{{ button.title }}" onclick="selectAnnouncement({{ button.idx }}, this)">
+                            <strong>{{ button.title }}</strong><span>{{ button.hint }}</span>
+                        </button>
                         {% endfor %}
+                    </div>
+                    {% endfor %}
+
+                    <div class="conditional" id="stopFields">
+                        <p class="conditional-title">ลักษณะการจอด</p>
+                        <input type="hidden" id="stop_mode" value="normal">
+                        <div class="stop-mode-grid">
+                            <button type="button" class="stop-mode-btn active" data-stop-mode="normal" onclick="setStopMode('normal', this)">🚉 จอดรับส่งปกติ<div class="helper">ประกาศต่อเนื่องจนถึงสถานีถัดไปและปลายทาง</div></button>
+                            <button type="button" class="stop-mode-btn" data-stop-mode="wait" onclick="setStopMode('wait', this)">⏱️ จอดรอเวลาออก<div class="helper">ประกาศข้อมูลขบวนแล้วหยุด รอกดรถออก</div></button>
+                        </div>
                     </div>
 
                     <div class="conditional" id="delayFields">
@@ -1603,7 +1805,8 @@ HTML_PAGE = r"""
                                     <div id="trainTypeWrap">
                                         <label for="train_type">ประเภทรถ</label>
                                         <select id="train_type">
-                                            <option value="สินค้า">สินค้า</option>
+                                            <option value="โดยสาร">โดยสาร</option>
+                                            <option value="สินค้า" selected>สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
@@ -1629,7 +1832,8 @@ HTML_PAGE = r"""
                                     <div>
                                         <label for="train_type_2">ประเภทรถ</label>
                                         <select id="train_type_2">
-                                            <option value="สินค้า">สินค้า</option>
+                                            <option value="โดยสาร">โดยสาร</option>
+                                            <option value="สินค้า" selected>สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
@@ -1655,7 +1859,8 @@ HTML_PAGE = r"""
                                     <div>
                                         <label for="train_type_3">ประเภทรถ</label>
                                         <select id="train_type_3">
-                                            <option value="สินค้า">สินค้า</option>
+                                            <option value="โดยสาร">โดยสาร</option>
+                                            <option value="สินค้า" selected>สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
@@ -1696,15 +1901,20 @@ HTML_PAGE = r"""
         </div>
 
         <aside class="card sticky">
-            <div class="card-head"><h2 class="step-title"><span class="step">4</span> ตรวจสอบและประกาศ</h2></div>
+            <div class="card-head"><h2 class="step-title"><span class="step">3</span> ตรวจสอบและประกาศ</h2></div>
             <div class="card-body">
                 <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
-                <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก</div>
+                <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง</div>
+                <div class="preview-ready" id="audioReadyBadge"></div>
                 <div class="action-stack">
                     <div class="playback-controls">
                         <button type="button" class="primary" id="playButton" onclick="playOrResumeAudio()" disabled>▶ เริ่มประกาศ</button>
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
+                    </div>
+                    <div class="departure-action" id="departureAction">
+                        <button type="button" class="departure-btn" id="departureButton" onclick="playDepartureAfterWait()">🚆 รถออกแล้ว · ประกาศต่อ</button>
+                        <div class="helper">ใช้เฉพาะขบวนที่เลือก “จอดรอเวลาออก”</div>
                     </div>
                     <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
                 </div>
@@ -1713,6 +1923,11 @@ HTML_PAGE = r"""
         </aside>
     </section>
 </main>
+<div class="mobile-controls" id="mobileControls">
+    <button type="button" class="mobile-play" id="mobilePlayButton" onclick="playOrResumeAudio()">▶ ประกาศ</button>
+    <button type="button" class="mobile-pause" id="mobilePauseButton" onclick="pauseAudio()">⏸ พัก</button>
+    <button type="button" class="mobile-stop" id="mobileStopButton" onclick="stopAudio()">■ หยุด</button>
+</div>
 
 <script>
     const trainData = {{ trains_json | safe }};
@@ -1730,15 +1945,118 @@ HTML_PAGE = r"""
     let activePlaybackCancel = null;
     let activeHistoryId = null;
     let activeHistoryPromise = null;
+    let previewTimer = null;
+    let waitingDepartureReady = false;
+    let activeTrainPickerCount = 1;
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
+    function jsonHeaders() {
+        return { "Content-Type": "application/json", "X-CSRF-Token": window.KBP_CSRF_TOKEN || "" };
+    }
+
+    function updateSettingsSummary() {
+        const mode = value("announce_mode") || "thai_only";
+        const voice = value("thai_voice") || "th-TH-PremwadeeNeural";
+        const languageLabel = mode === "english_only" ? "🇬🇧 English" : (mode === "bilingual" ? "🇹🇭+🇬🇧 สองภาษา" : "🇹🇭 ภาษาไทย");
+        const voiceLabel = voice === "th-TH-NiwatNeural" ? "👨 เสียงผู้ชาย" : "👩 เสียงผู้หญิง";
+        if (byId("settingsSummary")) byId("settingsSummary").textContent = `${languageLabel} · ${voiceLabel}`;
+        try {
+            localStorage.setItem("kbp_announce_mode", mode);
+            localStorage.setItem("kbp_thai_voice", voice);
+        } catch (e) {}
+    }
+
+    function selectTrainByLabel(label, type = 1) {
+        if (type > activeTrainPickerCount) {
+            while (activeTrainPickerCount < type) addTrainPicker();
+        }
+        const selectId = type === 1 ? "train_select" : `train_select_${type}`;
+        const select = byId(selectId);
+        if (!select) return;
+        select.value = label;
+        autoFill(type);
+        if (type === 1 && byId("trainSearch")) {
+            byId("trainSearch").value = "";
+            byId("trainSearchResults").innerHTML = "";
+        }
+    }
+
+    function renderTrainSearch() {
+        const q = value("trainSearch").toLowerCase();
+        const box = byId("trainSearchResults");
+        if (!box) return;
+        if (!q) { box.innerHTML = ""; return; }
+        const matches = Object.entries(trainData).filter(([label, data]) => {
+            return [label, data.num, data.origin, data.dest, data.time, data.time_hhmm, data.next].join(" ").toLowerCase().includes(q);
+        }).slice(0, 8);
+        box.innerHTML = matches.map(([label, data]) => `<button type="button" class="train-search-result" data-label="${escapeHtml(label)}"><b>${escapeHtml(data.time_hhmm || "")} · ข.${escapeHtml(data.num || "")}</b> ${escapeHtml(data.origin || "")} → ${escapeHtml(data.dest || "")}</button>`).join("");
+        box.querySelectorAll(".train-search-result").forEach(btn => btn.addEventListener("click", () => selectTrainByLabel(btn.dataset.label, 1)));
+    }
+
+    function addTrainPicker() {
+        if (activeTrainPickerCount >= 3) return;
+        activeTrainPickerCount += 1;
+        byId(`trainPicker${activeTrainPickerCount}`).classList.remove("hidden");
+        byId("addTrain2Button").textContent = activeTrainPickerCount === 2 ? "＋ เพิ่มขบวนที่ 3" : "เพิ่มครบ 3 ขบวนแล้ว";
+        byId("addTrain2Button").disabled = activeTrainPickerCount >= 3;
+        schedulePreview();
+    }
+
+    function removeTrainPicker(index) {
+        if (index < 2 || index > activeTrainPickerCount) return;
+        if (index === 2 && activeTrainPickerCount === 3) {
+            ["train_select", "num", "time", "origin", "dest", "next_station", "platform"].forEach(base => {
+                const from = byId(base + "_3");
+                const to = byId(base + "_2");
+                if (from && to) to.value = from.value;
+            });
+            refreshSummary(2);
+        }
+        const last = activeTrainPickerCount;
+        ["train_select", "num", "time", "origin", "dest", "next_station"].forEach(base => { const el = byId(base + `_${last}`); if (el) el.value = ""; });
+        byId(`trainPicker${last}`).classList.add("hidden");
+        activeTrainPickerCount -= 1;
+        byId("addTrain2Button").disabled = false;
+        byId("addTrain2Button").textContent = activeTrainPickerCount === 1 ? "＋ เพิ่มขบวนที่ 2" : "＋ เพิ่มขบวนที่ 3";
+        invalidatePreparedAudio();
+        schedulePreview();
+        schedulePrepareAnnouncement(500);
+    }
+
+    function setStopMode(mode, button) {
+        byId("stop_mode").value = mode;
+        document.querySelectorAll(".stop-mode-btn").forEach(btn => btn.classList.remove("active"));
+        if (button) button.classList.add("active");
+        waitingDepartureReady = false;
+        updateDepartureAction();
+        invalidatePreparedAudio();
+        schedulePreview(50);
+        schedulePrepareAnnouncement(500);
+    }
+
+    function updateDepartureAction() {
+        const shouldShow = selectedAnnouncement === 4 && value("stop_mode") === "wait";
+        byId("departureAction")?.classList.toggle("show", shouldShow);
+        if (byId("departureButton")) byId("departureButton").disabled = !waitingDepartureReady;
+    }
+
+    async function playDepartureAfterWait() {
+        if (!waitingDepartureReady) return;
+        const error = validateSelection(12);
+        if (error) {
+            setStatus("ข้อมูลไม่ครบ", "error");
+            byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
+            return;
+        }
+        await playAnnouncement(12);
+    }
 
     function startHistoryRecord(tabIndex) {
         const payload = collectPayload(tabIndex);
         return fetch("/api/history/start", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: jsonHeaders(),
             body: JSON.stringify(payload)
         }).then(async response => {
             const data = await response.json();
@@ -1757,7 +2075,7 @@ HTML_PAGE = r"""
             if (!historyId) return;
             return fetch("/api/history/event", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: jsonHeaders(),
                 body: JSON.stringify({ history_id: historyId, event_type: eventType, details })
             });
         }).catch(error => console.warn("History event failed:", error));
@@ -1780,8 +2098,10 @@ HTML_PAGE = r"""
         } else {
             byId("voiceHelper").innerText = "เสียงที่เลือกจะใช้กับภาษาไทย และคำลงท้ายจะเปลี่ยนเป็นครับหรือค่ะอัตโนมัติ";
         }
+        updateSettingsSummary();
         invalidatePreparedAudio();
-        schedulePrepareAnnouncement();
+        schedulePreview(50);
+        schedulePrepareAnnouncement(500);
     }
 
     function setThaiVoice(voice, button) {
@@ -1790,8 +2110,10 @@ HTML_PAGE = r"""
         if (button) button.classList.add("active");
         const voiceName = voice === "th-TH-NiwatNeural" ? "เสียงผู้ชาย" : "เสียงผู้หญิง";
         setStatus("เลือก " + voiceName + " แล้ว", "ok");
+        updateSettingsSummary();
         invalidatePreparedAudio();
-        schedulePrepareAnnouncement();
+        schedulePreview(50);
+        schedulePrepareAnnouncement(500);
     }
 
     function updateCustomLanguageFields() {
@@ -1814,7 +2136,8 @@ HTML_PAGE = r"""
             });
             refreshSummary(type);
             invalidatePreparedAudio();
-            schedulePrepareAnnouncement();
+            schedulePreview();
+            schedulePrepareAnnouncement(500);
             return;
         }
         byId("num" + suffix).value = data.num || "";
@@ -1822,9 +2145,15 @@ HTML_PAGE = r"""
         byId("dest" + suffix).value = data.dest || "";
         byId("time" + suffix).value = data.time || "";
         byId("next_station" + suffix).value = data.next || "";
+        try {
+            const rememberedPlatform = localStorage.getItem(`kbp_platform:${value(selectId)}`);
+            const platformEl = byId(type === 1 ? "platform" : `platform_${type}`);
+            if (platformEl && ["1", "2", "3"].includes(rememberedPlatform)) platformEl.value = rememberedPlatform;
+        } catch (e) {}
         refreshSummary(type);
         invalidatePreparedAudio();
-        schedulePrepareAnnouncement();
+        schedulePreview();
+        schedulePrepareAnnouncement(500);
     }
 
     function refreshSummary(type = 1) {
@@ -1852,8 +2181,15 @@ HTML_PAGE = r"""
         if (type === 1 && byId("pass_platform")) {
             byId("pass_platform").value = value("platform") || "1";
         }
+        try {
+            const selectId = type === 1 ? "train_select" : `train_select_${type}`;
+            const platformId = type === 1 ? "platform" : `platform_${type}`;
+            const label = value(selectId);
+            if (label) localStorage.setItem(`kbp_platform:${label}`, value(platformId) || "1");
+        } catch (e) {}
         invalidatePreparedAudio();
-        schedulePrepareAnnouncement();
+        schedulePreview();
+        schedulePrepareAnnouncement(500);
     }
 
     function resetPassTrainUI(singleOnly = false) {
@@ -1897,26 +2233,28 @@ HTML_PAGE = r"""
 
     function selectAnnouncement(index, button) {
         selectedAnnouncement = index;
+        waitingDepartureReady = false;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
         refreshPlaybackControls();
-        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>พร้อมสร้างเสียงตามข้อมูลที่เลือก`;
+        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>ตรวจข้อความด้านล่างก่อนกดประกาศ`;
 
-        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
-        byId("trainTypeWrap").classList.remove("hidden");
+        ["stopFields", "delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        if (index === 4) byId("stopFields").classList.add("show");
         if (index === 5) byId("delayFields").classList.add("show");
-        if (index === 3 || index === 9) {
+        if (index === 9) {
             byId("passFields").classList.add("show");
-            resetPassTrainUI(index === 3);
-            if (index === 3) byId("trainTypeWrap").classList.add("hidden");
+            resetPassTrainUI(false);
         }
         if (index === 8) {
             byId("customFields").classList.add("show");
             updateCustomLanguageFields();
         }
-        byId("previewBox").innerHTML = "<b>กำลังเตรียมเสียงล่วงหน้า</b><br><br>เมื่อเสียงพร้อม ปุ่มประกาศจะทำงานได้แทบจะทันที";
+        updateDepartureAction();
+        byId("audioReadyBadge").textContent = "";
         invalidatePreparedAudio();
-        schedulePrepareAnnouncement(80);
+        schedulePreview(30);
+        schedulePrepareAnnouncement(500);
     }
 
     function escapeHtml(text) {
@@ -1946,6 +2284,7 @@ HTML_PAGE = r"""
             pass_platform_2: value("pass_platform_2") || "2",
             train_type_3: value("train_type_3") || "สินค้า",
             pass_platform_3: value("pass_platform_3") || "3",
+            stop_mode: value("stop_mode") || "normal",
             num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
             time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2"),
             num_3: value("num_3"), origin_3: value("origin_3"), dest_3: value("dest_3"),
@@ -1959,6 +2298,7 @@ HTML_PAGE = r"""
 
     function invalidatePreparedAudio() {
         preparedAudioKey = "";
+        if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "";
         preparedAudioPromise = null;
         preparedAudioData = null;
         if (prepareTimer) {
@@ -1983,7 +2323,7 @@ HTML_PAGE = r"""
 
         const requestPromise = fetch("/announce", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: jsonHeaders(),
             body: JSON.stringify(payload)
         }).then(async response => {
             const data = await response.json();
@@ -1997,7 +2337,7 @@ HTML_PAGE = r"""
                 preparedAudioPromise = null;
                 if (background && !isBusy) {
                     setStatus("เสียงพร้อมประกาศ", "ok");
-                    byId("previewBox").innerHTML = "<b>เสียงพร้อมแล้ว</b><br><br>กดปุ่มเริ่มประกาศ เสียงเตือนจะดังทันที";
+                    if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "✓ ไฟล์เสียงพร้อมแล้ว";
                 }
             }
             return data;
@@ -2013,7 +2353,40 @@ HTML_PAGE = r"""
         return requestPromise;
     }
 
-    function schedulePrepareAnnouncement(delay = 320) {
+    function requestPreviewData(tabIndex) {
+        const payload = collectPayload(tabIndex);
+        return fetch("/preview", {
+            method: "POST",
+            headers: jsonHeaders(),
+            body: JSON.stringify(payload)
+        }).then(async response => {
+            const data = await response.json();
+            if (!response.ok || data.status !== "success") throw new Error(data.message || "สร้างตัวอย่างข้อความไม่สำเร็จ");
+            return data;
+        });
+    }
+
+    function schedulePreview(delay = 120) {
+        if (previewTimer) clearTimeout(previewTimer);
+        if (selectedAnnouncement === null) return;
+        previewTimer = setTimeout(async () => {
+            previewTimer = null;
+            const error = validateSelection(selectedAnnouncement, true);
+            if (error) {
+                byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
+                byId("audioReadyBadge").textContent = "";
+                return;
+            }
+            try {
+                const data = await requestPreviewData(selectedAnnouncement);
+                renderServerPreview(data.text_preview || "-");
+            } catch (error) {
+                byId("previewBox").innerHTML = `<b>แสดงตัวอย่างไม่ได้</b><br><br>${escapeHtml(error.message || String(error))}`;
+            }
+        }, delay);
+    }
+
+    function schedulePrepareAnnouncement(delay = 1200) {
         if (prepareTimer) clearTimeout(prepareTimer);
         if (selectedAnnouncement === null) return;
 
@@ -2028,24 +2401,38 @@ HTML_PAGE = r"""
         }, delay);
     }
 
-    function validateSelection() {
-        if (selectedAnnouncement === null) return "กรุณาเลือกประเภทประกาศ";
-        if (![7, 8].includes(selectedAnnouncement) && !value("num") && ![3, 9].includes(selectedAnnouncement)) return "กรุณาเลือกขบวนรถ";
-        if ([4, 12].includes(selectedAnnouncement) && !value("next_station")) return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
-        if (selectedAnnouncement === 9) {
+    function validateSelection(targetIndex = selectedAnnouncement, previewOnly = false) {
+        const index = targetIndex;
+        if (index === null || index === undefined) return "กรุณาเลือกประเภทประกาศ";
+        if (![7, 8, 9].includes(index) && !value("num")) return "กรุณาเลือกขบวนรถ";
+
+        // จอดรับส่งปกติต้องมีสถานีถัดไป แต่จอดรอเวลาออกยังไม่ต้องใช้จนกด “รถออกแล้ว”
+        if (index === 4 && value("stop_mode") !== "wait" && !value("next_station"))
+            return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+        if (index === 12 && !value("next_station"))
+            return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+
+        if (index === 2) {
+            const selected = [];
+            if (value("num")) selected.push(value("platform"));
+            if (activeTrainPickerCount >= 2 && value("num_2")) selected.push(value("platform_2"));
+            if (activeTrainPickerCount >= 3 && value("num_3")) selected.push(value("platform_3"));
+            if (new Set(selected).size !== selected.length) return "กรุณาเลือกชานชาลาของขบวนรถที่เข้าเทียบไม่ให้ซ้ำกัน";
+        }
+
+        if (index === 9) {
             const count = Math.max(1, Math.min(3, parseInt(value("pass_count") || "1", 10)));
             const platforms = [value("pass_platform")];
             if (count >= 2) platforms.push(value("pass_platform_2"));
             if (count >= 3) platforms.push(value("pass_platform_3"));
             if (new Set(platforms).size !== platforms.length) return "กรุณาเลือกชานชาลาของรถที่ผ่านแต่ละทางไม่ให้ซ้ำกัน";
         }
-        if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
-        if (selectedAnnouncement === 8) {
+        if (index === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
+        if (index === 8) {
             const mode = value("announce_mode");
             if (mode !== "english_only" && !value("custom_text")) return "กรุณาพิมพ์ข้อความภาษาไทย";
             if (mode !== "thai_only" && !value("custom_text_en")) return "กรุณาพิมพ์ข้อความภาษาอังกฤษ";
         }
-        if (selectedAnnouncement === 10 && !value("num_2")) return "กรุณาเลือกอย่างน้อยขบวนที่ 1 และขบวนที่ 2";
         return "";
     }
 
@@ -2064,10 +2451,16 @@ HTML_PAGE = r"""
         const stopButton = byId("stopButton");
         if (!playButton || !pauseButton || !stopButton) return;
 
-        playButton.textContent = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ เริ่มประกาศ";
-        playButton.disabled = playbackState === "loading" || playbackState === "playing" || (playbackState === "idle" && selectedAnnouncement === null);
-        pauseButton.disabled = playbackState !== "playing";
-        stopButton.disabled = !["loading", "playing", "paused"].includes(playbackState);
+        const playText = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ เริ่มประกาศ";
+        const playDisabled = playbackState === "loading" || playbackState === "playing" || (playbackState === "idle" && selectedAnnouncement === null);
+        const pauseDisabled = playbackState !== "playing";
+        const stopDisabled = !["loading", "playing", "paused"].includes(playbackState);
+        playButton.textContent = playText; playButton.disabled = playDisabled;
+        pauseButton.disabled = pauseDisabled; stopButton.disabled = stopDisabled;
+        if (byId("mobilePlayButton")) { byId("mobilePlayButton").textContent = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ ประกาศ"; byId("mobilePlayButton").disabled = playDisabled; }
+        if (byId("mobilePauseButton")) byId("mobilePauseButton").disabled = pauseDisabled;
+        if (byId("mobileStopButton")) byId("mobileStopButton").disabled = stopDisabled;
+        updateDepartureAction();
     }
 
     function setPlaybackState(state) {
@@ -2131,7 +2524,7 @@ HTML_PAGE = r"""
         try {
             const response = await fetch("/test-station-voice", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: jsonHeaders(),
                 body: JSON.stringify({
                     thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
                     announce_mode: testMode
@@ -2362,7 +2755,7 @@ HTML_PAGE = r"""
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             activeHistoryId = historyId;
             logHistoryEvent("generated", {
-                message: data.text_preview || "",
+                message: data.text_plain || data.text_preview || "",
                 generation_ms: data.generation_ms || 0
             });
 
@@ -2385,6 +2778,14 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             setStatus("ประกาศเสร็จแล้ว", "ok");
+            if (tabIndex === 4 && value("stop_mode") === "wait") {
+                waitingDepartureReady = true;
+                updateDepartureAction();
+                setStatus("รอเวลาออก · พร้อมกดรถออกแล้ว", "ok");
+            } else if (tabIndex === 12) {
+                waitingDepartureReady = false;
+                updateDepartureAction();
+            }
             await logHistoryEvent("success");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -2411,6 +2812,7 @@ HTML_PAGE = r"""
     function clearData() {
         stopAudio();
         invalidatePreparedAudio();
+        if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
         ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "custom_text", "custom_text_en",
          "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
          "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
@@ -2418,32 +2820,56 @@ HTML_PAGE = r"""
         byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
         byId("train_type_2").value = "สินค้า"; byId("train_type_3").value = "สินค้า";
         byId("pass_platform_2").value = "2"; byId("pass_platform_3").value = "3";
+        byId("stop_mode").value = "normal";
+        document.querySelectorAll(".stop-mode-btn").forEach((btn, i) => btn.classList.toggle("active", i === 0));
         resetPassTrainUI(false);
-        setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
-        selectedAnnouncement = null;
+        activeTrainPickerCount = 1;
+        byId("trainPicker2").classList.add("hidden"); byId("trainPicker3").classList.add("hidden");
+        byId("addTrain2Button").disabled = false; byId("addTrain2Button").textContent = "＋ เพิ่มขบวนที่ 2";
+        selectedAnnouncement = null; waitingDepartureReady = false;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
-        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        ["stopFields", "delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        updateDepartureAction();
         refreshPlaybackControls();
-        byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
-        byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
+        byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 2 ก่อน";
+        byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง";
+        byId("audioReadyBadge").textContent = "";
+        if (byId("trainSearch")) { byId("trainSearch").value = ""; byId("trainSearchResults").innerHTML = ""; }
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
     }
 
-    // เมื่อแก้ข้อมูลหลังเลือกประเภทประกาศ ให้เตรียมเสียงชุดใหม่อัตโนมัติ
+    // Preview อัปเดตเร็ว แต่ TTS รอให้หยุดพิมพ์ก่อน เพื่อลดการสร้างไฟล์เสียงซ้ำ
     document.querySelectorAll("input, select, textarea").forEach(element => {
+        if (["trainSearch"].includes(element.id)) return;
         element.addEventListener("input", () => {
             invalidatePreparedAudio();
-            schedulePrepareAnnouncement();
+            schedulePreview(120);
+            const isTyping = element.tagName === "TEXTAREA" || element.type === "text" || element.type === "search";
+            schedulePrepareAnnouncement(isTyping ? 1200 : 500);
         });
         element.addEventListener("change", () => {
             invalidatePreparedAudio();
-            schedulePrepareAnnouncement(180);
+            schedulePreview(50);
+            schedulePrepareAnnouncement(450);
         });
     });
 
+    // คืนค่าภาษา/เสียงล่าสุดของอุปกรณ์ โดยไม่แก้ค่าความเร็วหรือจังหวะ TTS
+    try {
+        const savedMode = localStorage.getItem("kbp_announce_mode");
+        const savedVoice = localStorage.getItem("kbp_thai_voice");
+        if (["thai_only", "english_only", "bilingual"].includes(savedMode)) {
+            setLanguage(savedMode, document.querySelector(`[data-mode="${savedMode}"]`));
+        }
+        if (["th-TH-PremwadeeNeural", "th-TH-NiwatNeural"].includes(savedVoice)) {
+            setThaiVoice(savedVoice, document.querySelector(`[data-voice="${savedVoice}"]`));
+        }
+    } catch (e) {}
     updateCustomLanguageFields();
+    updateSettingsSummary();
     [1, 2, 3].forEach(refreshSummary);
     refreshPlaybackControls();
+    updateDepartureAction();
 </script>
 </body>
 </html>
@@ -2454,6 +2880,8 @@ HTML_PAGE = r"""
 def group_buttons(buttons):
     grouped = {}
     for item in buttons:
+        if not item.get("visible", True):
+            continue
         grouped.setdefault(item["group"], []).append(item)
     return grouped
 
@@ -2536,6 +2964,7 @@ def generate_cached_audio(segment):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                timeout=TTS_GENERATION_TIMEOUT,
             )
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
@@ -2763,6 +3192,7 @@ EN_STATION_NAMES = {
 }
 
 EN_TRAIN_TYPES = {
+    "โดยสาร": "passenger train",
     "สินค้า": "freight train",
     "ด่วนพิเศษ": "special express train",
     "พิเศษ": "special train",
@@ -2890,15 +3320,29 @@ def build_english_announcement(data):
     elif idx == 1:
         text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
     elif idx == 2:
-        text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, will shortly arrive at platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+        arriving = [(platform, t_num, origin, dest, t_time)]
+        if t_num_2:
+            arriving.append((platform_2, t_num_2, origin_2, dest_2, time_en(data.get("time_2", ""))))
+        if t_num_3:
+            arriving.append((platform_3, t_num_3, origin_3, dest_3, time_en(data.get("time_3", ""))))
+        if len(arriving) == 1:
+            text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, will shortly arrive at platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
+        else:
+            details = [f"train number {n}, from {o} to {d}, scheduled at {tt}, arriving at platform {p}" for p, n, o, d, tt in arriving]
+            detail_text = "; ".join(details)
+            text = f"Attention please. Several trains will shortly arrive at the station at the same time: {detail_text}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 3:
         text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
-        text = (
+        stop_mode = str(data.get("stop_mode", "normal") or "normal").strip()
+        base = (
             f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
-            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}. "
-            f"After departing {current} Station, the train will stop at {next_st}, and at all scheduled stops through to {dest} Station."
+            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
         )
+        if stop_mode == "wait":
+            text = base
+        else:
+            text = base + f" After departing {current} Station, the train will stop at {next_st}, and at all scheduled stops through to {dest} Station."
     elif idx == 5:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
@@ -3004,19 +3448,39 @@ def build_announcement(data):
     elif idx == 1:
         text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
     elif idx == 2:
-        text = f"โปรดทราบ อีกสักครู่ ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} กำลังจะเข้าเทียบสถานีในชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+        arriving = [(platform, t_num, origin, dest, t_time)]
+        if t_num_2:
+            arriving.append((platform_2, t_num_2, origin_2, dest_2, tidy_time(data.get("time_2", ""))))
+        if t_num_3:
+            arriving.append((platform_3, t_num_3, origin_3, dest_3, tidy_time(data.get("time_3", ""))))
+        if len(arriving) == 1:
+            text = f"โปรดทราบ อีกสักครู่ ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} กำลังจะเข้าเทียบสถานีในชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
+        else:
+            details = []
+            for p, n, o, d, tt in arriving:
+                details.append(f"ขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)} เที่ยวกำหนดเวลา {tt} กำลังจะเข้าเทียบในชานชาลาที่ {p}")
+            detail_text = " และ ".join(details)
+            platforms_text = join_thai_platforms([item[0] for item in arriving])
+            text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถเข้าเทียบสถานีพร้อมกัน {detail_text} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่าง{platforms_text} ขอบคุณครับ"
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
-        text = (
+        stop_mode = str(data.get("stop_mode", "normal") or "normal").strip()
+        base = (
             f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
             f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
             f"นำลงให้ครบถ้วนและถูกต้อง "
             f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
-            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
-            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
-            f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)}"
         )
+        if stop_mode == "wait":
+            text = base + " ครับ"
+        else:
+            text = (
+                base +
+                f" ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+                f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+            )
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
@@ -3096,11 +3560,11 @@ LOGIN_HTML = r"""
 <!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>เข้าสู่ระบบ</title><style>
 :root{--m:#800000;--md:#5b0000;--line:#eadfce;--muted:#766969}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:18px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,#f2e6d7);color:#251d1d}.box{width:min(440px,100%);background:#fff;border:1px solid var(--line);border-radius:24px;padding:26px;box-shadow:0 18px 50px rgba(80,20,20,.13)}h1{margin:0;color:var(--md)}p{color:var(--muted);line-height:1.6}label{display:block;margin:14px 0 6px;font-weight:800}input{width:100%;padding:13px;border:1px solid #d8c9b7;border-radius:13px;font:inherit}button{width:100%;margin-top:18px;padding:14px;border:0;border-radius:14px;background:linear-gradient(135deg,var(--md),var(--m));color:#fff;font:inherit;font-weight:900;cursor:pointer}.flash{padding:11px;border-radius:12px;background:#fff0f0;color:#9b1c1c}.note{padding:11px;border-radius:12px;background:#fff8dc;font-size:13px}
-</style></head><body><form class="box" method="post"><h1>🚆 ระบบประกาศสถานี</h1><p>เข้าสู่ระบบเพื่อใช้งานและบันทึกประวัติผู้ประกาศ</p>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}{% if show_default %}<div class="note"><b>บัญชีเริ่มต้น:</b> admin / admin1234<br>ควรเปลี่ยนรหัสผ่านทันทีหลังเข้าสู่ระบบ</div>{% endif %}<input type="hidden" name="next" value="{{ next_url }}"><label>ชื่อผู้ใช้</label><input name="username" autocomplete="username" required autofocus><label>รหัสผ่าน</label><input type="password" name="password" autocomplete="current-password" required><button>เข้าสู่ระบบ</button></form></body></html>
+</style></head><body><form class="box" method="post"><h1>🚆 ระบบประกาศสถานี</h1><p>เข้าสู่ระบบเพื่อใช้งานและบันทึกประวัติผู้ประกาศ</p>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}{% if show_default %}<div class="note"><b>บัญชีเริ่มต้น:</b> admin<br>รหัสผ่านใช้ค่าจาก INITIAL_ADMIN_PASSWORD; หากไม่ได้ตั้ง ระบบจะสร้างรหัสสุ่มและแสดงใน Deploy Log</div>{% endif %}<input type="hidden" name="next" value="{{ next_url }}"><label>ชื่อผู้ใช้</label><input name="username" autocomplete="username" required autofocus><label>รหัสผ่าน</label><input type="password" name="password" autocomplete="current-password" required><button>เข้าสู่ระบบ</button></form></body></html>
 """
 
 MANAGEMENT_CSS = r"""
-:root{--m:#800000;--md:#5b0000;--gold:#c7a12a;--bg:#f6eee3;--line:#e8dac6;--muted:#766969;--green:#177744;--red:#b42318}*{box-sizing:border-box}body{margin:0;padding:14px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,var(--bg));color:#251d1d}a{color:var(--m)}.wrap{max-width:1320px;margin:auto}.head{padding:18px 20px;border-radius:20px;color:#fff;background:linear-gradient(135deg,var(--md),var(--m));box-shadow:0 10px 30px rgba(80,20,20,.12)}.head h1{margin:0;font-size:clamp(22px,3vw,31px)}.head p{margin:5px 0 0;opacity:.88}.nav{display:flex;flex-wrap:wrap;gap:8px;margin:11px 0}.nav a{padding:9px 12px;border-radius:11px;background:#fff;color:var(--md);text-decoration:none;font-weight:850;border:1px solid var(--line)}.nav a.active,.nav a:hover{background:var(--m);color:#fff}.grid{display:grid;grid-template-columns:minmax(320px,.68fr) minmax(0,1.5fr);gap:14px}.card{background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(80,20,20,.08);margin-bottom:14px}.card h2{margin:0;padding:14px 17px;color:var(--md);font-size:18px;background:#fffdf9;border-bottom:1px solid var(--line)}.body{padding:16px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}label{display:block;margin:0 0 5px;font-weight:800}input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d8c9b7;border-radius:12px;background:#fff;font:inherit}textarea{min-height:75px;resize:vertical}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 13px;border:0;border-radius:11px;background:var(--m);color:#fff;text-decoration:none;font:inherit;font-weight:850;cursor:pointer}.btn.gray{background:#665b55}.btn.green{background:var(--green)}.btn.red{background:var(--red)}.btn.gold{background:#a86900}.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}.flash{padding:11px 13px;margin:10px 0;border-radius:12px;background:#fff3cd;color:#684f00;border:1px solid #ead28a}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 10px;border-bottom:1px solid #eee4d6;text-align:left;vertical-align:top;white-space:nowrap}th{position:sticky;top:0;background:#fff9ef;color:var(--md);z-index:1}.muted{color:var(--muted);font-size:12px}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:850;background:#eee}.ok{background:#e8f6ed;color:#116735}.off{background:#fdebea;color:#a31d16}.warn{background:#fff3cd;color:#785b00}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{padding:14px;border-radius:14px;background:#fffaf1;border:1px solid var(--line)}.stat b{display:block;font-size:24px;color:var(--m)}details summary{cursor:pointer;color:var(--m);font-weight:850}.message{white-space:normal;min-width:280px;max-width:520px;line-height:1.5}.health-list{display:grid;gap:10px}.health-item{display:grid;grid-template-columns:42px 1fr;gap:11px;padding:13px;border:1px solid var(--line);border-radius:14px}.health-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:12px;font-size:20px;background:#eee}@media(max-width:850px){.grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.stats{grid-template-columns:1fr}body{padding:8px}}
+:root{--m:#800000;--md:#5b0000;--gold:#c7a12a;--bg:#f6eee3;--line:#e8dac6;--muted:#766969;--green:#177744;--red:#b42318}*{box-sizing:border-box}body{margin:0;padding:14px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,var(--bg));color:#251d1d}a{color:var(--m)}.wrap{max-width:1320px;margin:auto}.head{padding:18px 20px;border-radius:20px;color:#fff;background:linear-gradient(135deg,var(--md),var(--m));box-shadow:0 10px 30px rgba(80,20,20,.12)}.head h1{margin:0;font-size:clamp(22px,3vw,31px)}.head p{margin:5px 0 0;opacity:.88}.nav{display:flex;flex-wrap:wrap;gap:8px;margin:11px 0}.nav a{padding:9px 12px;border-radius:11px;background:#fff;color:var(--md);text-decoration:none;font-weight:850;border:1px solid var(--line)}.nav a.active,.nav a:hover{background:var(--m);color:#fff}.grid{display:grid;grid-template-columns:minmax(320px,.68fr) minmax(0,1.5fr);gap:14px}.card{background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(80,20,20,.08);margin-bottom:14px}.card h2{margin:0;padding:14px 17px;color:var(--md);font-size:18px;background:#fffdf9;border-bottom:1px solid var(--line)}.body{padding:16px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}label{display:block;margin:0 0 5px;font-weight:800}input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d8c9b7;border-radius:12px;background:#fff;font:inherit}textarea{min-height:75px;resize:vertical}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 13px;border:0;border-radius:11px;background:var(--m);color:#fff;text-decoration:none;font:inherit;font-weight:850;cursor:pointer}.btn.gray{background:#665b55}.btn.green{background:var(--green)}.btn.red{background:var(--red)}.btn.gold{background:#a86900}.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}.flash{padding:11px 13px;margin:10px 0;border-radius:12px;background:#fff3cd;color:#684f00;border:1px solid #ead28a}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 10px;border-bottom:1px solid #eee4d6;text-align:left;vertical-align:top;white-space:nowrap}th{position:sticky;top:0;background:#fff9ef;color:var(--md);z-index:1}.muted{color:var(--muted);font-size:12px}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:850;background:#eee}.ok{background:#e8f6ed;color:#116735}.off{background:#fdebea;color:#a31d16}.warn{background:#fff3cd;color:#785b00}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{padding:14px;border-radius:14px;background:#fffaf1;border:1px solid var(--line)}.stat b{display:block;font-size:24px;color:var(--m)}details summary{cursor:pointer;color:var(--m);font-weight:850}.message{white-space:pre-wrap;min-width:280px;max-width:520px;line-height:1.5}.health-list{display:grid;gap:10px}.health-item{display:grid;grid-template-columns:42px 1fr;gap:11px;padding:13px;border:1px solid var(--line);border-radius:14px}.health-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:12px;font-size:20px;background:#eee}@media(max-width:850px){.grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.stats{grid-template-columns:1fr}body{padding:8px}}
 """
 
 ADMIN_SCHEDULE_HTML = r"""
@@ -3119,12 +3583,17 @@ USERS_HTML = r"""
 <!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บัญชีผู้ใช้</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>👥 บัญชีผู้ใช้และสิทธิ์</h1><p>แยกผู้ประกาศ ผู้ดูแลระบบ และผู้ตรวจสอบประวัติ</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a class="active" href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}<div class="grid"><section><div class="card"><h2>เพิ่มบัญชีใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_user') }}"><label>ชื่อผู้ใช้</label><input name="username" required><label style="margin-top:10px">ชื่อที่แสดง</label><input name="display_name" required><label style="margin-top:10px">สิทธิ์</label><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select><label style="margin-top:10px">รหัสผ่านเริ่มต้น</label><input type="password" name="password" minlength="6" required><div class="actions"><button class="btn">เพิ่มบัญชี</button></div></form></div></div></section><section><div class="card"><h2>บัญชีทั้งหมด</h2><div class="table-wrap"><table><thead><tr><th>ผู้ใช้</th><th>สิทธิ์</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th>แก้ไข</th></tr></thead><tbody>{% for u in users %}<tr><td><b>{{ u.display_name }}</b><div class="muted">{{ u.username }}</div></td><td>{{ role_labels[u.role] }}</td><td><span class="badge {{ 'ok' if u.active else 'off' }}">{{ 'ใช้งาน' if u.active else 'ปิด' }}</span></td><td>{{ u.last_login or '-' }}</td><td><form method="post" action="{{ url_for('update_user',user_id=u.id) }}"><div class="fields" style="min-width:460px"><div><input name="display_name" value="{{ u.display_name }}" required></div><div><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}" {% if u.role==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><input type="password" name="password" placeholder="รหัสใหม่ (เว้นว่างได้)" minlength="6"></div><div><label><input style="width:auto" type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}> เปิดใช้งาน</label></div></div><button class="btn gold" style="margin-top:7px">บันทึก</button></form></td></tr>{% endfor %}</tbody></table></div></div></section></div></main></body></html>
 """
 
+AUDIT_HTML = r"""
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บันทึกผู้ดูแลระบบ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🧾 บันทึกการแก้ไขหลังบ้าน</h1><p>ตรวจสอบว่าใครแก้ตารางรถ บัญชีผู้ใช้ หรือนำเข้าข้อมูล เมื่อใด</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a class="active" href="{{ url_for('admin_audit_page') }}">🧾 บันทึกผู้ดูแล</a><a href="{{ url_for('history_page') }}">🕘 ประวัติประกาศ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a></nav><div class="card"><h2>500 รายการล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>วันเวลา</th><th>ผู้ดำเนินการ</th><th>การกระทำ</th><th>รายละเอียด</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.event_at }}</td><td>{{ row.username }}</td><td><b>{{ row.action }}</b></td><td class="message">{{ row.details or '-' }}</td></tr>{% else %}<tr><td colspan="4">ยังไม่มีบันทึก</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
+"""
+
+
 HISTORY_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ประวัติการประกาศ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🕘 ประวัติการประกาศ</h1><p>ใช้ตรวจหาสาเหตุเมื่อระบบมีปัญหา ไม่ใช่เพื่อจับผิดผู้ใช้งาน</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}<a class="active" href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ตัวกรอง</h2><div class="body"><form method="get"><div class="fields"><div><label>ตั้งแต่วันที่</label><input type="date" name="date_from" value="{{ filters.date_from }}"></div><div><label>ถึงวันที่</label><input type="date" name="date_to" value="{{ filters.date_to }}"></div><div><label>เลขขบวน</label><input name="train_num" value="{{ filters.train_num }}"></div><div><label>ผู้ประกาศ</label><input name="username" value="{{ filters.username }}"></div></div><div class="actions"><button class="btn">ค้นหา</button><a class="btn gray" href="{{ url_for('history_page') }}">ล้างตัวกรอง</a></div></form></div></div><div class="card"><h2>พบ {{ histories|length }} รายการล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>วันเวลา</th><th>ผู้ประกาศ</th><th>ขบวน/ประเภท</th><th>ภาษา/เสียง</th><th>ชานชาลา</th><th>สร้างเสียง</th><th>ผลการเล่น</th><th>Pause / Stop</th><th>ข้อความ</th></tr></thead><tbody>{% for h in histories %}<tr><td>{{ h.started_at }}</td><td>{{ h.username }}</td><td><b>{{ h.train_num or '-' }}</b><div class="muted">{{ h.announcement_type }}</div></td><td>{{ h.announce_mode }}<div class="muted">{{ h.voice }}</div></td><td>{{ h.platform or '-' }}</td><td>{{ h.generation_ms if h.generation_ms is not none else '-' }} ms</td><td>{% if h.playback_success==1 %}<span class="badge ok">สำเร็จ</span>{% elif h.playback_success==0 %}<span class="badge off">ไม่สำเร็จ/หยุด</span>{% else %}<span class="badge warn">ยังไม่จบ</span>{% endif %}{% if h.failure_reason %}<div class="muted">{{ h.failure_reason }}</div>{% endif %}</td><td>พัก {{ h.pause_count }} ครั้ง<div class="muted">Stop: {{ h.stop_time or '-' }}</div></td><td class="message"><details><summary>ดูข้อความและเหตุการณ์</summary><div style="margin:8px 0">{{ h.message|safe if h.message else '-' }}</div><a href="{{ url_for('history_detail',history_id=h.id) }}">ดูเหตุการณ์ทั้งหมด</a></details></td></tr>{% else %}<tr><td colspan="9">ยังไม่มีประวัติ</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ประวัติการประกาศ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🕘 ประวัติการประกาศ</h1><p>ใช้ตรวจหาสาเหตุเมื่อระบบมีปัญหา ไม่ใช่เพื่อจับผิดผู้ใช้งาน</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}<a class="active" href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ตัวกรอง</h2><div class="body"><form method="get"><div class="fields"><div><label>ตั้งแต่วันที่</label><input type="date" name="date_from" value="{{ filters.date_from }}"></div><div><label>ถึงวันที่</label><input type="date" name="date_to" value="{{ filters.date_to }}"></div><div><label>เลขขบวน</label><input name="train_num" value="{{ filters.train_num }}"></div><div><label>ผู้ประกาศ</label><input name="username" value="{{ filters.username }}"></div></div><div class="actions"><button class="btn">ค้นหา</button><a class="btn gray" href="{{ url_for('history_page') }}">ล้างตัวกรอง</a></div></form></div></div><div class="card"><h2>พบ {{ histories|length }} รายการล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>วันเวลา</th><th>ผู้ประกาศ</th><th>ขบวน/ประเภท</th><th>ภาษา/เสียง</th><th>ชานชาลา</th><th>สร้างเสียง</th><th>ผลการเล่น</th><th>Pause / Stop</th><th>ข้อความ</th></tr></thead><tbody>{% for h in histories %}<tr><td>{{ h.started_at }}</td><td>{{ h.username }}</td><td><b>{{ h.train_num or '-' }}</b><div class="muted">{{ h.announcement_type }}</div></td><td>{{ h.announce_mode }}<div class="muted">{{ h.voice }}</div></td><td>{{ h.platform or '-' }}</td><td>{{ h.generation_ms if h.generation_ms is not none else '-' }} ms</td><td>{% if h.playback_success==1 %}<span class="badge ok">สำเร็จ</span>{% elif h.playback_success==0 %}<span class="badge off">ไม่สำเร็จ/หยุด</span>{% else %}<span class="badge warn">ยังไม่จบ</span>{% endif %}{% if h.failure_reason %}<div class="muted">{{ h.failure_reason }}</div>{% endif %}</td><td>พัก {{ h.pause_count }} ครั้ง<div class="muted">Stop: {{ h.stop_time or '-' }}</div></td><td class="message"><details><summary>ดูข้อความและเหตุการณ์</summary><div style="margin:8px 0">{{ h.message if h.message else '-' }}</div><a href="{{ url_for('history_detail',history_id=h.id) }}">ดูเหตุการณ์ทั้งหมด</a></details></td></tr>{% else %}<tr><td colspan="9">ยังไม่มีประวัติ</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
 """
 
 HISTORY_DETAIL_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>รายละเอียดประวัติ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>รายละเอียดประวัติ #{{ history.id }}</h1><p>{{ history.started_at }} · {{ history.username }} · ขบวน {{ history.train_num or '-' }}</p></header><nav class="nav"><a href="{{ url_for('history_page') }}">← กลับหน้าประวัติ</a><a href="{{ url_for('index') }}">หน้าประกาศ</a></nav><div class="card"><h2>ข้อความประกาศ</h2><div class="body message">{{ history.message|safe if history.message else '-' }}</div></div><div class="card"><h2>ลำดับเหตุการณ์</h2><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>เหตุการณ์</th><th>รายละเอียด</th></tr></thead><tbody>{% for e in events %}<tr><td>{{ e.event_at }}</td><td>{{ e.event_type }}</td><td class="message">{{ e.details or '-' }}</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>รายละเอียดประวัติ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>รายละเอียดประวัติ #{{ history.id }}</h1><p>{{ history.started_at }} · {{ history.username }} · ขบวน {{ history.train_num or '-' }}</p></header><nav class="nav"><a href="{{ url_for('history_page') }}">← กลับหน้าประวัติ</a><a href="{{ url_for('index') }}">หน้าประกาศ</a></nav><div class="card"><h2>ข้อความประกาศ</h2><div class="body message">{{ history.message if history.message else '-' }}</div></div><div class="card"><h2>ลำดับเหตุการณ์</h2><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>เหตุการณ์</th><th>รายละเอียด</th></tr></thead><tbody>{% for e in events %}<tr><td>{{ e.event_at }}</td><td>{{ e.event_type }}</td><td class="message">{{ e.details or '-' }}</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
 """
 
 HEALTH_HTML = r"""
@@ -3148,6 +3617,14 @@ def session_ping():
 SESSION_KEEPALIVE_SCRIPT = r"""
 <script>
 (() => {
+    window.KBP_CSRF_TOKEN = {{ csrf_token()|tojson }};
+    document.querySelectorAll('form').forEach(form => {
+        if ((form.method || '').toLowerCase() !== 'post') return;
+        if (form.querySelector('input[name="csrf_token"]')) return;
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'csrf_token'; input.value = window.KBP_CSRF_TOKEN;
+        form.appendChild(input);
+    });
     const pingEveryMs = 5 * 60 * 1000;
     let pinging = false;
 
@@ -3192,9 +3669,36 @@ def _attach_session_keepalive(html):
 HTML_PAGE = _attach_session_keepalive(HTML_PAGE)
 ADMIN_SCHEDULE_HTML = _attach_session_keepalive(ADMIN_SCHEDULE_HTML)
 USERS_HTML = _attach_session_keepalive(USERS_HTML)
+AUDIT_HTML = _attach_session_keepalive(AUDIT_HTML)
 HISTORY_HTML = _attach_session_keepalive(HISTORY_HTML)
 HISTORY_DETAIL_HTML = _attach_session_keepalive(HISTORY_DETAIL_HTML)
 HEALTH_HTML = _attach_session_keepalive(HEALTH_HTML)
+
+
+def _login_client_key():
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+    return forwarded or request.remote_addr or "unknown"
+
+
+def _login_rate_limited(key):
+    now = time.time()
+    with _LOGIN_ATTEMPTS_LOCK:
+        recent = [ts for ts in _LOGIN_ATTEMPTS.get(key, []) if now - ts < LOGIN_WINDOW_SECONDS]
+        _LOGIN_ATTEMPTS[key] = recent
+        return len(recent) >= LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(key):
+    now = time.time()
+    with _LOGIN_ATTEMPTS_LOCK:
+        recent = [ts for ts in _LOGIN_ATTEMPTS.get(key, []) if now - ts < LOGIN_WINDOW_SECONDS]
+        recent.append(now)
+        _LOGIN_ATTEMPTS[key] = recent[-LOGIN_MAX_ATTEMPTS:]
+
+
+def _clear_login_failures(key):
+    with _LOGIN_ATTEMPTS_LOCK:
+        _LOGIN_ATTEMPTS.pop(key, None)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -3205,11 +3709,16 @@ def login():
     if not next_url.startswith("/") or next_url.startswith("//"):
         next_url = url_for("index")
     if request.method == "POST":
+        client_key = _login_client_key()
+        if _login_rate_limited(client_key):
+            flash("มีการลองเข้าสู่ระบบหลายครั้งเกินไป กรุณารอประมาณ 10 นาทีแล้วลองใหม่")
+            return render_template_string(LOGIN_HTML, next_url=next_url, show_default=False), 429
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         with get_db() as conn:
             user = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
             if user and user["active"] and check_password_hash(user["password_hash"], password):
+                _clear_login_failures(client_key)
                 session.clear()
                 session.permanent = True
                 _store_session_user(user)
@@ -3218,6 +3727,7 @@ def login():
                 if user["role"] == "auditor" and destination == url_for("index"):
                     destination = url_for("history_page")
                 return redirect(destination)
+        _record_login_failure(client_key)
         flash("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
     with get_db() as conn:
         show_default = (not os.environ.get("INITIAL_ADMIN_PASSWORD") and
@@ -3268,6 +3778,7 @@ def create_schedule_version():
                 conn.execute("""INSERT INTO trains(version_id,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,created_at,updated_at)
                               SELECT ?,direction,num,label,origin,dest,time_hhmm,time_spoken,next_station,service_pattern,service_dates,enabled,?,? FROM trains WHERE version_id=?""", (new_id,now_iso(),now_iso(),copy_from))
         invalidate_train_cache()
+        log_admin_audit("create_schedule_version", {"version_id": new_id, "name": name, "effective_date": effective_date, "status": status})
         flash("สร้างตารางใหม่แล้ว")
         return redirect(url_for("admin_schedules", version=new_id))
     except Exception as exc:
@@ -3287,6 +3798,7 @@ def update_schedule_version(version_id):
         with get_db() as conn:
             conn.execute("UPDATE schedule_versions SET name=?,effective_date=?,status=? WHERE id=?", (name,effective_date,status,version_id))
         invalidate_train_cache()
+        log_admin_audit("update_schedule_version", {"version_id": version_id, "name": name, "effective_date": effective_date, "status": status})
         flash("บันทึกข้อมูลตารางแล้ว")
     except Exception as exc: flash(str(exc))
     return redirect(url_for("admin_schedules", version=version_id))
@@ -3299,6 +3811,7 @@ def save_train():
     try:
         save_train_record(request.form)
         invalidate_train_cache()
+        log_admin_audit("save_train", {"version_id": version_id, "train_id": request.form.get("train_id"), "num": request.form.get("num")})
         flash("บันทึกขบวนรถแล้ว และตรวจสอบข้อมูลซ้ำเรียบร้อย")
     except Exception as exc:
         flash(str(exc))
@@ -3312,6 +3825,7 @@ def toggle_train(train_id):
     with get_db() as conn:
         conn.execute("UPDATE trains SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END,updated_at=? WHERE id=?", (now_iso(),train_id))
     invalidate_train_cache()
+    log_admin_audit("toggle_train", {"train_id": train_id, "version_id": version_id})
     flash("เปลี่ยนสถานะขบวนแล้ว")
     return redirect(url_for("admin_schedules", version=version_id))
 
@@ -3322,6 +3836,7 @@ def delete_train(train_id):
     version_id = request.form.get("version_id", type=int)
     with get_db() as conn: conn.execute("DELETE FROM trains WHERE id=?", (train_id,))
     invalidate_train_cache()
+    log_admin_audit("delete_train", {"train_id": train_id, "version_id": version_id})
     flash("ลบขบวนแล้ว")
     return redirect(url_for("admin_schedules", version=version_id))
 
@@ -3337,6 +3852,7 @@ def import_schedule():
         invalidate_train_cache()
         message = f"นำเข้าสำเร็จ {inserted} ขบวน"
         if skipped: message += f" · ข้าม {len(skipped)} แถว: " + " | ".join(skipped[:5])
+        log_admin_audit("import_schedule", {"version_id": version_id, "inserted": inserted, "skipped": len(skipped)})
         flash(message)
     except Exception as exc: flash(str(exc))
     return redirect(url_for("admin_schedules", version=version_id))
@@ -3345,7 +3861,7 @@ def import_schedule():
 @app.route("/admin/backup")
 @roles_required("admin")
 def backup_data():
-    tables = ["schedule_versions","trains","users","announcement_history","announcement_events"]
+    tables = ["schedule_versions","trains","users","announcement_history","announcement_events","admin_audit"]
     payload = {"schema_version":1,"created_at":now_iso(),"tables":{}}
     with get_db() as conn:
         for table in tables:
@@ -3385,6 +3901,7 @@ def restore_data():
                         f"EXISTS(SELECT 1 FROM {table}))"
                     )
         invalidate_train_cache()
+        log_admin_audit("restore_data", {"versions": len(versions), "trains": len(trains), "histories": len(histories)})
         flash("กู้คืนตารางรถและประวัติแล้ว บัญชีผู้ใช้เดิมยังคงอยู่")
     except Exception as exc: flash(f"กู้คืนไม่สำเร็จ: {exc}")
     return redirect(url_for("admin_schedules"))
@@ -3404,6 +3921,7 @@ def create_user():
     try:
         if not username or not display or role not in ROLE_LABELS or len(password)<6: raise ValueError("กรอกข้อมูลให้ครบ และรหัสผ่านอย่างน้อย 6 ตัว")
         with get_db() as conn: conn.execute("INSERT INTO users(username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,1,?)",(username,generate_password_hash(password),display,role,now_iso()))
+        log_admin_audit("create_user", {"username": username, "display_name": display, "role": role})
         flash("เพิ่มบัญชีแล้ว")
     except DB_INTEGRITY_ERRORS: flash("ชื่อผู้ใช้นี้มีอยู่แล้ว")
     except Exception as exc: flash(str(exc))
@@ -3429,9 +3947,18 @@ def update_user(user_id):
                 conn.execute("UPDATE users SET password_hash=? WHERE id=?",(generate_password_hash(password),user_id))
         if user_id == current["id"]:
             _store_session_user({"id": user_id, "username": current["username"], "display_name": display, "role": role, "active": active})
+        log_admin_audit("update_user", {"user_id": user_id, "display_name": display, "role": role, "active": active, "password_changed": bool(password)})
         flash("บันทึกบัญชีแล้ว")
     except Exception as exc: flash(str(exc))
     return redirect(url_for('admin_users'))
+
+
+@app.route("/admin/audit")
+@roles_required("admin")
+def admin_audit_page():
+    with get_db() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM admin_audit ORDER BY id DESC LIMIT 500").fetchall()]
+    return render_template_string(AUDIT_HTML, management_css=MANAGEMENT_CSS, rows=rows)
 
 
 @app.route("/history")
@@ -3501,10 +4028,12 @@ def api_history_event():
 def index():
     inbound, outbound, train_data, schedule_version = get_active_train_lists()
     user = get_current_user()
+    quick_trains = get_quick_trains(inbound, outbound)
     return render_template_string(
         HTML_PAGE,
         inbound=inbound,
         outbound=outbound,
+        quick_trains=quick_trains,
         trains_json=json.dumps(train_data, ensure_ascii=False),
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
@@ -3577,6 +4106,8 @@ def test_station_voice():
             audio_labels.append(segment["label"])
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts"}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "message": "ระบบสร้างเสียงออนไลน์ไม่ตอบสนองภายในเวลาที่กำหนด กรุณาลองใหม่อีกครั้ง"}), 504
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         return jsonify({"status": "error", "message": f"สร้างเสียงทดสอบไม่สำเร็จ: {detail}"}), 500
@@ -3599,6 +4130,40 @@ def test_station_voice():
         "thai_voice": thai_voice,
         "english_voice": english_voice,
     })
+
+@app.route("/preview", methods=["POST"])
+@roles_required("announcer", "admin")
+def preview_announcement():
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("announce_mode") or "thai_only").strip()
+    if mode not in {"thai_only", "english_only", "bilingual"}:
+        return jsonify({"status": "error", "message": "รูปแบบภาษาที่เลือกไม่ถูกต้อง"}), 400
+
+    thai_voice = (data.get("thai_voice") or VOICE_NAME).strip()
+    if thai_voice not in THAI_VOICE_OPTIONS:
+        thai_voice = VOICE_NAME
+
+    thai_text = ""
+    english_text = ""
+    try:
+        if mode in {"thai_only", "bilingual"}:
+            thai_text = apply_voice_politeness(build_announcement(data), thai_voice)
+        if mode in {"english_only", "bilingual"}:
+            english_text = build_english_announcement(data)
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+    if mode == "bilingual":
+        preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
+        plain = f"🇹🇭 {thai_text}\n\n🇬🇧 {english_text}"
+    elif mode == "english_only":
+        preview = f"🇬🇧 {english_text}"
+        plain = f"🇬🇧 {english_text}"
+    else:
+        preview = f"🇹🇭 {thai_text}"
+        plain = f"🇹🇭 {thai_text}"
+    return jsonify(status="success", text_preview=preview, text_plain=plain)
+
 
 @app.route("/announce", methods=["POST"])
 @roles_required("announcer", "admin")
@@ -3675,6 +4240,12 @@ def announce():
             "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts",
             "text_preview": thai_text or english_text,
         }), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            "status": "error",
+            "message": "ระบบสร้างเสียงออนไลน์ไม่ตอบสนองภายในเวลาที่กำหนด กรุณาลองใหม่อีกครั้ง หากข้อความนี้เคยสร้างไว้ ระบบจะใช้ไฟล์แคชให้อัตโนมัติ",
+            "text_preview": thai_text or english_text,
+        }), 504
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         return jsonify({
@@ -3698,10 +4269,13 @@ def announce():
 
     if mode == "bilingual":
         preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
+        plain = f"🇹🇭 {thai_text}\n\n🇬🇧 {english_text}"
     elif mode == "english_only":
         preview = f"🇬🇧 {english_text}"
+        plain = f"🇬🇧 {english_text}"
     else:
         preview = f"🇹🇭 {thai_text}"
+        plain = f"🇹🇭 {thai_text}"
 
     return jsonify({
         "status": "success",
@@ -3710,6 +4284,7 @@ def announce():
         "audio_labels": audio_labels,
         "announce_mode": mode,
         "text_preview": preview,
+        "text_plain": plain,
         "generation_ms": int((time.perf_counter() - generation_started) * 1000),
     })
 
