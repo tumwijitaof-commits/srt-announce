@@ -867,6 +867,50 @@ def get_quick_trains(inbound, outbound, limit=3):
     return upcoming[:limit]
 
 
+def get_quick_train_snapshot(inbound, outbound, limit=3):
+    """
+    คืนขบวนถัดไปตามเวลาจริง พร้อมจำนวนนาทีที่เหลือก่อนถึงเวลา
+    หากขบวนวันนี้หมดแล้ว จะต่อด้วยขบวนของวันถัดไปตาม service pattern จริง
+    """
+    now = now_bangkok()
+    current_minutes = now.hour * 60 + now.minute
+
+    def train_minutes(item):
+        value = item.get("time_hhmm") or _label_time(item.get("label", ""))
+        try:
+            h, m = value.split(":", 1)
+            return int(h) * 60 + int(m)
+        except Exception:
+            return 24 * 60
+
+    result = []
+    today_items = sorted([dict(t) for t in inbound + outbound], key=train_minutes)
+    for item in today_items:
+        mins = train_minutes(item)
+        if mins < current_minutes:
+            continue
+        item["minutes_until"] = mins - current_minutes
+        item["day_offset"] = 0
+        item["service_date"] = now.date().isoformat()
+        result.append(item)
+        if len(result) >= limit:
+            return result
+
+    # เติมเที่ยวของวันพรุ่งนี้ให้ถูกต้องตาม weekday/weekend/custom ของตาราง
+    tomorrow = now.date() + timedelta(days=1)
+    next_inbound, next_outbound, _, _ = get_active_train_lists(tomorrow)
+    tomorrow_items = sorted([dict(t) for t in next_inbound + next_outbound], key=train_minutes)
+    for item in tomorrow_items:
+        mins = train_minutes(item)
+        item["minutes_until"] = (24 * 60 - current_minutes) + mins
+        item["day_offset"] = 1
+        item["service_date"] = tomorrow.isoformat()
+        result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def build_train_label(num, hhmm, origin, dest):
     return f"{num} ({hhmm}) {origin} - {dest}"
 
@@ -1609,15 +1653,15 @@ HTML_PAGE = r"""
     <section class="card quick-card">
         <div class="card-head"><h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2></div>
         <div class="card-body">
-            <div class="quick-trains">
+            <div class="quick-trains" id="quickTrainList">
                 {% for train in quick_trains %}
                 <button type="button" class="quick-train" onclick='selectTrainByLabel({{ train.label|tojson }}, 1)'>
-                    <div class="quick-time">{{ train.time_hhmm }} · ข.{{ train.num }}</div>
+                    <div class="quick-time">{{ train.time_hhmm }} · ข.{{ train.num }}{% if train.day_offset %} · พรุ่งนี้{% endif %}</div>
                     <div class="quick-route">→ {{ train.dest }}</div>
                     <div class="helper">{{ train.origin }} → {{ train.dest }}</div>
                 </button>
                 {% else %}
-                <div class="helper">วันนี้ไม่มีขบวนถัดไปในตารางที่เปิดใช้งาน</div>
+                <div class="helper">ไม่พบขบวนถัดไปในตารางที่เปิดใช้งาน</div>
                 {% endfor %}
             </div>
             <div style="margin-top:11px">
@@ -1931,8 +1975,9 @@ HTML_PAGE = r"""
 </div>
 
 <script>
-    const trainData = {{ trains_json | safe }};
-    const quickTrainLabels = {{ quick_train_labels_json | safe }};
+    let trainData = {{ trains_json | safe }};
+    let quickTrains = {{ quick_trains_json | safe }};
+    let quickTrainLabels = quickTrains.map(item => item.label).filter(Boolean);
     let selectedAnnouncement = null;
     let mainPlayer = null;
     let isBusy = false;
@@ -1951,6 +1996,9 @@ HTML_PAGE = r"""
     let activeTrainPickerCount = 1;
     let nextTrainPrewarmTimer = null;
     let nextTrainPrewarmRunId = 0;
+    let nextTrainRefreshTimer = null;
+    const NEXT_TRAIN_REFRESH_MS = 60 * 1000;
+    const NEXT_TRAIN_PREWARM_MINUTES = 20;
     const prewarmedNextTrainKeys = new Set();
 
     function byId(id) { return document.getElementById(id); }
@@ -1971,6 +2019,20 @@ HTML_PAGE = r"""
         } catch (e) {}
     }
 
+    function ensureTrainOption(select, label) {
+        if (!select || !label || Array.from(select.options).some(option => option.value === label)) return;
+        const data = trainData[label];
+        if (!data) return;
+        const option = document.createElement("option");
+        option.value = label;
+        option.textContent = label;
+        const groups = Array.from(select.querySelectorAll("optgroup"));
+        const target = groups.find(group =>
+            data.direction === "inbound" ? group.label.includes("ขาเข้า") : group.label.includes("ขาออก")
+        );
+        (target || select).appendChild(option);
+    }
+
     function selectTrainByLabel(label, type = 1) {
         if (type > activeTrainPickerCount) {
             while (activeTrainPickerCount < type) addTrainPicker();
@@ -1978,6 +2040,7 @@ HTML_PAGE = r"""
         const selectId = type === 1 ? "train_select" : `train_select_${type}`;
         const select = byId(selectId);
         if (!select) return;
+        ensureTrainOption(select, label);
         select.value = label;
         autoFill(type);
         if (type === 1 && byId("trainSearch")) {
@@ -2411,13 +2474,86 @@ HTML_PAGE = r"""
         };
     }
 
+    function renderQuickTrainCards(items) {
+        const box = byId("quickTrainList");
+        if (!box) return;
+        if (!Array.isArray(items) || !items.length) {
+            box.innerHTML = '<div class="helper">ไม่พบขบวนถัดไปในตารางที่เปิดใช้งาน</div>';
+            return;
+        }
+        box.innerHTML = items.map(item => {
+            const tomorrow = Number(item.day_offset || 0) > 0 ? " · พรุ่งนี้" : "";
+            return `<button type="button" class="quick-train" data-label="${escapeHtml(item.label || "")}">
+                <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}</div>
+                <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
+                <div class="helper">${escapeHtml(item.origin || "")} → ${escapeHtml(item.dest || "")}</div>
+            </button>`;
+        }).join("");
+        box.querySelectorAll(".quick-train").forEach(button => {
+            button.addEventListener("click", () => selectTrainByLabel(button.dataset.label, 1));
+        });
+    }
+
+    function updateNextTrainWaitingStatus() {
+        const status = byId("nextTrainPrewarmStatus");
+        const next = quickTrains[0];
+        if (!status || !next) return;
+        const mins = Number(next.minutes_until);
+        if (!Number.isFinite(mins)) {
+            status.textContent = "⚡ ระบบกำลังติดตามเวลาขบวนถัดไปอัตโนมัติ";
+            return;
+        }
+        if (mins > NEXT_TRAIN_PREWARM_MINUTES) {
+            const wait = Math.max(1, Math.ceil(mins - NEXT_TRAIN_PREWARM_MINUTES));
+            const dayText = Number(next.day_offset || 0) > 0 ? "พรุ่งนี้ " : "";
+            status.textContent = `⏱ ข.${next.num || "-"} ${dayText}${next.time_hhmm || ""} · ระบบจะเตรียมเสียงอัตโนมัติในอีกประมาณ ${wait} นาที`;
+        } else {
+            status.textContent = `⚡ ข.${next.num || "-"} ใกล้ถึงเวลาแล้ว · กำลังตรวจสอบเสียงที่เตรียมไว้`;
+        }
+    }
+
+    async function refreshNextTrainsFromServer(runPrewarm = true) {
+        if (!navigator.onLine || document.visibilityState === "hidden") return;
+        try {
+            const response = await fetch("/api/next-trains", {
+                method: "GET",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: { "X-Requested-With": "fetch" }
+            });
+            if (response.status === 401) return;
+            const result = await response.json();
+            if (!response.ok || result.status !== "success") throw new Error(result.message || "อ่านขบวนถัดไปไม่สำเร็จ");
+
+            quickTrains = Array.isArray(result.trains) ? result.trains : [];
+            quickTrainLabels = quickTrains.map(item => item.label).filter(Boolean);
+            if (result.train_data && typeof result.train_data === "object") {
+                trainData = result.train_data;
+            }
+            renderQuickTrainCards(quickTrains);
+            updateNextTrainWaitingStatus();
+            if (runPrewarm) scheduleNextTrainPrewarm(250);
+        } catch (error) {
+            console.warn("Auto next-train refresh failed:", error);
+            const status = byId("nextTrainPrewarmStatus");
+            if (status) status.textContent = "⚡ อัปเดตขบวนถัดไปไม่สำเร็จชั่วคราว · ระบบจะลองใหม่อัตโนมัติ";
+        }
+    }
+
     async function prewarmNextTrainAudio() {
         if (!quickTrainLabels.length || !navigator.onLine || isBusy) return;
         if (document.visibilityState === "hidden") return;
 
-        const label = quickTrainLabels[0];
+        const nextMeta = quickTrains[0] || null;
+        const label = nextMeta?.label || quickTrainLabels[0];
         const data = trainData[label];
         if (!data) return;
+
+        const minutesUntil = Number(nextMeta?.minutes_until);
+        if (Number.isFinite(minutesUntil) && minutesUntil > NEXT_TRAIN_PREWARM_MINUTES) {
+            updateNextTrainWaitingStatus();
+            return;
+        }
 
         const runId = ++nextTrainPrewarmRunId;
         const status = byId("nextTrainPrewarmStatus");
@@ -2491,6 +2627,13 @@ HTML_PAGE = r"""
             nextTrainPrewarmTimer = null;
             prewarmNextTrainAudio();
         }, delay);
+    }
+
+    function startNextTrainAutoRefresh() {
+        if (nextTrainRefreshTimer) clearInterval(nextTrainRefreshTimer);
+        nextTrainRefreshTimer = setInterval(() => {
+            refreshNextTrainsFromServer(true);
+        }, NEXT_TRAIN_REFRESH_MS);
     }
 
     function validateSelection(targetIndex = selectedAnnouncement, previewOnly = false) {
@@ -2978,10 +3121,13 @@ HTML_PAGE = r"""
     [1, 2, 3].forEach(refreshSummary);
     refreshPlaybackControls();
     updateDepartureAction();
+    renderQuickTrainCards(quickTrains);
+    updateNextTrainWaitingStatus();
     scheduleNextTrainPrewarm(2200);
-    window.addEventListener("online", () => scheduleNextTrainPrewarm(900));
+    startNextTrainAutoRefresh();
+    window.addEventListener("online", () => refreshNextTrainsFromServer(true));
     document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") scheduleNextTrainPrewarm(900);
+        if (document.visibilityState === "visible") refreshNextTrainsFromServer(true);
     });
 </script>
 </body>
@@ -4196,6 +4342,29 @@ def api_health():
     return jsonify(status="success",checks=backend_health_checks(),server_epoch_ms=int(time.time()*1000),server_time=now_iso())
 
 
+@app.route("/api/next-trains", methods=["GET"])
+@roles_required("announcer", "admin")
+def api_next_trains():
+    """อัปเดตขบวนถัดไปตามเวลาจริง โดยไม่ต้อง Refresh หน้าเว็บ"""
+    try:
+        inbound, outbound, train_data, schedule_version = get_active_train_lists()
+        quick_trains = get_quick_train_snapshot(inbound, outbound, limit=3)
+        # ขบวนช่วงหลังเที่ยงคืนอาจมาจากตารางวันถัดไป จึงรวมไว้ให้หน้าเว็บเลือกได้ทันที
+        for train in quick_trains:
+            if train.get("label"):
+                train_data[train["label"]] = dict(train)
+        return jsonify(
+            status="success",
+            server_time=now_iso(),
+            trains=quick_trains,
+            train_data=train_data,
+            schedule_version=schedule_version,
+            prewarm_minutes=20,
+        )
+    except Exception as exc:
+        return jsonify(status="error", message=str(exc)), 500
+
+
 @app.route("/api/history/start",methods=["POST"])
 @roles_required("announcer", "admin")
 def api_history_start():
@@ -4224,13 +4393,16 @@ def api_history_event():
 def index():
     inbound, outbound, train_data, schedule_version = get_active_train_lists()
     user = get_current_user()
-    quick_trains = get_quick_trains(inbound, outbound)
+    quick_trains = get_quick_train_snapshot(inbound, outbound)
+    for train in quick_trains:
+        if train.get("label"):
+            train_data[train["label"]] = dict(train)
     return render_template_string(
         HTML_PAGE,
         inbound=inbound,
         outbound=outbound,
         quick_trains=quick_trains,
-        quick_train_labels_json=json.dumps([train.get("label", "") for train in quick_trains], ensure_ascii=False),
+        quick_trains_json=json.dumps(quick_trains, ensure_ascii=False),
         trains_json=json.dumps(train_data, ensure_ascii=False),
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
