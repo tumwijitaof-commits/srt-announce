@@ -98,6 +98,15 @@ ENGLISH_VOICE_OPTIONS = {
 TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-8%")
 TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+20%")
 TTS_EN_PITCH = os.environ.get("TTS_EN_PITCH", "+0Hz")
+
+# ค่าชุดนี้ใช้เฉพาะประกาศ “ซื้อตั๋วก่อนขึ้นรถ” เท่านั้น
+# ไม่กระทบความเร็ว/ความดัง/พิทช์ของประกาศประเภทอื่น
+TICKET_NOTICE_RATE = os.environ.get("TICKET_NOTICE_RATE", "-5%")
+TICKET_NOTICE_VOLUME = os.environ.get("TICKET_NOTICE_VOLUME", "+25%")
+TICKET_NOTICE_PITCH = os.environ.get("TICKET_NOTICE_PITCH", "+0Hz")
+TICKET_NOTICE_EN_RATE = os.environ.get("TICKET_NOTICE_EN_RATE", "-4%")
+TICKET_NOTICE_EN_VOLUME = os.environ.get("TICKET_NOTICE_EN_VOLUME", "+25%")
+TICKET_NOTICE_EN_PITCH = os.environ.get("TICKET_NOTICE_EN_PITCH", "+0Hz")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
 
@@ -146,6 +155,7 @@ TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAIN
 ANNOUNCEMENT_BUTTONS = [
     {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "เลือกประกาศพร้อมกันได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 12, "title": "ซื้อตั๋วก่อนขึ้นรถ", "hint": "เตือนค่าธรรมเนียมกรณีขึ้นรถโดยไม่มีตั๋ว", "group": "ใช้บ่อย", "visible": True},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "เลือกขบวนและชานชาลาได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 11, "title": "รถเปลี่ยนเส้นทาง", "hint": "แจ้งกรณีเปลี่ยนทางหรือชานชาลาเข้าเทียบจากปกติ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
@@ -2783,7 +2793,7 @@ HTML_PAGE = r"""
     function validateSelection(targetIndex = selectedAnnouncement, previewOnly = false) {
         const index = targetIndex;
         if (index === null || index === undefined) return "กรุณาเลือกประเภทประกาศ";
-        if (![7, 8, 9].includes(index) && !value("num")) return "กรุณาเลือกขบวนรถ";
+        if (![7, 8, 9, 12].includes(index) && !value("num")) return "กรุณาเลือกขบวนรถ";
 
         // รถจอด / ออก ต้องมีข้อมูลสถานีถัดไปเพื่อประกาศเส้นทางต่อเนื่อง
         if (index === 4 && !value("next_station"))
@@ -3555,6 +3565,25 @@ def prepare_tts_text(text):
     return _normalize_punctuation_spacing(tts_text)
 
 
+def prepare_ticket_notice_tts_text(text):
+    """
+    จัดจังหวะเฉพาะประกาศซื้อตั๋วก่อนขึ้นรถให้ฟังชัด กระตุ้น และไม่เร่งเกินไป
+    โดยเรียกใช้กติกา TTS เดิมก่อน แล้วเพิ่มช่วงพักเฉพาะใจความสำคัญ
+    """
+    tts_text = prepare_tts_text(text)
+    replacements = (
+        ("ทุกครั้ง หากไม่มีตั๋วโดยสาร", "ทุกครั้ง. หากไม่มีตั๋วโดยสาร"),
+        ("บนขบวนรถเพิ่มเติม ขบวนรถด่วนพิเศษ", "บนขบวนรถเพิ่มเติม. ขบวนรถด่วนพิเศษ"),
+        ("คนละ 250 บาท ส่วนขบวนรถอื่น", "คนละ 250 บาท. ส่วนขบวนรถอื่น"),
+        ("คนละ 100 บาท อย่าเสียเงินเพิ่มโดยไม่จำเป็น", "คนละ 100 บาท. อย่าเสียเงินเพิ่มโดยไม่จำเป็น"),
+        ("อย่าเสียเงินเพิ่มโดยไม่จำเป็น ซื้อตั๋วก่อนขึ้นรถ", "อย่าเสียเงินเพิ่มโดยไม่จำเป็น. ซื้อตั๋วก่อนขึ้นรถ"),
+        ("ซื้อตั๋วก่อนขึ้นรถ สะดวกกว่า ประหยัดกว่า", "ซื้อตั๋วก่อนขึ้นรถ. สะดวกกว่า, ประหยัดกว่า"),
+    )
+    for old, new in replacements:
+        tts_text = tts_text.replace(old, new)
+    return _normalize_punctuation_spacing(tts_text)
+
+
 def prepare_english_tts_text(text):
     """จัดช่องว่างภาษาอังกฤษโดยรักษาเวลา 8:25 และคำย่อ A.M./P.M."""
     tts_text = clean_space(text or "")
@@ -3800,6 +3829,14 @@ def build_english_announcement(data):
             f"will arrive at platform {platform}. Passengers traveling on this train, "
             f"please wait with your belongings on platform {platform}."
         )
+    elif idx == 12:
+        text = (
+            "Attention please. Please purchase a ticket before boarding every train. "
+            "Passengers without a valid ticket must pay the applicable fare and an additional onboard ticket fee. "
+            "The additional fee is 250 baht per person for Special Express, Express, and Rapid trains, "
+            "and 100 baht per person for other trains. Avoid unnecessary extra charges. "
+            "Buy your ticket before boarding. It is more convenient and more economical."
+        )
     elif idx == 2:
         arriving = [(platform, t_num, origin, dest, t_time)]
         if t_num_2:
@@ -3952,6 +3989,14 @@ def build_announcement(data):
             f"เที่ยวกำหนดเวลา {t_time} จะเข้าเทียบรับส่งผู้โดยสารในชานชาลาที่ {platform} "
             f"ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} "
             f"ขอบคุณครับ"
+        )
+    elif idx == 12:
+        text = (
+            "โปรดทราบ ก่อนขึ้นขบวนรถ กรุณาซื้อตั๋วโดยสารทุกครั้ง "
+            "หากไม่มีตั๋วโดยสาร ต้องชำระทั้งค่าโดยสาร และค่าธรรมเนียมซื้อตั๋วบนขบวนรถเพิ่มเติม "
+            "ขบวนรถด่วนพิเศษ รถด่วน และรถเร็ว คนละ 250 บาท "
+            "ส่วนขบวนรถอื่น คนละ 100 บาท "
+            "อย่าเสียเงินเพิ่มโดยไม่จำเป็น ซื้อตั๋วก่อนขึ้นรถ สะดวกกว่า ประหยัดกว่า ขอบคุณครับ"
         )
     elif idx == 2:
         arriving = [(platform, t_num, origin, dest, t_time)]
@@ -4706,15 +4751,16 @@ def announce():
         if not thai_text:
             return jsonify({"status": "error", "message": "ไม่มีข้อความภาษาไทยสำหรับประกาศ"}), 400
 
+        is_ticket_notice = int(data.get("tab_index", -1)) == 12
         segments.append({
-            "code": "th",
+            "code": "th_ticket" if is_ticket_notice else "th",
             "display_label": "ภาษาไทย",
             "text": thai_text,
             "voice": thai_voice,
-            "rate": TTS_RATE,
-            "volume": TTS_VOLUME,
-            "pitch": TTS_PITCH,
-            "prepare": prepare_tts_text,
+            "rate": TICKET_NOTICE_RATE if is_ticket_notice else TTS_RATE,
+            "volume": TICKET_NOTICE_VOLUME if is_ticket_notice else TTS_VOLUME,
+            "pitch": TICKET_NOTICE_PITCH if is_ticket_notice else TTS_PITCH,
+            "prepare": prepare_ticket_notice_tts_text if is_ticket_notice else prepare_tts_text,
         })
 
     if mode in {"english_only", "bilingual"}:
@@ -4726,14 +4772,15 @@ def announce():
         if not english_text:
             return jsonify({"status": "error", "message": "ไม่มีข้อความภาษาอังกฤษสำหรับประกาศ"}), 400
 
+        is_ticket_notice = int(data.get("tab_index", -1)) == 12
         segments.append({
-            "code": "en",
+            "code": "en_ticket" if is_ticket_notice else "en",
             "display_label": "ภาษาอังกฤษ",
             "text": english_text,
             "voice": english_voice_for(thai_voice),
-            "rate": TTS_EN_RATE,
-            "volume": TTS_EN_VOLUME,
-            "pitch": TTS_EN_PITCH,
+            "rate": TICKET_NOTICE_EN_RATE if is_ticket_notice else TTS_EN_RATE,
+            "volume": TICKET_NOTICE_EN_VOLUME if is_ticket_notice else TTS_EN_VOLUME,
+            "pitch": TICKET_NOTICE_EN_PITCH if is_ticket_notice else TTS_EN_PITCH,
             "prepare": prepare_english_tts_text,
         })
 
