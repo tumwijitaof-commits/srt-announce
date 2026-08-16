@@ -25,6 +25,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
+# Build: v9.9 Live Prewarm Status - auto refresh / per-train readiness without manual page refresh
 # Version: v9.7 - multi-train ticket sales and waiting announcements
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -1553,8 +1554,15 @@ HTML_PAGE = r"""
         }
         .quick-card { margin-top: 14px; }
         .quick-trains { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin-top:10px; }
-        .quick-train { border:1px solid #e4d4bf; background:#fff; border-radius:14px; padding:11px; text-align:left; min-height:74px; }
+        .quick-train { border:1px solid #e4d4bf; background:#fff; border-radius:14px; padding:11px; text-align:left; min-height:98px; transition:.18s ease; }
         .quick-train:hover { border-color:var(--maroon); background:#fff5f5; }
+        .quick-train.is-ready { border-color:#9bcbae; box-shadow:inset 0 0 0 1px rgba(23,119,68,.14); }
+        .quick-train.is-warming { border-color:#d7b562; }
+        .quick-live-status { margin-top:8px; padding:6px 8px; border-radius:9px; font-size:11px; font-weight:850; line-height:1.35; background:#f5efe6; color:var(--muted); }
+        .quick-live-status.ready { background:#e8f6ed; color:#116735; }
+        .quick-live-status.warming { background:#fff3cd; color:#785b00; }
+        .quick-live-status.waiting { background:#f5efe6; color:#6f625a; }
+        .quick-live-status.error { background:#fdebea; color:#a31d16; }
         .quick-time { font-weight:900; color:var(--maroon); font-size:17px; }
         .quick-route { margin-top:3px; font-weight:800; }
         .train-search-results { display:grid; gap:6px; margin-top:7px; max-height:240px; overflow:auto; }
@@ -1669,7 +1677,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">⚡ ระบบจะเตรียมเสียงของขบวนถัดไปล่วงหน้าอัตโนมัติ</div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🔄 อัปเดตอัตโนมัติ · ไม่ต้องกดรีเฟรช · เตรียมเสียงเมื่อเหลือ 20 นาที</div>
         </div>
     </section>
 
@@ -1997,9 +2005,11 @@ HTML_PAGE = r"""
     let nextTrainPrewarmTimer = null;
     let nextTrainPrewarmRunId = 0;
     let nextTrainRefreshTimer = null;
-    const NEXT_TRAIN_REFRESH_MS = 60 * 1000;
+    const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
     const NEXT_TRAIN_PREWARM_MINUTES = 20;
+    const NEXT_TRAIN_RETRY_MS = 60 * 1000;
     const prewarmedNextTrainKeys = new Set();
+    const livePrewarmStates = new Map();
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -2141,7 +2151,8 @@ HTML_PAGE = r"""
         invalidatePreparedAudio();
         schedulePreview(50);
         schedulePrepareAnnouncement(250);
-        scheduleNextTrainPrewarm(1800);
+        resetLivePrewarmStates();
+        scheduleNextTrainPrewarm(500);
     }
 
     function setThaiVoice(voice, button) {
@@ -2154,7 +2165,8 @@ HTML_PAGE = r"""
         invalidatePreparedAudio();
         schedulePreview(50);
         schedulePrepareAnnouncement(250);
-        scheduleNextTrainPrewarm(1800);
+        resetLivePrewarmStates();
+        scheduleNextTrainPrewarm(500);
     }
 
     function updateCustomLanguageFields() {
@@ -2228,9 +2240,12 @@ HTML_PAGE = r"""
             const label = value(selectId);
             if (label) localStorage.setItem(`kbp_platform:${label}`, value(platformId) || "1");
         } catch (e) {}
+        const changedLabel = value(type === 1 ? "train_select" : `train_select_${type}`);
+        if (changedLabel) invalidateLivePrewarmForLabel(changedLabel);
         invalidatePreparedAudio();
         schedulePreview();
         schedulePrepareAnnouncement(250);
+        scheduleNextTrainPrewarm(500);
     }
 
     function resetPassTrainUI(singleOnly = false) {
@@ -2474,6 +2489,77 @@ HTML_PAGE = r"""
         };
     }
 
+    function rememberedPlatformForLabel(label) {
+        let platform = "1";
+        try {
+            const remembered = localStorage.getItem(`kbp_platform:${label}`);
+            if (["1", "2", "3"].includes(remembered)) platform = remembered;
+        } catch (e) {}
+        return platform;
+    }
+
+    function currentPrewarmSignature(label) {
+        return JSON.stringify({
+            mode: value("announce_mode") || "thai_only",
+            voice: value("thai_voice") || "th-TH-PremwadeeNeural",
+            platform: rememberedPlatformForLabel(label)
+        });
+    }
+
+    function resetLivePrewarmStates() {
+        livePrewarmStates.clear();
+        renderQuickTrainCards(quickTrains);
+        updateNextTrainWaitingStatus();
+    }
+
+    function invalidateLivePrewarmForLabel(label) {
+        if (!label) return;
+        livePrewarmStates.delete(label);
+        renderQuickTrainCards(quickTrains);
+    }
+
+    function setLivePrewarmState(label, patch = {}) {
+        if (!label) return;
+        const previous = livePrewarmStates.get(label) || {};
+        livePrewarmStates.set(label, {
+            ...previous,
+            ...patch,
+            signature: patch.signature || previous.signature || currentPrewarmSignature(label),
+            updatedAt: Date.now()
+        });
+        renderQuickTrainCards(quickTrains);
+        updateNextTrainWaitingStatus();
+    }
+
+    function liveStatusForTrain(item) {
+        const label = item?.label || "";
+        const mins = Number(item?.minutes_until);
+        const signature = currentPrewarmSignature(label);
+        const state = livePrewarmStates.get(label);
+        const matchingState = state && state.signature === signature ? state : null;
+        const tomorrow = Number(item?.day_offset || 0) > 0;
+
+        if (matchingState?.state === "ready") {
+            return { cls: "ready", cardCls: "is-ready", text: "✅ เสียงพร้อม · รอรับ / รถเข้า / รถจอด-ออก" };
+        }
+        if (matchingState?.state === "warming") {
+            const countText = matchingState.total ? ` ${matchingState.warmed || 0}/${matchingState.total}` : "";
+            return { cls: "warming", cardCls: "is-warming", text: `⚡ กำลังเตรียมเสียง${countText}` };
+        }
+        if (matchingState?.state === "error" && Number(matchingState.retryAfter || 0) > Date.now()) {
+            return { cls: "error", cardCls: "", text: "⚠️ เตรียมไม่ครบ · ระบบจะลองใหม่อัตโนมัติ" };
+        }
+        if (!Number.isFinite(mins)) {
+            return { cls: "waiting", cardCls: "", text: "🔄 กำลังติดตามเวลาอัตโนมัติ" };
+        }
+        if (mins <= NEXT_TRAIN_PREWARM_MINUTES) {
+            return { cls: "warming", cardCls: "is-warming", text: "⚡ ใกล้ถึงเวลา · รอเริ่มเตรียมเสียงอัตโนมัติ" };
+        }
+        const waitToWarm = Math.max(1, Math.ceil(mins - NEXT_TRAIN_PREWARM_MINUTES));
+        const dayText = tomorrow ? "พรุ่งนี้ · " : "";
+        return { cls: "waiting", cardCls: "", text: `🕒 ${dayText}อีก ${Math.max(1, Math.ceil(mins))} นาที · เตรียมเสียงในอีก ${waitToWarm} นาที` };
+    }
+
     function renderQuickTrainCards(items) {
         const box = byId("quickTrainList");
         if (!box) return;
@@ -2483,10 +2569,12 @@ HTML_PAGE = r"""
         }
         box.innerHTML = items.map(item => {
             const tomorrow = Number(item.day_offset || 0) > 0 ? " · พรุ่งนี้" : "";
-            return `<button type="button" class="quick-train" data-label="${escapeHtml(item.label || "")}">
+            const live = liveStatusForTrain(item);
+            return `<button type="button" class="quick-train ${live.cardCls}" data-label="${escapeHtml(item.label || "")}">
                 <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}</div>
                 <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
                 <div class="helper">${escapeHtml(item.origin || "")} → ${escapeHtml(item.dest || "")}</div>
+                <div class="quick-live-status ${live.cls}">${escapeHtml(live.text)}</div>
             </button>`;
         }).join("");
         box.querySelectorAll(".quick-train").forEach(button => {
@@ -2496,24 +2584,35 @@ HTML_PAGE = r"""
 
     function updateNextTrainWaitingStatus() {
         const status = byId("nextTrainPrewarmStatus");
-        const next = quickTrains[0];
-        if (!status || !next) return;
-        const mins = Number(next.minutes_until);
-        if (!Number.isFinite(mins)) {
-            status.textContent = "⚡ ระบบกำลังติดตามเวลาขบวนถัดไปอัตโนมัติ";
+        if (!status) return;
+        if (!quickTrains.length) {
+            status.textContent = "🔄 ระบบติดตามตารางอัตโนมัติ · ยังไม่พบขบวนถัดไป";
             return;
         }
-        if (mins > NEXT_TRAIN_PREWARM_MINUTES) {
-            const wait = Math.max(1, Math.ceil(mins - NEXT_TRAIN_PREWARM_MINUTES));
-            const dayText = Number(next.day_offset || 0) > 0 ? "พรุ่งนี้ " : "";
-            status.textContent = `⏱ ข.${next.num || "-"} ${dayText}${next.time_hhmm || ""} · ระบบจะเตรียมเสียงอัตโนมัติในอีกประมาณ ${wait} นาที`;
+
+        let ready = 0, warming = 0, near = 0;
+        quickTrains.forEach(item => {
+            const label = item.label || "";
+            const state = livePrewarmStates.get(label);
+            const signature = currentPrewarmSignature(label);
+            if (state && state.signature === signature && state.state === "ready") ready += 1;
+            else if (state && state.signature === signature && state.state === "warming") warming += 1;
+            if (Number(item.minutes_until) <= NEXT_TRAIN_PREWARM_MINUTES) near += 1;
+        });
+
+        if (warming) {
+            status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · กำลังเตรียมเสียง ${warming} ขบวน`;
+        } else if (ready) {
+            status.textContent = `✅ มีเสียงพร้อม ${ready} ขบวน · ระบบติดตามและเลื่อนขบวนถัดไปให้อัตโนมัติ ไม่ต้องรีเฟรช`;
+        } else if (near) {
+            status.textContent = "⚡ มีขบวนเข้าเขต 20 นาที · ระบบกำลังเริ่มเตรียมเสียงอัตโนมัติ";
         } else {
-            status.textContent = `⚡ ข.${next.num || "-"} ใกล้ถึงเวลาแล้ว · กำลังตรวจสอบเสียงที่เตรียมไว้`;
+            status.textContent = "🔄 อัปเดตสดทุก 30 วินาที · เตรียมเสียงอัตโนมัติเมื่อแต่ละขบวนเหลือ 20 นาที";
         }
     }
 
     async function refreshNextTrainsFromServer(runPrewarm = true) {
-        if (!navigator.onLine || document.visibilityState === "hidden") return;
+        if (!navigator.onLine) return;
         try {
             const response = await fetch("/api/next-trains", {
                 method: "GET",
@@ -2530,45 +2629,52 @@ HTML_PAGE = r"""
             if (result.train_data && typeof result.train_data === "object") {
                 trainData = result.train_data;
             }
+
+            // ลบสถานะของขบวนที่หลุดจาก 3 อันดับ เพื่อไม่ให้ state สะสมทั้งวัน
+            const activeLabels = new Set(quickTrainLabels);
+            [...livePrewarmStates.keys()].forEach(label => {
+                if (!activeLabels.has(label)) livePrewarmStates.delete(label);
+            });
+
             renderQuickTrainCards(quickTrains);
             updateNextTrainWaitingStatus();
-            if (runPrewarm) scheduleNextTrainPrewarm(250);
+            if (runPrewarm) scheduleNextTrainPrewarm(120);
         } catch (error) {
             console.warn("Auto next-train refresh failed:", error);
             const status = byId("nextTrainPrewarmStatus");
-            if (status) status.textContent = "⚡ อัปเดตขบวนถัดไปไม่สำเร็จชั่วคราว · ระบบจะลองใหม่อัตโนมัติ";
+            if (status) status.textContent = "⚠️ อัปเดตขบวนถัดไปไม่สำเร็จชั่วคราว · ระบบจะลองใหม่เอง";
         }
     }
 
-    async function prewarmNextTrainAudio() {
-        if (!quickTrainLabels.length || !navigator.onLine || isBusy) return;
-        if (document.visibilityState === "hidden") return;
-
-        const nextMeta = quickTrains[0] || null;
-        const label = nextMeta?.label || quickTrainLabels[0];
+    async function prewarmOneTrain(item, runId) {
+        if (!item?.label || runId !== nextTrainPrewarmRunId || isBusy || !navigator.onLine) return;
+        const label = item.label;
         const data = trainData[label];
         if (!data) return;
 
-        const minutesUntil = Number(nextMeta?.minutes_until);
-        if (Number.isFinite(minutesUntil) && minutesUntil > NEXT_TRAIN_PREWARM_MINUTES) {
-            updateNextTrainWaitingStatus();
-            return;
-        }
+        const minutesUntil = Number(item.minutes_until);
+        if (Number.isFinite(minutesUntil) && minutesUntil > NEXT_TRAIN_PREWARM_MINUTES) return;
 
-        const runId = ++nextTrainPrewarmRunId;
-        const status = byId("nextTrainPrewarmStatus");
-        if (status) status.textContent = `⚡ กำลังเตรียมเสียงล่วงหน้าสำหรับ ข.${data.num || "-"}...`;
+        const signature = currentPrewarmSignature(label);
+        const existing = livePrewarmStates.get(label);
+        if (existing && existing.signature === signature && existing.state === "ready") return;
+        if (existing && existing.signature === signature && existing.state === "error" && Number(existing.retryAfter || 0) > Date.now()) return;
 
-        // เตรียมเฉพาะ 3 ประกาศที่ใช้บ่อยที่สุดของขบวนถัดไป
         // 1 = รอรับโดยสาร, 2 = รถกำลังเข้าเทียบ, 4 = รถจอด / ออก
         const commonTypes = [1, 2, 4];
         let warmed = 0;
+        let attempted = 0;
+        setLivePrewarmState(label, { state: "warming", warmed: 0, total: commonTypes.length, signature, retryAfter: 0 });
 
         for (const tabIndex of commonTypes) {
             if (runId !== nextTrainPrewarmRunId || isBusy || !navigator.onLine) return;
             const payload = nextTrainPrewarmPayload(label, tabIndex);
             if (!payload) continue;
-            if (tabIndex === 4 && !payload.next) continue;
+            if (tabIndex === 4 && !payload.next) {
+                // ไม่มีสถานีถัดไป: ข้ามเฉพาะรถจอด/ออก แต่ยังเตรียม 2 ประเภทอื่นได้
+                continue;
+            }
+            attempted += 1;
 
             const cacheKey = JSON.stringify({
                 label,
@@ -2581,6 +2687,7 @@ HTML_PAGE = r"""
             });
             if (prewarmedNextTrainKeys.has(cacheKey)) {
                 warmed += 1;
+                setLivePrewarmState(label, { state: "warming", warmed, total: commonTypes.length, signature });
                 continue;
             }
 
@@ -2596,41 +2703,62 @@ HTML_PAGE = r"""
 
                 prewarmedNextTrainKeys.add(cacheKey);
                 warmed += 1;
+                setLivePrewarmState(label, { state: "warming", warmed, total: commonTypes.length, signature });
 
-                // แตะ URL ไฟล์ให้ browser เริ่ม cache ด้วย แต่ไม่เล่นเสียง
                 const urls = (result.audio_urls && result.audio_urls.length) ? result.audio_urls : [result.audio_url].filter(Boolean);
                 urls.forEach(url => {
                     try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
                 });
             } catch (error) {
-                console.warn("Next-train audio prewarm failed:", error);
-                if (status && runId === nextTrainPrewarmRunId) {
-                    status.textContent = "⚡ เตรียมเสียงล่วงหน้าไม่สำเร็จ แต่ยังสามารถกดประกาศตามปกติได้";
-                }
+                console.warn(`Next-train audio prewarm failed for ${label}:`, error);
+                setLivePrewarmState(label, {
+                    state: "error",
+                    warmed,
+                    total: commonTypes.length,
+                    signature,
+                    retryAfter: Date.now() + NEXT_TRAIN_RETRY_MS
+                });
                 return;
             }
 
-            // ไม่ยิง edge-tts หลายงานติดกันเกินไปบนเครื่อง/Render ขนาดเล็ก
             await new Promise(resolve => setTimeout(resolve, 220));
         }
 
-        if (status && runId === nextTrainPrewarmRunId) {
-            status.textContent = warmed
-                ? `✓ เตรียมเสียงหลักของขบวนถัดไป ข.${data.num || "-"} ไว้แล้ว`
-                : "⚡ ระบบพร้อมเตรียมเสียงขบวนถัดไป";
+        if (runId !== nextTrainPrewarmRunId) return;
+        if (attempted > 0 && warmed >= attempted) {
+            setLivePrewarmState(label, { state: "ready", warmed, total: attempted, signature, retryAfter: 0 });
         }
     }
 
-    function scheduleNextTrainPrewarm(delay = 2200) {
+    async function prewarmUpcomingTrainAudio() {
+        if (!quickTrains.length || !navigator.onLine || isBusy) return;
+        const runId = ++nextTrainPrewarmRunId;
+
+        // ตรวจทั้ง 3 ขบวน ไม่ใช่เฉพาะอันดับ 1
+        // ขบวนใดเข้าเขต 20 นาทีจะถูกเตรียมให้เอง โดยทำทีละขบวนเพื่อลดภาระ Render/TTS
+        for (const item of quickTrains) {
+            if (runId !== nextTrainPrewarmRunId || isBusy || !navigator.onLine) return;
+            const mins = Number(item.minutes_until);
+            if (!Number.isFinite(mins) || mins > NEXT_TRAIN_PREWARM_MINUTES) continue;
+            await prewarmOneTrain(item, runId);
+            await new Promise(resolve => setTimeout(resolve, 260));
+        }
+        renderQuickTrainCards(quickTrains);
+        updateNextTrainWaitingStatus();
+    }
+
+    function scheduleNextTrainPrewarm(delay = 900) {
         if (nextTrainPrewarmTimer) clearTimeout(nextTrainPrewarmTimer);
         nextTrainPrewarmTimer = setTimeout(() => {
             nextTrainPrewarmTimer = null;
-            prewarmNextTrainAudio();
+            prewarmUpcomingTrainAudio();
         }, delay);
     }
 
     function startNextTrainAutoRefresh() {
         if (nextTrainRefreshTimer) clearInterval(nextTrainRefreshTimer);
+        // เรียกทันที ไม่ต้องรอรอบแรก และจากนั้นอัปเดตทุก 30 วินาที
+        refreshNextTrainsFromServer(true);
         nextTrainRefreshTimer = setInterval(() => {
             refreshNextTrainsFromServer(true);
         }, NEXT_TRAIN_REFRESH_MS);
@@ -3123,7 +3251,6 @@ HTML_PAGE = r"""
     updateDepartureAction();
     renderQuickTrainCards(quickTrains);
     updateNextTrainWaitingStatus();
-    scheduleNextTrainPrewarm(2200);
     startNextTrainAutoRefresh();
     window.addEventListener("online", () => refreshNextTrainsFromServer(true));
     document.addEventListener("visibilitychange", () => {
