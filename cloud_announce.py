@@ -87,14 +87,14 @@ if VOICE_NAME not in THAI_VOICE_OPTIONS:
 
 # ไม่เร่งความดังหรือกดระดับเสียงมากเกินไป เพราะจะทำให้เสียงแตกและคำเพี้ยน
 TTS_RATE = os.environ.get("TTS_RATE", "-10%")
-TTS_VOLUME = os.environ.get("TTS_VOLUME", "+0%")
+TTS_VOLUME = os.environ.get("TTS_VOLUME", "+20%")
 TTS_PITCH = os.environ.get("TTS_PITCH", "+0Hz")
 ENGLISH_VOICE_OPTIONS = {
     "female": os.environ.get("TTS_EN_FEMALE_VOICE", "en-US-JennyNeural"),
     "male": os.environ.get("TTS_EN_MALE_VOICE", "en-US-GuyNeural"),
 }
 TTS_EN_RATE = os.environ.get("TTS_EN_RATE", "-8%")
-TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+0%")
+TTS_EN_VOLUME = os.environ.get("TTS_EN_VOLUME", "+20%")
 TTS_EN_PITCH = os.environ.get("TTS_EN_PITCH", "+0Hz")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
@@ -2006,7 +2006,7 @@ HTML_PAGE = r"""
         byId("addTrain2Button").textContent = activeTrainPickerCount === 1 ? "＋ เพิ่มขบวนที่ 2" : "＋ เพิ่มขบวนที่ 3";
         invalidatePreparedAudio();
         schedulePreview();
-        schedulePrepareAnnouncement(500);
+        schedulePrepareAnnouncement(250);
     }
 
     function startHistoryRecord(tabIndex) {
@@ -2058,7 +2058,7 @@ HTML_PAGE = r"""
         updateSettingsSummary();
         invalidatePreparedAudio();
         schedulePreview(50);
-        schedulePrepareAnnouncement(500);
+        schedulePrepareAnnouncement(250);
     }
 
     function setThaiVoice(voice, button) {
@@ -2070,7 +2070,7 @@ HTML_PAGE = r"""
         updateSettingsSummary();
         invalidatePreparedAudio();
         schedulePreview(50);
-        schedulePrepareAnnouncement(500);
+        schedulePrepareAnnouncement(250);
     }
 
     function updateCustomLanguageFields() {
@@ -2094,7 +2094,7 @@ HTML_PAGE = r"""
             refreshSummary(type);
             invalidatePreparedAudio();
             schedulePreview();
-            schedulePrepareAnnouncement(500);
+            schedulePrepareAnnouncement(250);
             return;
         }
         byId("num" + suffix).value = data.num || "";
@@ -2110,7 +2110,7 @@ HTML_PAGE = r"""
         refreshSummary(type);
         invalidatePreparedAudio();
         schedulePreview();
-        schedulePrepareAnnouncement(500);
+        schedulePrepareAnnouncement(250);
     }
 
     function refreshSummary(type = 1) {
@@ -2146,7 +2146,7 @@ HTML_PAGE = r"""
         } catch (e) {}
         invalidatePreparedAudio();
         schedulePreview();
-        schedulePrepareAnnouncement(500);
+        schedulePrepareAnnouncement(250);
     }
 
     function resetPassTrainUI(singleOnly = false) {
@@ -2208,7 +2208,7 @@ HTML_PAGE = r"""
         byId("audioReadyBadge").textContent = "";
         invalidatePreparedAudio();
         schedulePreview(30);
-        schedulePrepareAnnouncement(500);
+        schedulePrepareAnnouncement(250);
     }
 
     function escapeHtml(text) {
@@ -2664,6 +2664,19 @@ HTML_PAGE = r"""
         });
     }
 
+    async function warmAudioUrls(urls, runId = playbackRunId) {
+        // โหลดไฟล์เสียงประกาศเข้ browser cache ให้เสร็จก่อนเสียงเตือน
+        // เพื่อให้หลัง chime จบแล้วเสียงพูดเริ่มต่อได้ทันที ไม่เกิดช่วงเงียบรอไฟล์
+        const uniqueUrls = [...new Set((urls || []).filter(Boolean))];
+        await Promise.all(uniqueUrls.map(async url => {
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
+            const response = await fetch(url, { cache: "force-cache" });
+            if (!response.ok) throw new Error("เตรียมไฟล์เสียงประกาศไม่สำเร็จ");
+            await response.blob();
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
+        }));
+    }
+
     async function playOriginalChime(runId = playbackRunId) {
         try {
             await playUrl("/audio/chime.mp3", { maxWaitMs: 5200, errorText: "เล่นเสียงเตือนไม่สำเร็จ", runId });
@@ -2694,29 +2707,37 @@ HTML_PAGE = r"""
         if (runId !== playbackRunId) return;
         setLoading(true);
 
-        // เริ่มสร้าง/ดึงไฟล์เสียงและเล่นเสียงเตือนพร้อมกัน
-        setStatus("เสียงเตือน...", "work");
-        byId("previewBox").innerHTML = "<b>กำลังเริ่มประกาศ</b><br><br>เสียงเตือนกำลังเล่น และระบบกำลังตรวจสอบไฟล์เสียงประกาศ";
+        // v9.4: เตรียม TTS และโหลดไฟล์เสียงให้พร้อมก่อน แล้วค่อยเล่นเสียงเตือน
+        // ผลคือ chime จบแล้วเสียงประกาศจะต่อแทบจะทันที โดยไม่ต้องรอ network/TTS หลัง chime
+        setStatus("กำลังเตรียมเสียงประกาศ...", "work");
+        if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "กำลังเตรียมเสียง...";
 
         try {
-            const dataPromise = requestAnnouncementData(tabIndex, false);
-            const chimePromise = playOriginalChime(runId);
-            const [data, , historyId] = await Promise.all([dataPromise, chimePromise, activeHistoryPromise]);
+            const [data, historyId] = await Promise.all([
+                requestAnnouncementData(tabIndex, false),
+                activeHistoryPromise
+            ]);
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             activeHistoryId = historyId;
-            logHistoryEvent("generated", {
-                message: data.text_plain || data.text_preview || "",
-                generation_ms: data.generation_ms || 0
-            });
 
             renderServerPreview(data.text_preview || "-");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
             if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
 
-            audioUrls.forEach(url => {
-                try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
+            // รอให้ไฟล์ MP3 อยู่ใน browser cache ก่อนเริ่ม chime
+            await warmAudioUrls(audioUrls, runId);
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
+
+            logHistoryEvent("generated", {
+                message: data.text_plain || data.text_preview || "",
+                generation_ms: data.generation_ms || 0
             });
+            if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "✓ ไฟล์เสียงพร้อมแล้ว";
+
+            setStatus("เสียงเตือน...", "work");
+            await playOriginalChime(runId);
+            if (runId !== playbackRunId) throw makePlaybackStoppedError();
 
             for (let i = 0; i < audioUrls.length; i++) {
                 if (runId !== playbackRunId) throw makePlaybackStoppedError();
@@ -2739,6 +2760,7 @@ HTML_PAGE = r"""
                     message = "มือถือบล็อกการเล่นเสียงชั่วคราว กรุณากดปุ่มประกาศอีกครั้ง หรือเปิดหน้านี้ผ่าน Chrome/Safari โดยตรง";
                 }
                 byId("previewBox").innerHTML = `<b>เกิดข้อผิดพลาด</b><br><br>${escapeHtml(message)}`;
+                if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "";
             }
         } finally {
             if (runId === playbackRunId) {
@@ -2789,7 +2811,7 @@ HTML_PAGE = r"""
         element.addEventListener("change", () => {
             invalidatePreparedAudio();
             schedulePreview(50);
-            schedulePrepareAnnouncement(450);
+            schedulePrepareAnnouncement(250);
         });
     });
 
