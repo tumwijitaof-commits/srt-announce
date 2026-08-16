@@ -25,7 +25,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v10 UI Refresh - streamlined operator workflow, same backend/TTS behavior
+# Build: v10.3 Classic UI + automatic normal platform (odd=2, even=3)
 # Version: v9.7 - multi-train ticket sales and waiting announcements
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -1262,7 +1262,7 @@ HTML_PAGE = r"""
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบประกาศสถานีรถไฟคลองบางพระ · Official UI</title>
+    <title>ระบบประกาศสถานีคลองบางพระ</title>
     <link rel="preload" href="/audio/chime.mp3" as="audio" type="audio/mpeg">
     <style>
         :root {
@@ -1606,628 +1606,6 @@ HTML_PAGE = r"""
             .voice-test-btn { width: 100%; min-width: 0; }
             .playback-controls { grid-template-columns: 1fr; }
         }
-
-
-        /* ---------------------------------------------------------
-           v10 UI Refresh — operator-first layout, backend/TTS unchanged
-           --------------------------------------------------------- */
-        body { background: linear-gradient(145deg, #fffaf3 0%, #f3e8d9 100%); }
-        .app { max-width: 1240px; }
-        .topbar { padding: 17px 20px; border-radius: 20px; }
-        .topbar .status { min-width: 152px; }
-        .system-nav { box-shadow: 0 8px 24px rgba(83,28,28,.07); }
-        .system-nav a { background: #fffaf3; }
-
-        .operator-toolbar {
-            display:grid;
-            grid-template-columns:minmax(0,1.25fr) minmax(330px,.85fr);
-            gap:12px;
-            margin-top:12px;
-            padding:12px;
-            border:1px solid var(--line);
-            border-radius:18px;
-            background:rgba(255,255,255,.96);
-            box-shadow:0 9px 26px rgba(83,28,28,.08);
-        }
-        .toolbar-label { margin-bottom:7px; color:var(--maroon-dark); font-size:13px; font-weight:900; }
-        .language-grid-compact { grid-template-columns:repeat(3,minmax(0,1fr)); }
-        .language-grid-compact .lang-btn { min-height:54px; padding:8px 10px; }
-        .language-grid-compact .lang-btn small { font-size:10.5px; }
-        .operator-status-panel { display:flex; flex-direction:column; justify-content:center; gap:8px; }
-        .current-config { display:flex; flex-wrap:wrap; gap:6px; }
-        .config-chip, .schedule-chip {
-            display:inline-flex; align-items:center; gap:5px;
-            padding:7px 9px; border-radius:10px; border:1px solid #eadcc8;
-            background:#fffaf2; color:var(--maroon-dark); font-size:11.5px; font-weight:850;
-        }
-        .config-chip.auto-chip { color:#116735; background:#eaf7ee; border-color:#cce6d4; }
-        .schedule-chip { width:100%; color:var(--muted); background:#fff; font-weight:750; }
-        .voice-settings { border:1px solid #e2d3bf; border-radius:12px; overflow:hidden; background:#fff; }
-        .voice-settings summary {
-            display:flex; align-items:center; justify-content:space-between; gap:10px;
-            padding:9px 11px; cursor:pointer; list-style:none; color:var(--maroon-dark); font-size:12px; font-weight:900;
-        }
-        .voice-settings summary::-webkit-details-marker { display:none; }
-        .voice-settings[open] summary { background:#fff8ed; border-bottom:1px solid var(--line); }
-        .voice-settings-body { padding:11px; }
-        .settings-section-title { margin-bottom:8px; color:var(--maroon-dark); font-weight:900; font-size:13px; }
-        .voice-choice-grid-settings { grid-template-columns:repeat(2,minmax(0,1fr)) auto; }
-        .voice-choice-grid-settings .voice-choice-btn, .voice-choice-grid-settings .voice-test-btn { min-height:51px; }
-        .settings-info-row { display:flex; justify-content:space-between; gap:12px; margin-top:9px; padding-top:9px; border-top:1px dashed var(--line); color:var(--muted); font-size:11.5px; }
-        .settings-info-row b { color:var(--green); }
-
-        .quick-card { margin-top:12px; border-color:#dfcfb9; }
-        .quick-card .card-head { background:linear-gradient(90deg,#fff8ea,#fffdf9); }
-        .quick-trains { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
-        .quick-train { min-height:110px; padding:12px; position:relative; }
-        .quick-train::after { content:'เลือก'; position:absolute; right:9px; top:9px; padding:3px 7px; border-radius:999px; background:#f6ecdf; color:var(--maroon); font-size:10px; font-weight:900; }
-        .quick-time { padding-right:40px; }
-        .quick-route { font-size:15px; color:var(--maroon-dark); }
-        #nextTrainPrewarmStatus { padding:8px 10px; border-radius:10px; background:#f7f2ea; }
-
-        .layout { grid-template-columns:minmax(0,1.25fr) minmax(340px,.75fr); gap:14px; margin-top:14px; }
-        .stack { gap:14px; }
-        .card { border-radius:18px; box-shadow:0 9px 28px rgba(83,28,28,.08); }
-        .card-head { padding:13px 16px; }
-        .card-body { padding:15px; }
-        .step-title { font-size:17px; }
-        .train-picker { padding:12px; }
-        .train-summary { padding:12px; }
-        .train-number { min-width:68px; font-size:20px; }
-        .route { font-size:16px; }
-        .advanced summary { font-size:12px; }
-        .train-add-controls { margin-top:8px; }
-        .small-action { padding:8px 11px; }
-
-        .group-title { margin:13px 0 7px; padding:0; }
-        .group-title-primary { color:var(--maroon-dark); font-size:14px; }
-        .announce-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-        .announce-grid-primary { grid-template-columns:repeat(3,minmax(0,1fr)); }
-        .announce-option { min-height:78px; padding:11px; position:relative; }
-        .announce-option strong { font-size:14px; }
-        .announce-option span { font-size:11.5px; }
-        .announce-option[data-index="0"] strong::before { content:"🎫 "; }
-        .announce-option[data-index="1"] strong::before { content:"🧳 "; }
-        .announce-option[data-index="11"] strong::before { content:"🔀 "; }
-        .announce-option[data-index="2"] strong::before { content:"🚆 "; }
-        .announce-option[data-index="4"] strong::before { content:"🚉 "; }
-        .announce-option[data-index="9"] strong::before { content:"⚠️ "; }
-        .announce-option[data-index="5"] strong::before { content:"⏱️ "; }
-        .announce-option[data-index="7"] strong::before { content:"🚭 "; }
-        .announce-option[data-index="8"] strong::before { content:"✏️ "; }
-
-        .sticky { top:12px; }
-        .selected-type { border-left:4px solid var(--maroon); background:#fbf4eb; }
-        .preview { min-height:205px; max-height:430px; font-size:14px; background:#fffdf7; }
-        .preview-ready:empty { display:none; }
-        .playback-controls { gap:7px; }
-        .primary { min-height:54px; }
-        .mini-note { padding:8px 9px; border-radius:10px; background:#f8f3eb; }
-
-        @media (max-width: 980px) {
-            .operator-toolbar { grid-template-columns:1fr; }
-            .layout { grid-template-columns:1fr; }
-            .sticky { position:static; }
-        }
-        @media (max-width: 760px) {
-            .announce-grid-primary { grid-template-columns:repeat(2,minmax(0,1fr)); }
-            .voice-choice-grid-settings { grid-template-columns:1fr 1fr; }
-            .voice-choice-grid-settings .voice-test-btn { grid-column:1/-1; width:100%; }
-        }
-        @media (max-width: 560px) {
-            .operator-toolbar { padding:9px; }
-            .language-grid-compact { grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px; }
-            .language-grid-compact .lang-btn { min-height:48px; padding:7px 5px; font-size:12px; }
-            .language-grid-compact .lang-btn small { display:none; }
-            .current-config { gap:4px; }
-            .config-chip { font-size:10.5px; padding:6px 7px; }
-            .schedule-chip { font-size:10.5px; }
-            .announce-grid, .announce-grid-primary { grid-template-columns:repeat(2,minmax(0,1fr)); }
-            .announce-option { min-height:72px; padding:9px; }
-            .announce-option strong { font-size:13px; }
-            .announce-option span { font-size:10.5px; }
-            .preview { min-height:175px; }
-        }
-
-    
-
-        /* ============================================================
-           v10.1 OFFICIAL MODERN UI
-           เปลี่ยนเฉพาะ Presentation / UX — ไม่แตะระบบเสียงและ TTS
-           ============================================================ */
-        :root {
-            --maroon: #7b0019;
-            --maroon-dark: #560012;
-            --maroon-soft: #fff1f3;
-            --gold: #c89a3d;
-            --gold-soft: #f8ecd3;
-            --cream: #fbf8f3;
-            --paper: #ffffff;
-            --ink: #211b1c;
-            --muted: #70666a;
-            --line: #eadfd3;
-            --line-strong: #dcc9b5;
-            --green: #237a45;
-            --green-soft: #edf8f1;
-            --orange: #b96b16;
-            --orange-soft: #fff7e8;
-            --blue: #3568b8;
-            --blue-soft: #eef5ff;
-            --red: #b42318;
-            --shadow: 0 8px 28px rgba(72, 28, 35, .07);
-            --shadow-hover: 0 12px 34px rgba(72, 28, 35, .12);
-        }
-
-        html { background: #f4f1ed; }
-        body {
-            padding: 0;
-            background:
-                radial-gradient(circle at 7% 0%, rgba(123,0,25,.045), transparent 31%),
-                linear-gradient(180deg, #f7f4f0 0%, #f1eee9 100%);
-            color: var(--ink);
-        }
-        .app {
-            max-width: 1540px;
-            padding: 0 18px 92px;
-        }
-
-        .topbar {
-            margin: 0 -18px;
-            min-height: 92px;
-            padding: 18px clamp(20px, 3vw, 46px);
-            border-radius: 0 0 18px 18px;
-            background: linear-gradient(110deg, #650014 0%, #8b001f 58%, #690016 100%);
-            border: 0;
-            box-shadow: 0 8px 28px rgba(83,0,17,.20);
-        }
-        .brand { gap: 16px; }
-        .logo {
-            width: 56px;
-            height: 56px;
-            border-radius: 50%;
-            color: #741126;
-            font-size: 27px;
-            background: linear-gradient(145deg, #f8df9d, #c99532);
-            border: 2px solid rgba(255,255,255,.42);
-            box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 5px 14px rgba(0,0,0,.13);
-        }
-        h1 {
-            font-size: clamp(23px, 2.3vw, 34px);
-            letter-spacing: -.25px;
-            font-weight: 900;
-        }
-        .subtitle {
-            margin-top: 5px;
-            font-size: 13px;
-            color: rgba(255,255,255,.84);
-        }
-        .status {
-            min-width: 148px;
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,.28);
-            background: rgba(255,255,255,.13);
-            font-size: 13px;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
-        }
-        .status::before { content: "●"; color: #a7e5b8; margin-right: 7px; font-size: 11px; }
-        .progress { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; border-radius: 0; }
-
-        .system-nav {
-            margin: 12px 0 0;
-            padding: 7px 8px;
-            border-radius: 13px;
-            border: 1px solid #e4d9cf;
-            background: rgba(255,255,255,.95);
-            box-shadow: 0 4px 16px rgba(72,28,35,.045);
-        }
-        .system-nav a {
-            padding: 8px 11px;
-            border-radius: 9px;
-            background: transparent;
-            color: #5f2934;
-            font-size: 12.5px;
-            font-weight: 800;
-        }
-        .system-nav a.active,
-        .system-nav a:hover { background: #790019; color: #fff; }
-        .nav-user {
-            padding: 5px 8px;
-            border-left: 1px solid var(--line);
-            font-size: 11.5px;
-        }
-
-        .operator-toolbar {
-            display: grid;
-            grid-template-columns: minmax(430px, 1.1fr) minmax(420px, .9fr);
-            gap: 16px;
-            align-items: center;
-            margin: 14px 0;
-            padding: 14px 16px;
-            border: 1px solid var(--line);
-            border-radius: 17px;
-            background: rgba(255,255,255,.96);
-            box-shadow: var(--shadow);
-        }
-        .toolbar-label {
-            margin-bottom: 7px;
-            color: #5f2934;
-            font-size: 12px;
-            font-weight: 900;
-            text-transform: uppercase;
-            letter-spacing: .2px;
-        }
-        .language-grid-compact {
-            display: flex;
-            gap: 7px;
-            width: fit-content;
-            padding: 4px;
-            border: 1px solid #e4d6ca;
-            border-radius: 12px;
-            background: #faf7f3;
-        }
-        .language-grid-compact .lang-btn {
-            min-height: 42px;
-            padding: 8px 14px;
-            border: 0;
-            border-radius: 9px;
-            background: transparent;
-            box-shadow: none;
-            white-space: nowrap;
-        }
-        .language-grid-compact .lang-btn small { display: none; }
-        .language-grid-compact .lang-btn.active {
-            color: #6b0017;
-            background: #fff;
-            box-shadow: 0 2px 9px rgba(75,22,31,.10), inset 0 0 0 1px #dfc7c9;
-        }
-        .operator-status-panel {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-        .current-config { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-        .config-chip, .schedule-chip {
-            min-height: 35px;
-            display: inline-flex;
-            align-items: center;
-            padding: 7px 10px;
-            border: 1px solid #e7dbcf;
-            border-radius: 9px;
-            background: #fcfaf8;
-            color: #5d5054;
-            font-size: 11.5px;
-            font-weight: 800;
-        }
-        .auto-chip { color: #226a42; background: #f2faf5; border-color: #cfe8d7; }
-        .schedule-chip { max-width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .voice-settings { position: relative; margin: 0; }
-        .voice-settings > summary {
-            min-height: 38px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 11px;
-            border: 1px solid #d9c3c7;
-            border-radius: 10px;
-            background: #fff;
-            color: #690016;
-            font-size: 12px;
-            font-weight: 900;
-            list-style: none;
-        }
-        .voice-settings > summary::-webkit-details-marker { display:none; }
-        .voice-settings-body {
-            position: absolute;
-            z-index: 50;
-            right: 0;
-            top: calc(100% + 8px);
-            width: min(440px, 88vw);
-            padding: 14px;
-            border: 1px solid #dfd2c7;
-            border-radius: 14px;
-            background: #fff;
-            box-shadow: 0 18px 46px rgba(50,15,22,.17);
-        }
-        .voice-choice-grid-settings { grid-template-columns: 1fr 1fr; }
-        .voice-test-btn { grid-column: 1 / -1; min-height: 44px; }
-
-        .card {
-            border-radius: 17px;
-            border: 1px solid #e4d9cf;
-            background: rgba(255,255,255,.97);
-            box-shadow: var(--shadow);
-        }
-        .card-head {
-            padding: 13px 16px;
-            background: linear-gradient(180deg, #fff, #fcfaf8);
-            border-bottom: 1px solid #eee4db;
-        }
-        .card-body { padding: 15px; }
-        .step-title {
-            color: #5d0014;
-            font-size: 17px;
-            letter-spacing: -.1px;
-        }
-        .step {
-            width: 26px;
-            height: 26px;
-            border-radius: 50%;
-            background: #7b0019;
-            font-size: 12px;
-        }
-
-        .quick-card { margin-top: 0; }
-        .quick-card .card-head { display: flex; align-items: center; justify-content: space-between; }
-        .quick-trains {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-        }
-        .quick-train {
-            min-height: 145px;
-            position: relative;
-            padding: 17px 17px 14px;
-            border: 1px solid #e2d4c7;
-            border-radius: 15px;
-            background: linear-gradient(180deg, #fff 0%, #fdfbf8 100%);
-            text-align: left;
-            transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
-        }
-        .quick-train:hover {
-            transform: translateY(-2px);
-            border-color: #cdaeb3;
-            box-shadow: var(--shadow-hover);
-        }
-        .quick-time {
-            color: #720018;
-            font-size: 23px;
-            font-weight: 950;
-            letter-spacing: -.4px;
-        }
-        .quick-route {
-            margin-top: 14px;
-            padding-top: 12px;
-            border-top: 1px solid #ead4a6;
-            color: #2f2729;
-            font-size: 17px;
-            font-weight: 900;
-        }
-        .quick-train .helper { margin-top: 5px; font-size: 11.5px; }
-        #nextTrainPrewarmStatus {
-            padding: 8px 10px;
-            border-radius: 9px;
-            background: #f5f8fb;
-            border: 1px solid #dde7ef;
-        }
-        #trainSearch {
-            min-height: 43px;
-            padding-left: 14px;
-            background: #fff;
-        }
-
-        .layout {
-            grid-template-columns: minmax(0, 1.55fr) minmax(380px, .82fr);
-            gap: 14px;
-            margin-top: 14px;
-        }
-        .stack { gap: 14px; }
-        .sticky { top: 12px; }
-
-        .train-picker {
-            border-radius: 14px;
-            border: 1px solid #e4d7ca;
-            background: #fdfbf8;
-        }
-        .train-picker.primary-train {
-            border-color: #cdb4b8;
-            box-shadow: inset 4px 0 0 #7b0019;
-        }
-        .train-order { border-radius: 50%; background: #7b0019; }
-        .train-role { background: #f5eee8; color: #685c60; }
-        .train-summary {
-            border-radius: 13px;
-            border-color: #e7d6c1;
-            background: linear-gradient(135deg, #fff8ec, #fffdf9);
-        }
-        .train-number {
-            border-radius: 50%;
-            min-width: 62px;
-            width: 62px;
-            height: 62px;
-            align-self: center;
-            background: linear-gradient(145deg,#6b0017,#910023);
-            box-shadow: 0 6px 16px rgba(107,0,23,.16);
-        }
-        .route { color: #4f0011; }
-        .platform-row select { font-weight: 800; color: #5d0014; }
-        .small-action, .pass-add-btn {
-            border: 1px dashed #9e3248;
-            background: #fff;
-            color: #770019;
-            border-radius: 11px;
-            font-weight: 900;
-        }
-
-        .group-title {
-            margin: 14px 0 8px;
-            color: #75666b;
-            font-size: 11px;
-            font-weight: 900;
-            text-transform: uppercase;
-            letter-spacing: .45px;
-        }
-        .group-title:first-child { margin-top: 0; }
-        .group-title-primary { color: #6b0017; }
-        .announce-grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 9px;
-        }
-        .announce-grid-primary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-        .announce-option {
-            min-height: 102px;
-            position: relative;
-            padding: 39px 12px 11px;
-            border: 1px solid #e2d7cb;
-            border-radius: 13px;
-            background: #fffdfa;
-            text-align: center;
-            transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease, background .12s ease;
-        }
-        .announce-option::before {
-            position: absolute;
-            top: 12px;
-            left: 50%;
-            transform: translateX(-50%);
-            color: #85001e;
-            font-size: 21px;
-            line-height: 1;
-        }
-        .announce-option[data-index="0"]::before { content:"🎫"; }
-        .announce-option[data-index="1"]::before { content:"👥"; }
-        .announce-option[data-index="2"]::before { content:"🚆"; }
-        .announce-option[data-index="3"]::before { content:"⚠️"; }
-        .announce-option[data-index="4"]::before { content:"🚉"; }
-        .announce-option[data-index="5"]::before { content:"⏱"; }
-        .announce-option[data-index="7"]::before { content:"🚭"; }
-        .announce-option[data-index="8"]::before { content:"📣"; }
-        .announce-option[data-index="9"]::before { content:"🚂"; }
-        .announce-option[data-index="10"]::before { content:"⇄"; }
-        .announce-option[data-index="11"]::before { content:"↗"; }
-        .announce-option[data-index="12"]::before { content:"🔀"; }
-        .announce-option:hover:not(:disabled) {
-            transform: translateY(-1px);
-            border-color: #c79ca5;
-            box-shadow: 0 7px 17px rgba(82,19,31,.08);
-        }
-        .announce-option strong {
-            color: #580012;
-            font-size: 13.5px;
-            line-height: 1.25;
-        }
-        .announce-option span {
-            margin-top: 5px;
-            font-size: 10.5px;
-            line-height: 1.35;
-        }
-        .announce-option.active {
-            border-color: #980022;
-            background: #fff1f3;
-            box-shadow: inset 0 0 0 1px #980022, 0 5px 14px rgba(111,0,24,.08);
-        }
-
-        .conditional {
-            border-radius: 13px;
-            border-color: #cfaab1;
-            background: #fffaf8;
-        }
-        input, select, textarea {
-            border-color: #dcd0c5;
-            border-radius: 10px;
-            background: #fff;
-        }
-        input:focus, select:focus, textarea:focus {
-            border-color: #920020;
-            box-shadow: 0 0 0 3px rgba(128,0,29,.08);
-        }
-
-        aside.card.sticky {
-            border-color: #dac7ca;
-            box-shadow: 0 12px 34px rgba(72,20,31,.09);
-        }
-        aside.card.sticky .card-head {
-            background: linear-gradient(180deg,#730018,#650014);
-            border-bottom: 0;
-        }
-        aside.card.sticky .step-title { color: #fff; }
-        aside.card.sticky .step { background: rgba(255,255,255,.18); }
-        .selected-type {
-            padding: 11px 12px;
-            border: 1px solid #eadbd1;
-            border-radius: 11px;
-            background: #faf7f4;
-        }
-        .preview {
-            min-height: 225px;
-            max-height: 430px;
-            border-color: #e5d8ca;
-            border-radius: 12px;
-            background: #fffdf9;
-            font-size: 14px;
-            line-height: 1.78;
-        }
-        .preview-ready {
-            min-height: 38px;
-            display: flex;
-            align-items: center;
-            margin-top: 9px;
-            padding: 8px 10px;
-            border-radius: 9px;
-            color: #216b3f;
-            background: #f0f9f3;
-            border: 1px solid #d2ead9;
-            font-size: 12px;
-            font-weight: 850;
-        }
-        .preview-ready:empty { display:none; }
-        .playback-controls { grid-template-columns: 1.35fr .8fr .8fr; }
-        .primary, .pause-btn, .danger, .secondary {
-            min-height: 48px;
-            border-radius: 11px;
-            box-shadow: none;
-        }
-        .primary { background: linear-gradient(135deg,#670015,#8c001f); }
-        .pause-btn { background: #9e620b; }
-        .danger { background: #a92a22; }
-        .secondary { background: #6c6461; }
-
-        .mobile-controls {
-            border-top: 1px solid rgba(255,255,255,.14);
-            background: linear-gradient(180deg,#710018,#570012);
-            box-shadow: 0 -9px 28px rgba(70,0,15,.22);
-        }
-        .mobile-controls button { border-radius: 10px; }
-
-        @media (max-width: 1100px) {
-            .operator-toolbar { grid-template-columns: 1fr; }
-            .operator-status-panel { justify-content: flex-start; }
-            .current-config { justify-content: flex-start; }
-            .layout { grid-template-columns: minmax(0, 1.35fr) minmax(350px, .8fr); }
-            .announce-grid, .announce-grid-primary { grid-template-columns: repeat(2, minmax(0,1fr)); }
-        }
-        @media (max-width: 860px) {
-            .app { padding-left: 10px; padding-right: 10px; padding-bottom: 96px; }
-            .topbar { margin: 0 -10px; border-radius: 0 0 15px 15px; }
-            .system-nav { overflow-x: auto; flex-wrap: nowrap; }
-            .system-nav a, .nav-user { flex: 0 0 auto; }
-            .layout { grid-template-columns: 1fr; }
-            .sticky { position: static; }
-            .quick-trains { grid-template-columns: 1fr; }
-            .quick-train { min-height: 112px; }
-            .operator-toolbar { padding: 12px; }
-            .language-grid-compact { width: 100%; }
-            .language-grid-compact .lang-btn { flex: 1; }
-        }
-        @media (max-width: 560px) {
-            .topbar { min-height: auto; padding: 14px 13px; }
-            .brand { align-items: flex-start; }
-            .logo { width: 46px; height: 46px; font-size: 22px; }
-            h1 { font-size: 20px; }
-            .subtitle { font-size: 11px; line-height: 1.45; }
-            .status { font-size: 11px; min-width: auto; }
-            .operator-toolbar { margin-top: 10px; border-radius: 13px; }
-            .operator-status-panel { align-items: stretch; }
-            .current-config { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
-            .auto-chip { grid-column: 1 / -1; }
-            .schedule-chip { width: 100%; max-width: none; }
-            .voice-settings { width: 100%; }
-            .voice-settings > summary { justify-content: space-between; }
-            .voice-settings-body { left: 0; right: auto; width: 100%; }
-            .announce-grid, .announce-grid-primary { grid-template-columns: repeat(2, minmax(0,1fr)); }
-            .announce-option { min-height: 94px; }
-            .playback-controls { grid-template-columns: 1fr; }
-        }
-
     </style>
 </head>
 <body>
@@ -2236,8 +1614,8 @@ HTML_PAGE = r"""
         <div class="brand">
             <div class="logo">🚆</div>
             <div>
-                <h1>ระบบประกาศสถานีรถไฟคลองบางพระ</h1>
-                <p class="subtitle">ระบบช่วยประกาศข้อมูลสำหรับผู้โดยสารประจำสถานี · ชัดเจน รวดเร็ว และพร้อมใช้งาน</p>
+                <h1>ระบบประกาศสถานีคลองบางพระ</h1>
+                <p class="subtitle">เลือกภาษา เลือกเสียง แล้วกดประกาศได้ทันที</p>
             </div>
         </div>
         <div class="status" id="statusText">พร้อมใช้งาน</div>
@@ -2259,41 +1637,26 @@ HTML_PAGE = r"""
         <a href="{{ url_for('logout') }}">ออกจากระบบ</a>
     </nav>
 
-    <section class="operator-toolbar" aria-label="การตั้งค่าการประกาศ">
-        <input type="hidden" id="announce_mode" value="thai_only">
-        <input type="hidden" id="thai_voice" value="{{ voice_name }}">
-        <div class="language-control">
-            <div class="toolbar-label">ภาษา</div>
-            <div class="language-grid language-grid-compact">
-                <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ไทย<small>ภาษาเดียว</small></button>
+    <details class="compact-settings" id="announceSettings">
+        <summary><span id="settingsSummary">🇹🇭 ภาษาไทย · 👩 เสียงผู้หญิง</span><span>⚙️ ตั้งค่า</span></summary>
+        <div class="compact-settings-body">
+            <input type="hidden" id="announce_mode" value="thai_only">
+            <input type="hidden" id="thai_voice" value="{{ voice_name }}">
+            <label>ภาษา</label>
+            <div class="language-grid">
+                <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ภาษาไทย<small>ประกาศภาษาเดียว</small></button>
                 <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
-                <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭+🇬🇧 สองภาษา<small>ไทย → อังกฤษ</small></button>
+                <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
             </div>
-        </div>
-        <div class="operator-status-panel">
-            <div class="current-config">
-                <span class="config-chip" id="languageCurrentBadge">🇹🇭 ภาษาไทย</span>
-                <span class="config-chip" id="voiceCurrentBadge">👩 เสียงผู้หญิง</span>
-                <span class="config-chip auto-chip">⚡ เตรียมเสียงอัตโนมัติ</span>
+            <label style="margin-top:12px">เสียงประกาศ</label>
+            <div class="voice-choice-grid">
+                <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}" data-voice="th-TH-PremwadeeNeural" onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">👩 เสียงผู้หญิง<small>Premwadee · Jenny</small></button>
+                <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}" data-voice="th-TH-NiwatNeural" onclick="setThaiVoice('th-TH-NiwatNeural', this)">👨 เสียงผู้ชาย<small>Niwat · Guy</small></button>
+                <button type="button" class="voice-test-btn" onclick="testStationVoice()">▶ ทดลองเสียง</button>
             </div>
-            {% if schedule_version %}
-            <div class="schedule-chip" title="ตารางเดินรถที่กำลังใช้งาน">🚆 {{ schedule_version.name }} · มีผล {{ schedule_version.effective_date }}</div>
-            {% endif %}
-            <details class="voice-settings" id="announceSettings">
-                <summary><span id="settingsSummary">👩 เสียงผู้หญิง</span><span>⚙️ ตั้งค่าเสียง</span></summary>
-                <div class="voice-settings-body">
-                    <div class="settings-section-title">เสียงประกาศเริ่มต้น</div>
-                    <div class="voice-choice-grid voice-choice-grid-settings">
-                        <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}" data-voice="th-TH-PremwadeeNeural" onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">👩 เสียงผู้หญิง<small>Premwadee · Jenny</small></button>
-                        <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}" data-voice="th-TH-NiwatNeural" onclick="setThaiVoice('th-TH-NiwatNeural', this)">👨 เสียงผู้ชาย<small>Niwat · Guy</small></button>
-                        <button type="button" class="voice-test-btn" onclick="testStationVoice()">▶ ทดลองเสียง</button>
-                    </div>
-                    <div class="voice-quick-note" id="voiceHelper">ระบบจะจำเสียงที่ใช้ล่าสุดในอุปกรณ์นี้ · ความเร็วและจังหวะเสียงคงเดิม</div>
-                    <div class="settings-info-row"><span>⚡ เตรียมเสียงล่วงหน้า</span><b>อัตโนมัติ 20 นาที</b></div>
-                </div>
-            </details>
+            <div class="voice-quick-note" id="voiceHelper" style="margin-top:8px">ระบบจะจำภาษาและเสียงที่ใช้ล่าสุดในอุปกรณ์นี้</div>
         </div>
-    </section>
+    </details>
 
     <section class="card quick-card">
         <div class="card-head"><h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2></div>
@@ -2458,7 +1821,10 @@ HTML_PAGE = r"""
                         <button type="button" class="small-action" id="addTrain2Button" onclick="addTrainPicker()">＋ เพิ่มขบวนที่ 2</button>
                     </div>
 
-                    <input type="hidden" id="current" value="คลองบางพระ">
+                    <div class="station-row">
+                        <label for="current">สถานีปัจจุบัน</label>
+                        <input type="text" id="current" value="คลองบางพระ">
+                    </div>
                 </div>
             </section>
 
@@ -2466,8 +1832,8 @@ HTML_PAGE = r"""
                 <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกประเภทประกาศ</h2></div>
                 <div class="card-body">
                     {% for group, buttons in grouped_buttons.items() %}
-                    <div class="group-title {% if group == 'ใช้บ่อย' %}group-title-primary{% endif %}">{{ 'ประกาศที่ใช้บ่อย' if group == 'ใช้บ่อย' else group }}</div>
-                    <div class="announce-grid {% if group == 'ใช้บ่อย' %}announce-grid-primary{% endif %}">
+                    <div class="group-title">{{ group }}</div>
+                    <div class="announce-grid">
                         {% for button in buttons %}
                         <button type="button" class="announce-option" data-index="{{ button.idx }}" data-title="{{ button.title }}" onclick="selectAnnouncement({{ button.idx }}, this)">
                             <strong>{{ button.title }}</strong><span>{{ button.hint }}</span>
@@ -2594,7 +1960,7 @@ HTML_PAGE = r"""
         <aside class="card sticky">
             <div class="card-head"><h2 class="step-title"><span class="step">3</span> ตรวจสอบและประกาศ</h2></div>
             <div class="card-body">
-                <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในหัวข้อ “ประเภทประกาศ” ก่อน</div>
+                <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
                 <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง</div>
                 <div class="preview-ready" id="audioReadyBadge"></div>
                 <div class="action-stack">
@@ -2656,9 +2022,7 @@ HTML_PAGE = r"""
         const voice = value("thai_voice") || "th-TH-PremwadeeNeural";
         const languageLabel = mode === "english_only" ? "🇬🇧 English" : (mode === "bilingual" ? "🇹🇭+🇬🇧 สองภาษา" : "🇹🇭 ภาษาไทย");
         const voiceLabel = voice === "th-TH-NiwatNeural" ? "👨 เสียงผู้ชาย" : "👩 เสียงผู้หญิง";
-        if (byId("settingsSummary")) byId("settingsSummary").textContent = voiceLabel;
-        if (byId("languageCurrentBadge")) byId("languageCurrentBadge").textContent = languageLabel;
-        if (byId("voiceCurrentBadge")) byId("voiceCurrentBadge").textContent = voiceLabel;
+        if (byId("settingsSummary")) byId("settingsSummary").textContent = `${languageLabel} · ${voiceLabel}`;
         try {
             localStorage.setItem("kbp_announce_mode", mode);
             localStorage.setItem("kbp_thai_voice", voice);
@@ -2814,6 +2178,26 @@ HTML_PAGE = r"""
     function trainSuffix(type) { return type === 1 ? "" : `_${type}`; }
     function summarySuffix(type) { return type === 1 ? "" : String(type); }
 
+    // ชานชาลาปกติของสถานีคลองบางพระ:
+    // เลขขบวนคี่ = ชานชาลา 2, เลขขบวนคู่ = ชานชาลา 3
+    // เจ้าหน้าที่สามารถเปลี่ยนเองได้เมื่อมีการเดินรถผิดปกติ และระบบจะจำค่า override ของขบวนนั้นในอุปกรณ์นี้
+    function defaultPlatformForTrainNumber(numberText) {
+        const digits = String(numberText || "").replace(/\D/g, "");
+        if (!digits) return "1";
+        const number = parseInt(digits, 10);
+        if (!Number.isFinite(number)) return "1";
+        return number % 2 === 0 ? "3" : "2";
+    }
+
+    function preferredPlatformForTrain(label, numberText) {
+        let platform = defaultPlatformForTrainNumber(numberText);
+        try {
+            const override = localStorage.getItem(`kbp_platform_override:${label}`);
+            if (["1", "2", "3"].includes(override)) platform = override;
+        } catch (e) {}
+        return platform;
+    }
+
     function autoFill(type) {
         const suffix = trainSuffix(type);
         const selectId = type === 1 ? "train_select" : `train_select_${type}`;
@@ -2834,11 +2218,12 @@ HTML_PAGE = r"""
         byId("dest" + suffix).value = data.dest || "";
         byId("time" + suffix).value = data.time || "";
         byId("next_station" + suffix).value = data.next || "";
-        try {
-            const rememberedPlatform = localStorage.getItem(`kbp_platform:${value(selectId)}`);
-            const platformEl = byId(type === 1 ? "platform" : `platform_${type}`);
-            if (platformEl && ["1", "2", "3"].includes(rememberedPlatform)) platformEl.value = rememberedPlatform;
-        } catch (e) {}
+        const platformEl = byId(type === 1 ? "platform" : `platform_${type}`);
+        if (platformEl) {
+            platformEl.value = preferredPlatformForTrain(value(selectId), data.num || "");
+            // รถผ่านขบวนหลักให้เริ่มจากชานชาลาเดียวกับขบวนที่เลือก
+            if (type === 1 && byId("pass_platform")) byId("pass_platform").value = platformEl.value;
+        }
         refreshSummary(type);
         invalidatePreparedAudio();
         schedulePreview();
@@ -2874,7 +2259,7 @@ HTML_PAGE = r"""
             const selectId = type === 1 ? "train_select" : `train_select_${type}`;
             const platformId = type === 1 ? "platform" : `platform_${type}`;
             const label = value(selectId);
-            if (label) localStorage.setItem(`kbp_platform:${label}`, value(platformId) || "1");
+            if (label) localStorage.setItem(`kbp_platform_override:${label}`, value(platformId) || "1");
         } catch (e) {}
         const changedLabel = value(type === 1 ? "train_select" : `train_select_${type}`);
         if (changedLabel) invalidateLivePrewarmForLabel(changedLabel);
@@ -3093,11 +2478,7 @@ HTML_PAGE = r"""
         const data = trainData[label];
         if (!data) return null;
 
-        let platform = "1";
-        try {
-            const remembered = localStorage.getItem(`kbp_platform:${label}`);
-            if (["1", "2", "3"].includes(remembered)) platform = remembered;
-        } catch (e) {}
+        const platform = preferredPlatformForTrain(label, data.num || "");
 
         return {
             tab_index: tabIndex,
@@ -3126,12 +2507,8 @@ HTML_PAGE = r"""
     }
 
     function rememberedPlatformForLabel(label) {
-        let platform = "1";
-        try {
-            const remembered = localStorage.getItem(`kbp_platform:${label}`);
-            if (["1", "2", "3"].includes(remembered)) platform = remembered;
-        } catch (e) {}
-        return platform;
+        const data = trainData[label] || {};
+        return preferredPlatformForTrain(label, data.num || "");
     }
 
     function currentPrewarmSignature(label) {
