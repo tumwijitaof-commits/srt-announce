@@ -25,7 +25,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v10.3 Classic UI + automatic normal platform (odd=2, even=3)
+# Build: v10.4 Classic UI + emphasized announcement types + frequent action first + automatic normal platform (odd=2, even=3)
 # Version: v9.7 - multi-train ticket sales and waiting announcements
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -144,11 +144,11 @@ OUTBOUND_TRAINS = [
 TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
 
 ANNOUNCEMENT_BUTTONS = [
+    {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "เลือกประกาศพร้อมกันได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "เลือกขบวนและชานชาลาได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 11, "title": "รถเปลี่ยนเส้นทาง", "hint": "แจ้งกรณีเปลี่ยนทางหรือชานชาลาเข้าเทียบจากปกติ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
-    {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับพร้อมกัน 1–3 ทาง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย", "visible": True},
@@ -1424,12 +1424,15 @@ HTML_PAGE = r"""
 
         .announce-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
         .announce-option {
-            min-height: 74px; padding: 12px;
+            min-height: 84px; padding: 14px;
             border: 1px solid #e5d7c4; border-radius: 15px;
             text-align: left; color: var(--ink); background: linear-gradient(145deg, #fff, #fff9ef);
         }
-        .announce-option strong { display: block; color: var(--maroon-dark); font-size: 15px; }
-        .announce-option span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+        .announce-option strong {
+            display: block; color: var(--maroon-dark); font-size: 19px;
+            line-height: 1.25; font-weight: 900; letter-spacing: .1px;
+        }
+        .announce-option span { display: block; margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.4; }
         .announce-option.active { border-color: var(--maroon); background: #fff0f0; box-shadow: inset 0 0 0 1px var(--maroon); }
         .announce-option:disabled { opacity: .55; cursor: not-allowed; }
 
@@ -1448,7 +1451,7 @@ HTML_PAGE = r"""
             padding: 12px 14px; margin-bottom: 12px;
             border-radius: 14px; background: #f7f1e8; color: var(--muted);
         }
-        .selected-type b { color: var(--maroon-dark); }
+        .selected-type b { color: var(--maroon-dark); font-size: 20px; line-height: 1.3; }
         .preview {
             min-height: 150px; max-height: 390px; overflow: auto;
             padding: 15px; border: 1px solid #eadcc5; border-radius: 16px;
