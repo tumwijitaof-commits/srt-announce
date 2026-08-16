@@ -25,6 +25,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
+# Version: v9.7 - multi-train ticket sales and waiting announcements
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -142,8 +143,8 @@ OUTBOUND_TRAINS = [
 TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
 
 ANNOUNCEMENT_BUTTONS = [
-    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ใช้บ่อย", "visible": True},
-    {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "เลือกประกาศพร้อมกันได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 1, "title": "รอรับโดยสาร", "hint": "เลือกขบวนและชานชาลาได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 11, "title": "รถเปลี่ยนเส้นทาง", "hint": "แจ้งกรณีเปลี่ยนทางหรือชานชาลาเข้าเทียบจากปกติ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
@@ -1056,12 +1057,25 @@ def announcement_title(tab_index):
 
 
 def insert_history(payload, user):
+    history_train_num = str(payload.get("num", "") or "").strip()
+    try:
+        history_idx = int(payload.get("tab_index", -1))
+    except (TypeError, ValueError):
+        history_idx = -1
+    if history_idx in {0, 1, 2}:
+        nums = [
+            str(payload.get("num", "") or "").strip(),
+            str(payload.get("num_2", "") or "").strip(),
+            str(payload.get("num_3", "") or "").strip(),
+        ]
+        history_train_num = ", ".join(num for num in nums if num)
+
     with get_db() as conn:
         cursor = conn.execute(
             """INSERT INTO announcement_history(started_at,user_id,username,train_num,announcement_type,
                announce_mode,voice,platform,message,pause_times)
                VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (now_iso(), user["id"], user["display_name"], payload.get("num", ""),
+            (now_iso(), user["id"], user["display_name"], history_train_num,
              announcement_title(payload.get("tab_index")), payload.get("announce_mode", "thai_only"),
              payload.get("thai_voice", VOICE_NAME), payload.get("platform", ""), "", "[]"),
         )
@@ -1622,7 +1636,7 @@ HTML_PAGE = r"""
             <section class="card">
                 <div class="card-head"><h2 class="step-title"><span class="step">1</span> เลือกขบวนและชานชาลา</h2></div>
                 <div class="card-body">
-                    <p class="helper" style="margin:0 0 12px;">เลือกขบวนหลักก่อน หากมีรถเข้าเทียบพร้อมกันค่อยกด “เพิ่มขบวน” ได้สูงสุด 3 ขบวน</p>
+                    <p class="helper" style="margin:0 0 12px;">เลือกขบวนหลักก่อน หากต้องประกาศ “ขอทาง / ขายตั๋ว”, “รอรับโดยสาร” หรือมีรถเข้าเทียบหลายขบวน สามารถกด “เพิ่มขบวน” ได้สูงสุด 3 ขบวน</p>
 
                     <div class="train-pickers">
                         <div class="train-picker primary-train">
@@ -2137,7 +2151,7 @@ HTML_PAGE = r"""
         if (next) details.push(`สถานีต่อไป: ${next}`);
         const emptyText = type === 1
             ? "เมื่อเลือกขบวน ระบบจะเติมข้อมูลให้อัตโนมัติ"
-            : (type === 2 ? "ใช้เมื่อมีขบวนรถเข้าพร้อมกัน" : "ใช้เมื่อมีขบวนรถเข้าพร้อมกัน 3 ขบวน");
+            : (type === 2 ? "ใช้เมื่อประกาศพร้อมกันมากกว่า 1 ขบวน" : "ใช้เมื่อประกาศพร้อมกัน 3 ขบวน");
         byId("summaryMeta" + summary).textContent = details.length ? details.join(" • ") : emptyText;
     }
 
@@ -2487,6 +2501,14 @@ HTML_PAGE = r"""
         // รถจอด / ออก ต้องมีข้อมูลสถานีถัดไปเพื่อประกาศเส้นทางต่อเนื่อง
         if (index === 4 && !value("next_station"))
             return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+
+        if ([0, 1, 2].includes(index)) {
+            const selectedNums = [];
+            if (value("num")) selectedNums.push(value("num"));
+            if (activeTrainPickerCount >= 2 && value("num_2")) selectedNums.push(value("num_2"));
+            if (activeTrainPickerCount >= 3 && value("num_3")) selectedNums.push(value("num_3"));
+            if (new Set(selectedNums).size !== selectedNums.length) return "กรุณาเลือกขบวนรถไม่ให้ซ้ำกัน";
+        }
 
         if (index === 2) {
             const selected = [];
@@ -3449,9 +3471,40 @@ def build_english_announcement(data):
     next_st_3 = next_stations_en(data.get("next_3", ""))
 
     if idx == 0:
-        text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
+        ticket_trains = [(t_num, origin, dest, t_time)]
+        if t_num_2:
+            ticket_trains.append((t_num_2, origin_2, dest_2, time_en(data.get("time_2", ""))))
+        if t_num_3:
+            ticket_trains.append((t_num_3, origin_3, dest_3, time_en(data.get("time_3", ""))))
+
+        if len(ticket_trains) == 1:
+            text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
+        else:
+            details = [
+                f"train number {n}, from {o} to {d}, scheduled at {tt}"
+                for n, o, d, tt in ticket_trains
+            ]
+            detail_text = "; ".join(details[:-1]) + ("; and " if len(details) > 1 else "") + details[-1]
+            text = (
+                f"Attention please. Passengers traveling on the following trains: {detail_text}. "
+                f"Passengers who have not yet purchased tickets, please contact the ticket office before boarding."
+            )
     elif idx == 1:
-        text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
+        waiting_trains = [(t_num, origin, dest, t_time, platform)]
+        if t_num_2:
+            waiting_trains.append((t_num_2, origin_2, dest_2, time_en(data.get("time_2", "")), platform_2))
+        if t_num_3:
+            waiting_trains.append((t_num_3, origin_3, dest_3, time_en(data.get("time_3", "")), platform_3))
+
+        if len(waiting_trains) == 1:
+            text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
+        else:
+            details = [
+                f"train number {n}, from {o} to {d}, scheduled at {tt}, please wait with your belongings on platform {p}"
+                for n, o, d, tt, p in waiting_trains
+            ]
+            detail_text = "; ".join(details[:-1]) + ("; and " if len(details) > 1 else "") + details[-1]
+            text = f"Attention please. Passengers holding tickets for the following trains: {detail_text}."
     elif idx == 11:
         text = (
             f"Attention please. Today, train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, "
@@ -3569,9 +3622,40 @@ def build_announcement(data):
     next_st_3 = data.get("next_3", "")
 
     if idx == 0:
-        text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+        ticket_trains = [(t_num, origin, dest, t_time)]
+        if t_num_2:
+            ticket_trains.append((t_num_2, origin_2, dest_2, tidy_time(data.get("time_2", ""))))
+        if t_num_3:
+            ticket_trains.append((t_num_3, origin_3, dest_3, tidy_time(data.get("time_3", ""))))
+
+        if len(ticket_trains) == 1:
+            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+        else:
+            details = [
+                f"ขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)} เที่ยวกำหนดเวลา {tt}"
+                for n, o, d, tt in ticket_trains
+            ]
+            detail_text = " และ ".join(details)
+            text = (
+                f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถดังต่อไปนี้ {detail_text} "
+                f"ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+            )
     elif idx == 1:
-        text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
+        waiting_trains = [(t_num, origin, dest, t_time, platform)]
+        if t_num_2:
+            waiting_trains.append((t_num_2, origin_2, dest_2, tidy_time(data.get("time_2", "")), platform_2))
+        if t_num_3:
+            waiting_trains.append((t_num_3, origin_3, dest_3, tidy_time(data.get("time_3", "")), platform_3))
+
+        if len(waiting_trains) == 1:
+            text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
+        else:
+            details = [
+                f"ขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)} เที่ยวกำหนดเวลา {tt} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {p}"
+                for n, o, d, tt, p in waiting_trains
+            ]
+            detail_text = " และ ".join(details)
+            text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถดังต่อไปนี้ {detail_text} ขอบคุณครับ"
     elif idx == 11:
         text = (
             f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} "
