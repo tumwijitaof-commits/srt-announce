@@ -1611,6 +1611,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">⚡ ระบบจะเตรียมเสียงของขบวนถัดไปล่วงหน้าอัตโนมัติ</div>
         </div>
     </section>
 
@@ -1917,6 +1918,7 @@ HTML_PAGE = r"""
 
 <script>
     const trainData = {{ trains_json | safe }};
+    const quickTrainLabels = {{ quick_train_labels_json | safe }};
     let selectedAnnouncement = null;
     let mainPlayer = null;
     let isBusy = false;
@@ -1933,6 +1935,9 @@ HTML_PAGE = r"""
     let activeHistoryPromise = null;
     let previewTimer = null;
     let activeTrainPickerCount = 1;
+    let nextTrainPrewarmTimer = null;
+    let nextTrainPrewarmRunId = 0;
+    const prewarmedNextTrainKeys = new Set();
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -2059,6 +2064,7 @@ HTML_PAGE = r"""
         invalidatePreparedAudio();
         schedulePreview(50);
         schedulePrepareAnnouncement(250);
+        scheduleNextTrainPrewarm(1800);
     }
 
     function setThaiVoice(voice, button) {
@@ -2071,6 +2077,7 @@ HTML_PAGE = r"""
         invalidatePreparedAudio();
         schedulePreview(50);
         schedulePrepareAnnouncement(250);
+        scheduleNextTrainPrewarm(1800);
     }
 
     function updateCustomLanguageFields() {
@@ -2351,6 +2358,124 @@ HTML_PAGE = r"""
                 console.warn("Background audio preparation failed:", error);
                 if (!isBusy) setStatus("พร้อมใช้งาน");
             });
+        }, delay);
+    }
+
+    function nextTrainPrewarmPayload(label, tabIndex) {
+        const data = trainData[label];
+        if (!data) return null;
+
+        let platform = "1";
+        try {
+            const remembered = localStorage.getItem(`kbp_platform:${label}`);
+            if (["1", "2", "3"].includes(remembered)) platform = remembered;
+        } catch (e) {}
+
+        return {
+            tab_index: tabIndex,
+            announce_mode: value("announce_mode") || "thai_only",
+            thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
+            num: data.num || "",
+            origin: data.origin || "",
+            dest: data.dest || "",
+            time: data.time || "",
+            platform,
+            current: value("current") || "คลองบางพระ",
+            next: data.next || "",
+            delay: "",
+            custom_text: "",
+            custom_text_en: "",
+            train_type: "สินค้า",
+            pass_count: "1",
+            pass_platform: platform,
+            train_type_2: "สินค้า",
+            pass_platform_2: "2",
+            train_type_3: "สินค้า",
+            pass_platform_3: "3",
+            num_2: "", origin_2: "", dest_2: "", time_2: "", platform_2: "2", next_2: "",
+            num_3: "", origin_3: "", dest_3: "", time_3: "", platform_3: "3", next_3: ""
+        };
+    }
+
+    async function prewarmNextTrainAudio() {
+        if (!quickTrainLabels.length || !navigator.onLine || isBusy) return;
+        if (document.visibilityState === "hidden") return;
+
+        const label = quickTrainLabels[0];
+        const data = trainData[label];
+        if (!data) return;
+
+        const runId = ++nextTrainPrewarmRunId;
+        const status = byId("nextTrainPrewarmStatus");
+        if (status) status.textContent = `⚡ กำลังเตรียมเสียงล่วงหน้าสำหรับ ข.${data.num || "-"}...`;
+
+        // เตรียมเฉพาะ 3 ประกาศที่ใช้บ่อยที่สุดของขบวนถัดไป
+        // 1 = รอรับโดยสาร, 2 = รถกำลังเข้าเทียบ, 4 = รถจอด / ออก
+        const commonTypes = [1, 2, 4];
+        let warmed = 0;
+
+        for (const tabIndex of commonTypes) {
+            if (runId !== nextTrainPrewarmRunId || isBusy || !navigator.onLine) return;
+            const payload = nextTrainPrewarmPayload(label, tabIndex);
+            if (!payload) continue;
+            if (tabIndex === 4 && !payload.next) continue;
+
+            const cacheKey = JSON.stringify({
+                label,
+                tabIndex,
+                mode: payload.announce_mode,
+                voice: payload.thai_voice,
+                platform: payload.platform,
+                next: payload.next,
+                dest: payload.dest
+            });
+            if (prewarmedNextTrainKeys.has(cacheKey)) {
+                warmed += 1;
+                continue;
+            }
+
+            try {
+                const response = await fetch("/announce", {
+                    method: "POST",
+                    headers: jsonHeaders(),
+                    body: JSON.stringify(payload),
+                    cache: "no-store"
+                });
+                const result = await response.json();
+                if (!response.ok || result.status !== "success") throw new Error(result.message || "prewarm failed");
+
+                prewarmedNextTrainKeys.add(cacheKey);
+                warmed += 1;
+
+                // แตะ URL ไฟล์ให้ browser เริ่ม cache ด้วย แต่ไม่เล่นเสียง
+                const urls = (result.audio_urls && result.audio_urls.length) ? result.audio_urls : [result.audio_url].filter(Boolean);
+                urls.forEach(url => {
+                    try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
+                });
+            } catch (error) {
+                console.warn("Next-train audio prewarm failed:", error);
+                if (status && runId === nextTrainPrewarmRunId) {
+                    status.textContent = "⚡ เตรียมเสียงล่วงหน้าไม่สำเร็จ แต่ยังสามารถกดประกาศตามปกติได้";
+                }
+                return;
+            }
+
+            // ไม่ยิง edge-tts หลายงานติดกันเกินไปบนเครื่อง/Render ขนาดเล็ก
+            await new Promise(resolve => setTimeout(resolve, 220));
+        }
+
+        if (status && runId === nextTrainPrewarmRunId) {
+            status.textContent = warmed
+                ? `✓ เตรียมเสียงหลักของขบวนถัดไป ข.${data.num || "-"} ไว้แล้ว`
+                : "⚡ ระบบพร้อมเตรียมเสียงขบวนถัดไป";
+        }
+    }
+
+    function scheduleNextTrainPrewarm(delay = 2200) {
+        if (nextTrainPrewarmTimer) clearTimeout(nextTrainPrewarmTimer);
+        nextTrainPrewarmTimer = setTimeout(() => {
+            nextTrainPrewarmTimer = null;
+            prewarmNextTrainAudio();
         }, delay);
     }
 
@@ -2831,6 +2956,11 @@ HTML_PAGE = r"""
     [1, 2, 3].forEach(refreshSummary);
     refreshPlaybackControls();
     updateDepartureAction();
+    scheduleNextTrainPrewarm(2200);
+    window.addEventListener("online", () => scheduleNextTrainPrewarm(900));
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") scheduleNextTrainPrewarm(900);
+    });
 </script>
 </body>
 </html>
@@ -4016,6 +4146,7 @@ def index():
         inbound=inbound,
         outbound=outbound,
         quick_trains=quick_trains,
+        quick_train_labels_json=json.dumps([train.get("label", "") for train in quick_trains], ensure_ascii=False),
         trains_json=json.dumps(train_data, ensure_ascii=False),
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
