@@ -5927,7 +5927,518 @@ def announce():
         "used_cached_audio": bool(cache_hits) and all(cache_hits),
         "audio_cache_days": max(1, int(AUDIO_CACHE_MAX_AGE / 86400)),
     })
+# ============================================================
+# v12.1 QUICK TRAIN OVERDUE AUTO-HIDE FIX
+# สถานีคลองบางพระ
+#
+# แก้เฉพาะระบบ "ขบวนถัดไป"
+# - มี TTS สดและรถยังล่าช้า       -> แสดงต่อ
+# - ไม่มี TTS สดและเลยเวลา <20 นาที -> แสดงเผื่อรถล่าช้า
+# - ไม่มี TTS สดและเลยเวลา >=20 นาที -> ซ่อนอัตโนมัติ
+# - ประกาศ "รถจอด / ออก" สำเร็จ   -> ซ่อนทันทีตามระบบเดิม
+#
+# *** ไม่แก้ระบบเสียง / TTS / Rate / Volume / Pitch ***
+# ============================================================
 
+QUICK_TRAIN_OVERDUE_GRACE_MINUTES = max(
+    5,
+    min(
+        120,
+        int(
+            os.environ.get(
+                "QUICK_TRAIN_OVERDUE_GRACE_MINUTES",
+                "20"
+            )
+        )
+    )
+)
+
+
+def get_realtime_aware_quick_train_snapshot(
+    inbound,
+    outbound,
+    limit=3,
+    force=False
+):
+    """
+    เลือกขบวนถัดไปโดยใช้ข้อมูล TTS Real-time เมื่อมีข้อมูลสด
+
+    v12.1:
+    - TTS สด + ยืนยันว่าออก/ผ่านแล้ว -> ซ่อนทันที
+    - TTS สด + ยังไม่ยืนยันว่าออก -> แสดงต่อ รองรับรถล่าช้า
+    - ไม่มี TTS สด -> เผื่อหลังเวลาตาราง 20 นาที
+    - เกิน 20 นาทีโดยไม่มี TTS สด -> ซ่อนจาก Quick Queue
+    """
+
+    now = now_bangkok()
+
+    current_minutes = (
+        now.hour * 60
+        + now.minute
+    )
+
+    service_date_today = (
+        now.date().isoformat()
+    )
+
+    # --------------------------------------------------------
+    # ขบวนที่เจ้าหน้าที่ประกาศ "รถจอด / ออก" สำเร็จแล้ว
+    # --------------------------------------------------------
+
+    handled_today_labels = (
+        get_handled_quick_train_labels(
+            service_date_today
+        )
+    )
+
+    handled_today_nums = (
+        get_handled_quick_train_nums(
+            service_date_today
+        )
+    )
+
+    # ใช้ History เป็น fallback ด้วย
+    handled_today_nums |= (
+        get_successfully_announced_quick_train_nums(
+            service_date_today
+        )
+    )
+
+    # --------------------------------------------------------
+    # ขบวนของวันนี้
+    # --------------------------------------------------------
+
+    today = [
+        dict(train)
+        for train in inbound + outbound
+        if (
+            str(
+                train.get("label") or ""
+            )
+            not in handled_today_labels
+        )
+        and (
+            str(
+                train.get("num") or ""
+            ).strip()
+            not in handled_today_nums
+        )
+    ]
+
+    # --------------------------------------------------------
+    # ขบวนวันพรุ่งนี้
+    # --------------------------------------------------------
+
+    tomorrow = (
+        now.date()
+        + timedelta(days=1)
+    )
+
+    (
+        next_inbound,
+        next_outbound,
+        _,
+        _
+    ) = get_active_train_lists(
+        tomorrow
+    )
+
+    tomorrow_items = [
+        dict(train)
+        for train
+        in next_inbound + next_outbound
+    ]
+
+    # --------------------------------------------------------
+    # รวมข้อมูล Real-time
+    # --------------------------------------------------------
+
+    today_merged, snapshot = (
+        merge_realtime_into_trains(
+            today,
+            force=force
+        )
+    )
+
+    tomorrow_merged, _ = (
+        merge_realtime_into_trains(
+            tomorrow_items,
+            force=False
+        )
+    )
+
+    candidates = []
+    overdue_candidates = []
+
+    # --------------------------------------------------------
+    # จัดข้อมูลแต่ละขบวน
+    # --------------------------------------------------------
+
+    def decorate(
+        item,
+        day_offset
+    ):
+
+        row = dict(item)
+
+        row["day_offset"] = (
+            day_offset
+        )
+
+        row["service_date"] = (
+            now.date()
+            if day_offset == 0
+            else tomorrow
+        ).isoformat()
+
+        reference_minutes = (
+            _train_reference_minutes(
+                row
+            )
+        )
+
+        schedule_reference = (
+            item.get("time_hhmm")
+            or _label_time(
+                item.get(
+                    "label",
+                    ""
+                )
+            )
+        )
+
+        # ====================================================
+        # วันนี้
+        # ====================================================
+
+        if day_offset == 0:
+
+            row["minutes_until"] = (
+                reference_minutes
+                - current_minutes
+            )
+
+            row[
+                "effective_time_hhmm"
+            ] = (
+                (
+                    row.get(
+                        "realtime_eta_hhmm"
+                    )
+                    if row.get(
+                        "realtime_live_fresh"
+                    )
+                    else row.get(
+                        "time_hhmm"
+                    )
+                )
+                or schedule_reference
+            )
+
+            # ------------------------------------------------
+            # TTS สดยืนยันว่ารถออกหรือผ่านแล้ว
+            # ------------------------------------------------
+
+            if (
+                row.get(
+                    "realtime_confirmed_departed"
+                )
+                and row.get(
+                    "realtime_live_fresh"
+                )
+            ):
+
+                row[
+                    "keep_visible_when_overdue"
+                ] = False
+
+                row[
+                    "confirmed_departed"
+                ] = True
+
+                return None
+
+            # ------------------------------------------------
+            # ตรวจว่าเลยเวลาหรือยัง
+            # ------------------------------------------------
+
+            overdue = (
+                row["minutes_until"]
+                <= 0
+            )
+
+            row[
+                "overdue_unconfirmed"
+            ] = bool(overdue)
+
+            # =================================================
+            # รถเลยเวลา
+            # =================================================
+
+            if overdue:
+
+                overdue_minutes = max(
+                    0,
+                    int(
+                        abs(
+                            row[
+                                "minutes_until"
+                            ]
+                        )
+                    )
+                )
+
+                row[
+                    "overdue_minutes"
+                ] = overdue_minutes
+
+                # ---------------------------------------------
+                # กรณีที่ 1
+                # มี TTS สด
+                #
+                # ถ้า TTS ยังไม่ยืนยันว่ารถออก
+                # ให้แสดงต่อ เพราะอาจเป็นรถล่าช้าจริง
+                # ---------------------------------------------
+
+                if row.get(
+                    "realtime_live_fresh"
+                ):
+
+                    row[
+                        "keep_visible_when_overdue"
+                    ] = True
+
+                    row[
+                        "overdue_fallback_mode"
+                    ] = "realtime"
+
+                    overdue_candidates.append(
+                        row
+                    )
+
+                # ---------------------------------------------
+                # กรณีที่ 2
+                # ไม่มี TTS สด
+                # แต่ยังเลยเวลาไม่ถึง 20 นาที
+                #
+                # แสดงเผื่อรถล่าช้าระยะสั้น
+                # ---------------------------------------------
+
+                elif (
+                    overdue_minutes
+                    < QUICK_TRAIN_OVERDUE_GRACE_MINUTES
+                ):
+
+                    row[
+                        "keep_visible_when_overdue"
+                    ] = True
+
+                    row[
+                        "overdue_fallback_mode"
+                    ] = "schedule_grace"
+
+                    row[
+                        "overdue_auto_hide_in_minutes"
+                    ] = max(
+                        1,
+                        QUICK_TRAIN_OVERDUE_GRACE_MINUTES
+                        - overdue_minutes
+                    )
+
+                    overdue_candidates.append(
+                        row
+                    )
+
+                # ---------------------------------------------
+                # กรณีที่ 3
+                # ไม่มี TTS สด
+                # และเลยเวลา 20 นาทีแล้ว
+                #
+                # เอาออกจาก "ขบวนถัดไป"
+                # ---------------------------------------------
+
+                else:
+
+                    row[
+                        "keep_visible_when_overdue"
+                    ] = False
+
+                    row[
+                        "auto_hidden_overdue"
+                    ] = True
+
+                    row[
+                        "confirmed_departed"
+                    ] = True
+
+                    return None
+
+            # =================================================
+            # รถยังไม่ถึงเวลา
+            # =================================================
+
+            else:
+
+                row[
+                    "keep_visible_when_overdue"
+                ] = False
+
+                candidates.append(
+                    row
+                )
+
+        # ====================================================
+        # วันพรุ่งนี้
+        # ====================================================
+
+        else:
+
+            row[
+                "minutes_until"
+            ] = (
+                (24 * 60 - current_minutes)
+                + reference_minutes
+            )
+
+            row[
+                "effective_time_hhmm"
+            ] = (
+                row.get(
+                    "realtime_eta_hhmm"
+                )
+                if row.get(
+                    "realtime_live_fresh"
+                )
+                else schedule_reference
+            )
+
+            row[
+                "keep_visible_when_overdue"
+            ] = False
+
+            candidates.append(
+                row
+            )
+
+        add_preparation_window(
+            row
+        )
+
+        return row
+
+    # --------------------------------------------------------
+    # ประมวลผลขบวนวันนี้
+    # --------------------------------------------------------
+
+    for item in today_merged:
+
+        decorate(
+            item,
+            0
+        )
+
+    # --------------------------------------------------------
+    # ประมวลผลขบวนวันพรุ่งนี้
+    # --------------------------------------------------------
+
+    for item in tomorrow_merged:
+
+        decorate(
+            item,
+            1
+        )
+
+    # --------------------------------------------------------
+    # รถเลยเวลาอนุญาตให้แสดงสูงสุด 1 ขบวน
+    # เพื่อไม่ให้รถเก่าหลายเที่ยวกินพื้นที่ Quick Queue
+    # --------------------------------------------------------
+
+    if overdue_candidates:
+
+        overdue_candidates.sort(
+            key=lambda item:
+                _train_reference_minutes(
+                    item
+                ),
+            reverse=True
+        )
+
+        candidates.insert(
+            0,
+            overdue_candidates[0]
+        )
+
+    # --------------------------------------------------------
+    # เรียงลำดับ
+    # --------------------------------------------------------
+
+    def sort_key(item):
+
+        minutes = (
+            _train_reference_minutes(
+                item
+            )
+        )
+
+        # วันพรุ่งนี้
+        if (
+            int(
+                item.get(
+                    "day_offset",
+                    0
+                )
+            )
+            > 0
+        ):
+
+            return (
+                1440
+                + minutes
+            )
+
+        # รถล่าช้าที่กำลังค้างอยู่
+        if item.get(
+            "overdue_unconfirmed"
+        ):
+
+            return -1
+
+        return minutes
+
+    candidates.sort(
+        key=sort_key
+    )
+
+    return (
+        candidates[:limit],
+        snapshot
+    )
+
+
+# ============================================================
+# ปรับข้อความบนหน้าเว็บให้ตรงกับกติกาใหม่
+# แก้เฉพาะข้อความ UI ไม่เกี่ยวกับระบบเสียง
+# ============================================================
+
+try:
+
+    HTML_PAGE = HTML_PAGE.replace(
+        "🔴 รถเลยกำหนด · ระบบจะไม่เอาออกจนกว่าจะยืนยันจาก TTS",
+        "🟠 รถเลยกำหนด · หากไม่มี TTS สด ระบบจะซ่อนอัตโนมัติเมื่อเกิน 20 นาที"
+    )
+
+    HTML_PAGE = HTML_PAGE.replace(
+        "🔴 เกินกำหนด ${mins} นาที · ยังไม่ได้รับการยืนยันจาก TTS",
+        "🟠 เกินกำหนด ${mins} นาที · กำลังตรวจสอบสถานะ TTS"
+    )
+
+except Exception:
+    pass
+
+
+# ============================================================
+# END v12.1 QUICK TRAIN OVERDUE AUTO-HIDE FIX
+# ============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
