@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v11.9 - quick-train completion keyed by train number + immediate queue removal
-# Version: v11.9 - marking a completed รถจอด / ออก announcement hides the train by train number even if its timetable time/label changes
+# Build: v12.0 - quick queue completion fix + history fallback + SQLite row-safe lookup
+# Version: v12.0 - a successful รถจอด / ออก announcement is the source of truth for hiding a train from the quick queue
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -1307,33 +1307,78 @@ def _train_reference_minutes(item):
 
 def get_handled_quick_train_nums(service_date=None):
     """คืนเลขขบวนที่ประกาศ 'รถจอด / ออก' สำเร็จแล้วในวันนั้น.
-    ใช้เลขขบวนเป็นตัวหลัก เพื่อไม่ให้การแก้เวลาในตารางทำให้ขบวนกลับเข้าคิวอีกครั้ง
+    ใช้เลขขบวนเป็นตัวหลัก เพื่อไม่ให้การแก้เวลาในตารางทำให้ขบวนกลับเข้าคิวอีกครั้ง.
+    v12.0 แก้การอ่าน sqlite3.Row ให้ใช้ row["..."] แทน row.get("...").
     """
     service_date = service_date or now_bangkok().date().isoformat()
+    nums = set()
     try:
         with get_db() as conn:
             rows = conn.execute(
                 "SELECT train_num FROM quick_train_handled WHERE service_date=? AND train_num IS NOT NULL AND train_num<>''",
                 (service_date,)
             ).fetchall()
-        return {str(row["train_num"]).strip() for row in rows if row.get("train_num")}
+        for row in rows:
+            value = row["train_num"] if row["train_num"] is not None else ""
+            value = str(value).strip()
+            if value:
+                nums.add(value)
     except Exception:
-        return set()
+        pass
+    return nums
 
 
 def get_handled_quick_train_labels(service_date=None):
     """คืน label ของขบวนที่ประกาศ 'รถจอด / ออก' สำเร็จแล้วในวันนั้น."""
     service_date = service_date or now_bangkok().date().isoformat()
+    labels = set()
     try:
         with get_db() as conn:
             rows = conn.execute(
                 "SELECT train_label FROM quick_train_handled WHERE service_date=?",
                 (service_date,)
             ).fetchall()
-        return {str(row["train_label"]) for row in rows if row.get("train_label")}
+        for row in rows:
+            value = row["train_label"] if row["train_label"] is not None else ""
+            value = str(value).strip()
+            if value:
+                labels.add(value)
     except Exception:
-        # ตารางนี้เป็นเพียงคิวช่วยงาน ถ้าอ่านไม่ได้ อย่าทำให้หน้าประกาศหลักล่ม
-        return set()
+        pass
+    return labels
+
+
+def get_successfully_announced_quick_train_nums(service_date=None):
+    """Fallback/source-of-truth จากประวัติการประกาศ:
+    ถ้า 'รถจอด / ออก' เล่นเสียงจบสำเร็จแล้ว ให้ถือว่าขบวนไปแล้ว
+    แม้ quick_train_handled จะไม่มีรายการ (เช่นข้อมูลจากเวอร์ชันก่อนหน้า).
+    """
+    service_date = service_date or now_bangkok().date().isoformat()
+    nums = set()
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT train_num
+                FROM announcement_history
+                WHERE substr(started_at,1,10)=?
+                  AND announcement_type='รถจอด / ออก'
+                  AND playback_success=1
+                  AND train_num IS NOT NULL
+                  AND train_num<>''
+                """,
+                (service_date,)
+            ).fetchall()
+        for row in rows:
+            raw = row["train_num"] if row["train_num"] is not None else ""
+            # ป้องกันกรณี history ของประกาศหลายขบวนเก็บเป็น "368, 389"
+            for value in re.split(r"[,\s]+", str(raw)):
+                value = value.strip()
+                if value:
+                    nums.add(value)
+    except Exception:
+        pass
+    return nums
 
 
 def mark_quick_train_handled_record(train_label, train_num="", time_hhmm="", service_date=None):
@@ -1377,6 +1422,9 @@ def get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=Fa
     service_date_today = now.date().isoformat()
     handled_today_labels = get_handled_quick_train_labels(service_date_today)
     handled_today_nums = get_handled_quick_train_nums(service_date_today)
+    # v12.0: ประวัติการประกาศที่ playback_success=1 เป็น fallback สำคัญ
+    # เพื่อให้ขบวนที่ประกาศไปแล้วใน v11.8/v11.9 หายจากคิวได้ทันที
+    handled_today_nums |= get_successfully_announced_quick_train_nums(service_date_today)
 
     today = [
         dict(t) for t in inbound + outbound
@@ -2286,7 +2334,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 ขบวนที่ประกาศ “รถจอด / ออก” เสร็จแล้ว = ถือว่าจบงาน · ปิดคิวด้วยเลขขบวนและหายจากรายการทันที · ตารางรถจริงยังอยู่</div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 ประกาศ “รถจอด / ออก” จบ = ถือว่าขบวนไปแล้ว · ระบบจะปิดคิวด้วยเลขขบวนและตรวจจากประวัติการประกาศซ้ำ · ตารางรถจริงยังอยู่</div>
             <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
         </div>
     </section>
@@ -3988,6 +4036,10 @@ HTML_PAGE = r"""
             if (!response.ok || data.status !== "success") {
                 throw new Error(data.message || "ปิดคิวขบวนไม่สำเร็จ");
             }
+            const requestNum = String(item.num || value("num") || "").trim();
+            if (requestNum && data.recorded === false) {
+                throw new Error("ระบบยังไม่ยืนยันการบันทึกขบวนลงคิวที่ปิดแล้ว");
+            }
 
             const handledLabel = item.label;
             const handledNum = String(item.num || value("num") || "").trim();
@@ -4070,11 +4122,14 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
 
-            // v11.8: รถจอด / ออกประกาศจบแล้ว = ปิดคิวขบวนนี้ใน "ขบวนถัดไป"
-            // ไม่ลบข้อมูลตารางรถจริง และยังค้นหาขบวนนี้ได้จากตาราง/ช่องค้นหา
-            await markSelectedQuickTrainAsHandled(tabIndex);
+            // v12.0: เมื่อเสียงเล่นจบสำเร็จ = ถือว่าขบวนไปแล้ว
+            // ปิดคิวจากเลขขบวน และ sync จาก server ทันที
+            const queueClosed = await markSelectedQuickTrainAsHandled(tabIndex);
+            if (!queueClosed && Number(tabIndex) === 4) {
+                throw new Error("เสียงประกาศจบแล้ว แต่ระบบบันทึกการปิดคิวไม่สำเร็จ");
+            }
 
-            setStatus("ประกาศเสร็จแล้ว", "ok");
+            setStatus("ประกาศเสร็จแล้ว · ขบวนออกจากคิวแล้ว", "ok");
             await logHistoryEvent("success");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -5499,11 +5554,13 @@ def api_mark_quick_train_announced():
         time_hhmm = str(data.get("time_hhmm") or "").strip()
         service_date = str(data.get("service_date") or now_bangkok().date().isoformat()).strip()
         mark_quick_train_handled_record(label, num, time_hhmm, service_date)
+        handled_nums = get_handled_quick_train_nums(service_date)
         return jsonify(
             status="success",
             train_label=label,
             train_num=num,
             service_date=service_date,
+            recorded=(str(num).strip() in handled_nums if num else False),
             message="ปิดคิวขบวนแล้ว · ใช้เลขขบวนเป็นตัวอ้างอิง · ตารางรถจริงยังคงอยู่"
         )
     except Exception as exc:
