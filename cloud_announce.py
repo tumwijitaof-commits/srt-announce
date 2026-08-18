@@ -539,6 +539,18 @@ CREATE TABLE IF NOT EXISTS announcement_events (
     details TEXT,
     FOREIGN KEY(history_id) REFERENCES announcement_history(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS quick_train_handled (
+    service_date TEXT NOT NULL,
+    train_label TEXT NOT NULL,
+    train_num TEXT,
+    time_hhmm TEXT,
+    handled_at TEXT NOT NULL,
+    user_id INTEGER,
+    username TEXT,
+    PRIMARY KEY(service_date, train_label),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_quick_train_handled_date ON quick_train_handled(service_date);
 CREATE TABLE IF NOT EXISTS admin_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_at TEXT NOT NULL,
@@ -617,6 +629,17 @@ CREATE TABLE IF NOT EXISTS announcement_events (
     event_at TEXT NOT NULL,
     details TEXT
 );
+CREATE TABLE IF NOT EXISTS quick_train_handled (
+    service_date TEXT NOT NULL,
+    train_label TEXT NOT NULL,
+    train_num TEXT,
+    time_hhmm TEXT,
+    handled_at TEXT NOT NULL,
+    user_id BIGINT REFERENCES users(id),
+    username TEXT,
+    PRIMARY KEY(service_date, train_label)
+);
+CREATE INDEX IF NOT EXISTS idx_quick_train_handled_date ON quick_train_handled(service_date);
 CREATE TABLE IF NOT EXISTS admin_audit (
     id BIGSERIAL PRIMARY KEY,
     event_at TEXT NOT NULL,
@@ -1281,6 +1304,52 @@ def _train_reference_minutes(item):
         return 24 * 60
 
 
+
+def get_handled_quick_train_labels(service_date=None):
+    """คืน label ของขบวนที่ประกาศ 'รถจอด / ออก' สำเร็จแล้วในวันนั้น."""
+    service_date = service_date or now_bangkok().date().isoformat()
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT train_label FROM quick_train_handled WHERE service_date=?",
+                (service_date,)
+            ).fetchall()
+        return {str(row["train_label"]) for row in rows if row.get("train_label")}
+    except Exception:
+        # ตารางนี้เป็นเพียงคิวช่วยงาน ถ้าอ่านไม่ได้ อย่าทำให้หน้าประกาศหลักล่ม
+        return set()
+
+
+def mark_quick_train_handled_record(train_label, train_num="", time_hhmm="", service_date=None):
+    """บันทึกว่า quick-train รายการนี้ถูกประกาศรถจอด / ออกสำเร็จแล้ว."""
+    service_date = service_date or now_bangkok().date().isoformat()
+    label = str(train_label or "").strip()
+    if not label:
+        raise ValueError("ไม่พบข้อมูลขบวนรถสำหรับปิดคิว")
+    today = now_bangkok().date().isoformat()
+    if service_date != today:
+        raise ValueError("ปิดคิวได้เฉพาะขบวนของวันนี้")
+    user = get_current_user() or {}
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO quick_train_handled(service_date,train_label,train_num,time_hhmm,handled_at,user_id,username)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(service_date,train_label) DO UPDATE SET
+                train_num=excluded.train_num,
+                time_hhmm=excluded.time_hhmm,
+                handled_at=excluded.handled_at,
+                user_id=excluded.user_id,
+                username=excluded.username
+            """,
+            (
+                service_date, label, str(train_num or "").strip(), str(time_hhmm or "").strip(),
+                now_iso(), user.get("id"), user.get("username", "")
+            )
+        )
+    return True
+
+
 def get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=False):
     """
     เลือกขบวนถัดไปโดยให้ ETA สดเป็นตัวนำเมื่อข้อมูลยังสด.
@@ -1289,8 +1358,9 @@ def get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=Fa
     """
     now = now_bangkok()
     current_minutes = now.hour * 60 + now.minute
+    handled_today = get_handled_quick_train_labels(now.date().isoformat())
 
-    today = [dict(t) for t in inbound + outbound]
+    today = [dict(t) for t in inbound + outbound if str(t.get("label") or "") not in handled_today]
     tomorrow = now.date() + timedelta(days=1)
     next_inbound, next_outbound, _, _ = get_active_train_lists(tomorrow)
     tomorrow_items = [dict(t) for t in next_inbound + next_outbound]
@@ -1790,6 +1860,9 @@ HTML_PAGE = r"""
             text-decoration: none; font-weight: 850; background: #fff7ed;
         }
         .system-nav a.active, .system-nav a:hover { color: white; background: var(--maroon); }
+        .system-nav a.voice-test-nav { color: white; background: #7a5a00; }
+        #voiceTestPanel { scroll-margin-top: 18px; }
+        #voiceTestPanel .voice-test-btn { min-height: 62px; font-size: 16px; box-shadow: 0 8px 20px rgba(128,0,0,.16); }
         .nav-user { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 750; }
         .topbar {
             display: flex;
@@ -2134,6 +2207,7 @@ HTML_PAGE = r"""
 
     <nav class="system-nav">
         <a class="active" href="{{ url_for('index') }}">📢 หน้าประกาศ</a>
+        <a href="#voiceTestPanel" class="voice-test-nav" id="topVoiceTestLink" onclick="openVoiceTestMenu(event)">🔊 ทดสอบเสียงประกาศ</a>
         {% if current_user.role == 'admin' %}
         <a href="{{ url_for('admin_schedules') }}">🚆 จัดการตารางรถ</a>
         <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
@@ -2159,12 +2233,12 @@ HTML_PAGE = r"""
                 <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
             </div>
             <label style="margin-top:12px">เสียงประกาศ</label>
-            <div class="voice-choice-grid">
+            <div class="voice-choice-grid" id="voiceTestPanel">
                 <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}" data-voice="th-TH-PremwadeeNeural" onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">👩 เสียงผู้หญิง<small>Premwadee · Jenny</small></button>
                 <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}" data-voice="th-TH-NiwatNeural" onclick="setThaiVoice('th-TH-NiwatNeural', this)">👨 เสียงผู้ชาย<small>Niwat · Guy</small></button>
-                <button type="button" class="voice-test-btn" onclick="testStationVoice()">▶ ทดลองเสียง</button>
+                <button type="button" class="voice-test-btn" onclick="testStationVoice()">🔊 ทดสอบเสียงจริง</button>
             </div>
-            <div class="voice-quick-note" id="voiceHelper" style="margin-top:8px">ระบบจะจำภาษาและเสียงที่ใช้ล่าสุดในอุปกรณ์นี้</div>
+            <div class="voice-quick-note" id="voiceHelper" style="margin-top:8px">🔊 ปุ่มนี้สร้างและเล่นเสียง TTS จริงตามภาษาและเสียงที่เลือก · ไม่ใช่เสียงตัวอย่างจำลอง · ระบบยังคงใช้สำเนียงและจังหวะเดิม</div>
         </div>
     </details>
 
@@ -2190,7 +2264,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 เวลาเดินแบบเรียลไทม์ · ขบวนที่ถึงเวลาแล้วจะหายไปเอง · ระบบดึงขบวนถัดไปให้โดยไม่ต้องรีเฟรช</div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 เวลาเดินแบบเรียลไทม์ · เมื่อประกาศ “รถจอด / ออก” เสร็จแล้ว ขบวนจะปิดคิวและหายจากรายการ · ระบบดึงขบวนถัดไปให้โดยไม่ต้องรีเฟรช</div>
             <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
         </div>
     </section>
@@ -2501,6 +2575,8 @@ HTML_PAGE = r"""
     let quickTrains = {{ quick_trains_json | safe }};
     let quickTrainLabels = quickTrains.map(item => item.label).filter(Boolean);
     let selectedAnnouncement = null;
+    let selectedQuickTrain = null;
+    let selectingFromQuickTrain = false;
     let mainPlayer = null;
     let isBusy = false;
     let sharedAudioContext = null;
@@ -2561,7 +2637,7 @@ HTML_PAGE = r"""
         (target || select).appendChild(option);
     }
 
-    function selectTrainByLabel(label, type = 1) {
+    function selectTrainByLabel(label, type = 1, fromQuickTrain = false) {
         if (type > activeTrainPickerCount) {
             while (activeTrainPickerCount < type) addTrainPicker();
         }
@@ -2570,7 +2646,16 @@ HTML_PAGE = r"""
         if (!select) return;
         ensureTrainOption(select, label);
         select.value = label;
+        selectingFromQuickTrain = !!(type === 1 && fromQuickTrain);
         autoFill(type);
+        selectingFromQuickTrain = false;
+
+        if (type === 1) {
+            selectedQuickTrain = fromQuickTrain
+                ? (quickTrains.find(item => item.label === label) || trainData[label] || null)
+                : null;
+        }
+
         if (type === 1 && byId("trainSearch")) {
             byId("trainSearch").value = "";
             byId("trainSearchResults").innerHTML = "";
@@ -2717,6 +2802,9 @@ HTML_PAGE = r"""
     }
 
     function autoFill(type) {
+        if (type === 1 && !selectingFromQuickTrain) {
+            selectedQuickTrain = null;
+        }
         const suffix = trainSuffix(type);
         const selectId = type === 1 ? "train_select" : `train_select_${type}`;
         const data = trainData[value(selectId)];
@@ -3277,7 +3365,7 @@ HTML_PAGE = r"""
         }).join("");
 
         box.querySelectorAll(".quick-train").forEach(button => {
-            button.addEventListener("click", () => selectTrainByLabel(button.dataset.label, 1));
+            button.addEventListener("click", () => selectTrainByLabel(button.dataset.label, 1, true));
         });
     }
 
@@ -3310,7 +3398,7 @@ HTML_PAGE = r"""
         if (warming) {
             status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · กำลังเตรียมเสียง ${warming} ขบวน${rt}`;
         } else if (ready) {
-            status.textContent = `✅ มีเสียงพร้อม ${ready} ขบวน · ระบบติดตามและเลื่อนขบวนถัดไปให้อัตโนมัติ ไม่ต้องรีเฟรช${rt}`;
+            status.textContent = `✅ มีเสียงพร้อม ${ready} ขบวน · ระบบติดตามและเติมขบวนถัดไปให้อัตโนมัติ ไม่ต้องรีเฟรช${rt}`;
         } else if (near) {
             status.textContent = `⚡ ถึงรอบเตรียมเสียง · ระบบเริ่มเตรียมอัตโนมัติตามเวลาที่ปัดลงหลัก 10 นาที${rt}`;
         } else {
@@ -3605,6 +3693,21 @@ HTML_PAGE = r"""
         return playbackRunId;
     }
 
+
+    function openVoiceTestMenu(event) {
+        if (event) event.preventDefault();
+        const settings = byId("announceSettings");
+        const target = byId("voiceTestPanel");
+        if (settings) settings.open = true;
+        window.setTimeout(() => {
+            if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+            const button = target?.querySelector(".voice-test-btn");
+            if (button) {
+                button.focus({ preventScroll: true });
+            }
+        }, 60);
+    }
+
     async function testStationVoice() {
         if (isBusy) return;
         const runId = beginPlaybackRun();
@@ -3842,6 +3945,49 @@ HTML_PAGE = r"""
         await playAnnouncement(selectedAnnouncement);
     }
 
+
+    async function markSelectedQuickTrainAsHandled(tabIndex) {
+        if (Number(tabIndex) !== 4 || !selectedQuickTrain?.label) return false;
+
+        const item = selectedQuickTrain;
+        try {
+            const response = await fetch("/api/quick-train/mark-announced", {
+                method: "POST",
+                headers: jsonHeaders(),
+                body: JSON.stringify({
+                    tab_index: 4,
+                    train_label: item.label,
+                    train_num: item.num || value("num"),
+                    time_hhmm: item.time_hhmm || value("time"),
+                    service_date: item.service_date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" })
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || data.status !== "success") {
+                throw new Error(data.message || "ปิดคิวขบวนไม่สำเร็จ");
+            }
+
+            const handledLabel = item.label;
+            quickTrains = quickTrains.filter(train => train.label !== handledLabel);
+            quickTrainLabels = quickTrains.map(train => train.label).filter(Boolean);
+            livePrewarmStates.delete(handledLabel);
+            prewarmedNextTrainKeys.forEach(key => {
+                if (String(key).includes(handledLabel)) prewarmedNextTrainKeys.delete(key);
+            });
+            renderQuickTrainCards(quickTrains);
+            updateNextTrainWaitingStatus();
+            selectedQuickTrain = null;
+
+            // ดึงขบวนถัดไปทันที เพื่อเติมช่องที่ว่าง โดยไม่ Refresh หน้า
+            refreshNextTrainsFromServer(true);
+            return true;
+        } catch (error) {
+            console.warn("Mark quick train handled failed:", error);
+            setStatus("ประกาศเสร็จแล้ว แต่ปิดคิวขบวนไม่สำเร็จ · ระบบจะลองใหม่", "error");
+            return false;
+        }
+    }
+
     async function playAnnouncement(tabIndex) {
         if (isBusy) return;
         const runId = beginPlaybackRun();
@@ -3897,6 +4043,11 @@ HTML_PAGE = r"""
                 });
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
+
+            // v11.8: รถจอด / ออกประกาศจบแล้ว = ปิดคิวขบวนนี้ใน "ขบวนถัดไป"
+            // ไม่ลบข้อมูลตารางรถจริง และยังค้นหาขบวนนี้ได้จากตาราง/ช่องค้นหา
+            await markSelectedQuickTrainAsHandled(tabIndex);
+
             setStatus("ประกาศเสร็จแล้ว", "ok");
             await logHistoryEvent("success");
         } catch (err) {
@@ -5158,7 +5309,7 @@ def import_schedule():
 @app.route("/admin/backup")
 @roles_required("admin")
 def backup_data():
-    tables = ["schedule_versions","trains","users","announcement_history","announcement_events","admin_audit"]
+    tables = ["schedule_versions","trains","users","announcement_history","announcement_events","quick_train_handled","admin_audit"]
     payload = {"schema_version":1,"created_at":now_iso(),"tables":{}}
     with get_db() as conn:
         for table in tables:
@@ -5177,11 +5328,11 @@ def restore_data():
         payload = json.load(file)
         tables = payload.get("tables") or {}
         versions = tables.get("schedule_versions",[]); trains=tables.get("trains",[])
-        histories=tables.get("announcement_history",[]); events=tables.get("announcement_events",[])
+        histories=tables.get("announcement_history",[]); events=tables.get("announcement_events",[]); handled=tables.get("quick_train_handled",[])
         if not isinstance(versions,list) or not isinstance(trains,list): raise ValueError("รูปแบบไฟล์สำรองไม่ถูกต้อง")
         user=get_current_user()
         with get_db() as conn:
-            conn.execute("DELETE FROM announcement_events"); conn.execute("DELETE FROM announcement_history"); conn.execute("DELETE FROM trains"); conn.execute("DELETE FROM schedule_versions")
+            conn.execute("DELETE FROM quick_train_handled"); conn.execute("DELETE FROM announcement_events"); conn.execute("DELETE FROM announcement_history"); conn.execute("DELETE FROM trains"); conn.execute("DELETE FROM schedule_versions")
             for v in versions:
                 conn.execute("INSERT INTO schedule_versions(id,name,effective_date,status,created_at,created_by) VALUES(?,?,?,?,?,?)", (v.get('id'),v.get('name'),v.get('effective_date'),v.get('status','published'),v.get('created_at',now_iso()),user['id']))
             for t in trains:
@@ -5190,6 +5341,11 @@ def restore_data():
                 conn.execute("""INSERT INTO announcement_history(id,started_at,user_id,username,train_num,announcement_type,announce_mode,voice,platform,message,generation_ms,playback_success,pause_times,stop_time,completed_at,failure_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (h.get('id'),h.get('started_at'),None,h.get('username','ไม่ทราบ'),h.get('train_num'),h.get('announcement_type',''),h.get('announce_mode',''),h.get('voice',''),h.get('platform'),h.get('message'),h.get('generation_ms'),h.get('playback_success'),h.get('pause_times','[]'),h.get('stop_time'),h.get('completed_at'),h.get('failure_reason')))
             for e in events:
                 conn.execute("INSERT INTO announcement_events(id,history_id,event_type,event_at,details) VALUES(?,?,?,?,?)", (e.get('id'),e.get('history_id'),e.get('event_type'),e.get('event_at'),e.get('details')))
+            for hq in handled:
+                conn.execute(
+                    "INSERT INTO quick_train_handled(service_date,train_label,train_num,time_hhmm,handled_at,user_id,username) VALUES(?,?,?,?,?,?,?)",
+                    (hq.get('service_date'), hq.get('train_label'), hq.get('train_num'), hq.get('time_hhmm'), hq.get('handled_at', now_iso()), hq.get('user_id'), hq.get('username'))
+                )
             if USE_POSTGRES:
                 for table in ("schedule_versions", "trains", "announcement_history", "announcement_events"):
                     conn.execute(
@@ -5297,6 +5453,36 @@ def api_health():
     return jsonify(status="success",checks=backend_health_checks(),server_epoch_ms=int(time.time()*1000),server_time=now_iso())
 
 
+@app.route("/api/quick-train/mark-announced", methods=["POST"])
+@roles_required("announcer", "admin")
+def api_mark_quick_train_announced():
+    """
+    ปิดคิว 'ขบวนถัดไป' เมื่อประกาศประเภท รถจอด / ออก สำเร็จแล้วเท่านั้น.
+    ไม่ลบข้อมูลตารางรถจริง และไม่กระทบการค้นหาขบวนย้อนหลัง.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        if int(data.get("tab_index", -1)) != 4:
+            return jsonify(status="error", message="คำขอนี้ใช้สำหรับประกาศรถจอด / ออกเท่านั้น"), 400
+    except Exception:
+        return jsonify(status="error", message="ประเภทประกาศไม่ถูกต้อง"), 400
+
+    try:
+        label = str(data.get("train_label") or "").strip()
+        num = str(data.get("train_num") or "").strip()
+        time_hhmm = str(data.get("time_hhmm") or "").strip()
+        service_date = str(data.get("service_date") or now_bangkok().date().isoformat()).strip()
+        mark_quick_train_handled_record(label, num, time_hhmm, service_date)
+        return jsonify(
+            status="success",
+            train_label=label,
+            service_date=service_date,
+            message="ปิดคิวขบวนแล้ว · ตารางรถจริงยังคงอยู่"
+        )
+    except Exception as exc:
+        return jsonify(status="error", message=str(exc)), 400
+
+
 @app.route("/api/realtime-status", methods=["GET"])
 @roles_required("announcer", "admin")
 def api_realtime_status():
@@ -5383,7 +5569,7 @@ def api_history_event():
 @app.route("/")
 @roles_required("announcer", "admin")
 def index():
-    inbound, outbound, train_data, schedule_version = get_active_train_lists()
+    inbound, outbound, train_data, schedule_version = get_active_train_lists(fresh=True)
     user = get_current_user()
     quick_trains, _realtime_snapshot = get_realtime_aware_quick_train_snapshot(
         inbound, outbound, limit=3, force=True
