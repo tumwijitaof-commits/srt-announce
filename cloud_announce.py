@@ -134,7 +134,9 @@ _AUDIO_CACHE_LOCKS = {}
 _AUDIO_CACHE_LOCKS_GUARD = threading.Lock()
 _AUDIO_CLEANUP_LOCK = threading.Lock()
 _LAST_AUDIO_CLEANUP = 0.0
-AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60))
+# เก็บไฟล์เสียงสำรองไว้ 30 วันเป็นค่าเริ่มต้น และเมื่อมีการนำไฟล์เดิมกลับมาใช้
+# ระบบจะต่ออายุอายุไฟล์ด้วย os.utime() เพื่อไม่ให้เสียงที่ใช้งานจริงถูกลบง่าย
+AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 30 * 24 * 60 * 60))
 TTS_GENERATION_TIMEOUT = max(10, int(os.environ.get("TTS_GENERATION_TIMEOUT", "30")))
 
 
@@ -1882,7 +1884,13 @@ HTML_PAGE = r"""
         .stop-mode-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
         .stop-mode-btn { border:1px solid #dfd1bd; border-radius:13px; background:#fff; padding:11px; text-align:left; font-weight:850; }
         .stop-mode-btn.active { border-color:var(--maroon); background:#fff0f0; color:var(--maroon-dark); box-shadow:inset 0 0 0 1px var(--maroon); }
-        .preview-ready { margin-top:8px; min-height:22px; font-size:12.5px; font-weight:800; color:var(--green); }
+        .preview-ready {
+        margin-top:10px; min-height:0; padding:12px 14px; border-radius:12px;
+        font-size:17px; line-height:1.35; font-weight:900; color:#0b6b3a;
+        background:#e9f8ef; border:2px solid #39a96b;
+        box-shadow:0 2px 8px rgba(11,107,58,.10);
+    }
+    .preview-ready:empty { display:none; }
         .departure-action { display:none; margin-top:10px; }
         .departure-action.show { display:block; }
         .departure-btn { width:100%; border:0; border-radius:14px; padding:14px; background:#17633a; color:#fff; font-weight:900; font-size:16px; }
@@ -1964,7 +1972,7 @@ HTML_PAGE = r"""
     <section class="card quick-card">
         <div class="card-head quick-card-head">
             <h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2>
-            <div class="station-live-clock" id="stationLiveClock" aria-live="polite">🕐 <span class="clock-seconds">--:--:--</span> น.</div>
+            <div class="station-live-clock" id="stationLiveClock" aria-live="polite">🕐 <span class="clock-label">เวลาสถานี</span> <span class="clock-seconds">{{ server_time_hhmmss }}</span> น.</div>
         </div>
         <div class="card-body">
             <div class="quick-trains" id="quickTrainList">
@@ -2720,8 +2728,12 @@ HTML_PAGE = r"""
                 preparedAudioData = data;
                 preparedAudioPromise = null;
                 if (background && !isBusy) {
-                    setStatus("เสียงพร้อมประกาศ", "ok");
-                    if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "✓ ไฟล์เสียงพร้อมแล้ว";
+                    setStatus(data.used_cached_audio ? "ใช้ไฟล์เสียงสำรองเดิม" : "เสียงพร้อมประกาศ", "ok");
+                    if (byId("audioReadyBadge")) {
+                        byId("audioReadyBadge").textContent = data.used_cached_audio
+                            ? `♻️ ใช้ไฟล์เสียงสำรองเดิม · พร้อมประกาศ · เก็บอย่างน้อย ${data.audio_cache_days || 30} วัน`
+                            : "🔊 สร้างไฟล์เสียงเสร็จแล้ว";
+                    }
                 }
             }
             return data;
@@ -2865,8 +2877,20 @@ HTML_PAGE = r"""
     }
 
     function currentTimeString() {
-        const now = new Date();
-        return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+        try {
+            const parts = new Intl.DateTimeFormat("th-TH", {
+                timeZone: "Asia/Bangkok",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hourCycle: "h23"
+            }).formatToParts(new Date());
+            const get = key => parts.find(part => part.type === key)?.value || "00";
+            return `${get("hour")}:${get("minute")}:${get("second")}`;
+        } catch (e) {
+            const now = new Date();
+            return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+        }
     }
 
     function minutesUntilTrain(item) {
@@ -3622,9 +3646,13 @@ HTML_PAGE = r"""
                 message: data.text_plain || data.text_preview || "",
                 generation_ms: data.generation_ms || 0
             });
-            if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = "✓ ไฟล์เสียงพร้อมแล้ว";
+            if (byId("audioReadyBadge")) {
+                byId("audioReadyBadge").textContent = data.used_cached_audio
+                    ? `♻️ ใช้ไฟล์เสียงสำรองเดิม · พร้อมประกาศ · เก็บอย่างน้อย ${data.audio_cache_days || 30} วัน`
+                    : "🔊 สร้างไฟล์เสียงเสร็จแล้ว";
+            }
 
-            setStatus("เสียงเตือน...", "work");
+            setStatus(data.used_cached_audio ? "ใช้ไฟล์เสียงสำรองเดิม" : "เสียงเตือน...", "work");
             await playOriginalChime(runId);
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
 
@@ -3729,6 +3757,24 @@ HTML_PAGE = r"""
         if (document.visibilityState === "visible") refreshNextTrainsFromServer(true);
     });
 </script>
+<script>
+(() => {
+    const el = document.querySelector("#stationLiveClock .clock-seconds");
+    if (!el) return;
+    const tick = () => {
+        try {
+            const parts = new Intl.DateTimeFormat("th-TH", {
+                timeZone: "Asia/Bangkok",
+                hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+            }).formatToParts(new Date());
+            const get = key => parts.find(part => part.type === key)?.value || "00";
+            el.textContent = `${get("hour")}:${get("minute")}:${get("second")}`;
+        } catch (e) {}
+    };
+    tick();
+    setInterval(tick, 1000);
+})();
+</script>
 </body>
 </html>
 """
@@ -3770,8 +3816,10 @@ def _cache_lock(cache_key):
         return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
 
 
-def generate_cached_audio(segment):
-    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
+def _audio_cache_path(segment):
+    """คืน path ของเสียงจากกุญแจแคชเดิม เพื่อให้เสียงเก่ากลับมาใช้ซ้ำได้
+    โดยไม่เปลี่ยนรูปแบบชื่อไฟล์เดิม
+    """
     prepare_func = segment.get("prepare") or (lambda value: value)
     tts_text = prepare_func(segment.get("text", ""))
     cache_payload = json.dumps(
@@ -3787,7 +3835,28 @@ def generate_cached_audio(segment):
     )
     cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:28]
     filename = f"announce_cache_{segment['code']}_{cache_key}.mp3"
-    output_path = AUDIO_DIR / filename
+    return AUDIO_DIR / filename
+
+
+def _audio_cache_exists(segment):
+    path = _audio_cache_path(segment)
+    try:
+        return path.exists() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def generate_cached_audio(segment):
+    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้เสียงเดิมจากแคชเมื่อข้อความ/เสียงตรงกัน
+
+    หมายเหตุ: ข้อความประกาศที่มีชานชาลาจะสร้าง cache คนละไฟล์เมื่อชานชาลาเปลี่ยน
+    เพราะเลขชานชาลาอยู่ในข้อความ TTS อยู่แล้ว จึงไม่เอาเสียงชานชาลาเก่ามาใช้ผิด
+    """
+    output_path = _audio_cache_path(segment)
+    filename = output_path.name
+    cache_key = output_path.stem.rsplit("_", 1)[-1]
+    prepare_func = segment.get("prepare") or (lambda value: value)
+    tts_text = prepare_func(segment.get("text", ""))
 
     if output_path.exists() and output_path.stat().st_size > 0:
         try:
@@ -5072,6 +5141,7 @@ def index():
         current_user=user,
         role_labels=ROLE_LABELS,
         schedule_version=schedule_version,
+        server_time_hhmmss=now_bangkok().strftime("%H:%M:%S"),
     )
 
 
@@ -5260,6 +5330,7 @@ def announce():
 
     audio_urls = []
     audio_labels = []
+    cache_hits = [_audio_cache_exists(segment) for segment in segments]
 
     try:
         filenames = generate_audio_segments(segments)
@@ -5319,6 +5390,9 @@ def announce():
         "text_preview": preview,
         "text_plain": plain,
         "generation_ms": int((time.perf_counter() - generation_started) * 1000),
+        "cache_hits": cache_hits,
+        "used_cached_audio": bool(cache_hits) and all(cache_hits),
+        "audio_cache_days": max(1, int(AUDIO_CACHE_MAX_AGE / 86400)),
     })
 
 if __name__ == "__main__":
