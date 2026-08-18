@@ -25,8 +25,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v10.4 Classic UI + emphasized announcement types + frequent action first + automatic normal platform (odd=2, even=3)
-# Version: v9.7 - multi-train ticket sales and waiting announcements
+# Build: v11.0 - realtime-ready prewarm scheduling (10-minute floor) + v10.5 ticket notice special voice
+# Version: v11.0 - prewarm audio at the rounded-down 10-minute boundary; TTS realtime connector remains separate
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -878,11 +878,31 @@ def get_quick_trains(inbound, outbound, limit=3):
     return upcoming[:limit]
 
 
+def floor_hhmm_to_10_minutes(hhmm):
+    """ปัดเวลาลงเป็นช่วง 10 นาที เช่น 18:17 -> 18:10, 18:03 -> 18:00."""
+    value = (hhmm or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    if not match:
+        return ""
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return ""
+    minute = (minute // 10) * 10
+    return f"{hour:02d}:{minute:02d}"
+
+
+def add_preparation_window(item):
+    """เติมเวลาที่ระบบควรเริ่มเตรียมเสียง โดยใช้ ETA แบบ realtime ถ้ามี และ fallback เป็นตาราง."""
+    reference = (item.get("realtime_eta_hhmm") or item.get("time_hhmm") or "").strip()
+    prewarm_at = floor_hhmm_to_10_minutes(reference)
+    item["prewarm_at_hhmm"] = prewarm_at
+    item["prewarm_reference"] = "realtime_eta" if item.get("realtime_eta_hhmm") else "schedule"
+    return item
+
+
 def get_quick_train_snapshot(inbound, outbound, limit=3):
-    """
-    คืนขบวนถัดไปตามเวลาจริง พร้อมจำนวนนาทีที่เหลือก่อนถึงเวลา
-    หากขบวนวันนี้หมดแล้ว จะต่อด้วยขบวนของวันถัดไปตาม service pattern จริง
-    """
+    """คืนขบวนถัดไป พร้อมเวลาที่ควรเริ่มเตรียมเสียงแบบปัดลงทุก 10 นาที."""
     now = now_bangkok()
     current_minutes = now.hour * 60 + now.minute
 
@@ -903,6 +923,7 @@ def get_quick_train_snapshot(inbound, outbound, limit=3):
         item["minutes_until"] = mins - current_minutes
         item["day_offset"] = 0
         item["service_date"] = now.date().isoformat()
+        add_preparation_window(item)
         result.append(item)
         if len(result) >= limit:
             return result
@@ -916,6 +937,7 @@ def get_quick_train_snapshot(inbound, outbound, limit=3):
         item["minutes_until"] = (24 * 60 - current_minutes) + mins
         item["day_offset"] = 1
         item["service_date"] = tomorrow.isoformat()
+        add_preparation_window(item)
         result.append(item)
         if len(result) >= limit:
             break
@@ -1690,7 +1712,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🔄 อัปเดตอัตโนมัติ · ไม่ต้องกดรีเฟรช · เตรียมเสียงเมื่อเหลือ 20 นาที</div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🔄 อัปเดตอัตโนมัติ · ไม่ต้องกดรีเฟรช · เตรียมเสียงตามเวลาปัดลงหลัก 10 นาที</div>
         </div>
     </section>
 
@@ -2019,7 +2041,7 @@ HTML_PAGE = r"""
     let nextTrainPrewarmRunId = 0;
     let nextTrainRefreshTimer = null;
     const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
-    const NEXT_TRAIN_PREWARM_MINUTES = 20;
+    const NEXT_TRAIN_PREWARM_BUCKET_MINUTES = 10;
     const NEXT_TRAIN_RETRY_MS = 60 * 1000;
     const prewarmedNextTrainKeys = new Set();
     const livePrewarmStates = new Map();
@@ -2557,6 +2579,32 @@ HTML_PAGE = r"""
         updateNextTrainWaitingStatus();
     }
 
+    function hhmmToMinutes(hhmm) {
+        const match = String(hhmm || "").match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) return NaN;
+        const hour = Number(match[1]);
+        const minute = Number(match[2]);
+        if (hour > 23 || minute > 59) return NaN;
+        return hour * 60 + minute;
+    }
+
+    function prewarmInfoForTrain(item) {
+        const minutesUntil = Number(item?.minutes_until);
+        const reference = item?.realtime_eta_hhmm || item?.time_hhmm || "";
+        const referenceMinutes = hhmmToMinutes(reference);
+        if (!Number.isFinite(minutesUntil) || !Number.isFinite(referenceMinutes)) {
+            return { minutesUntilPrewarm: NaN, prewarmAt: item?.prewarm_at_hhmm || "", reference };
+        }
+
+        const prewarmAtMinutes = Math.floor(referenceMinutes / NEXT_TRAIN_PREWARM_BUCKET_MINUTES) * NEXT_TRAIN_PREWARM_BUCKET_MINUTES;
+        const leadMinutes = referenceMinutes - prewarmAtMinutes;
+        return {
+            minutesUntilPrewarm: minutesUntil - leadMinutes,
+            prewarmAt: item?.prewarm_at_hhmm || `${String(Math.floor(prewarmAtMinutes / 60)).padStart(2, "0")}:${String(prewarmAtMinutes % 60).padStart(2, "0")}`,
+            reference
+        };
+    }
+
     function liveStatusForTrain(item) {
         const label = item?.label || "";
         const mins = Number(item?.minutes_until);
@@ -2578,12 +2626,26 @@ HTML_PAGE = r"""
         if (!Number.isFinite(mins)) {
             return { cls: "waiting", cardCls: "", text: "🔄 กำลังติดตามเวลาอัตโนมัติ" };
         }
-        if (mins <= NEXT_TRAIN_PREWARM_MINUTES) {
-            return { cls: "warming", cardCls: "is-warming", text: "⚡ ใกล้ถึงเวลา · รอเริ่มเตรียมเสียงอัตโนมัติ" };
-        }
-        const waitToWarm = Math.max(1, Math.ceil(mins - NEXT_TRAIN_PREWARM_MINUTES));
+        const prewarm = prewarmInfoForTrain(item);
+        const prewarmAt = prewarm.prewarmAt || "";
+        const prewarmMins = prewarm.minutesUntilPrewarm;
         const dayText = tomorrow ? "พรุ่งนี้ · " : "";
-        return { cls: "waiting", cardCls: "", text: `🕒 ${dayText}อีก ${Math.max(1, Math.ceil(mins))} นาที · เตรียมเสียงในอีก ${waitToWarm} นาที` };
+
+        if (Number.isFinite(prewarmMins) && prewarmMins <= 0) {
+            return {
+                cls: "warming",
+                cardCls: "is-warming",
+                text: prewarmAt ? `⚡ ถึงรอบเตรียมเสียง · เริ่มตั้งแต่ ${prewarmAt} น.` : "⚡ ถึงรอบเตรียมเสียงอัตโนมัติ"
+            };
+        }
+
+        return {
+            cls: "waiting",
+            cardCls: "",
+            text: prewarmAt
+                ? `🕒 ${dayText}อีก ${Math.max(1, Math.ceil(mins))} นาที · เตรียมเสียง ${prewarmAt} น.`
+                : `🕒 ${dayText}อีก ${Math.max(1, Math.ceil(mins))} นาที · เตรียมเสียงอัตโนมัติ`
+        };
     }
 
     function renderQuickTrainCards(items) {
@@ -2623,7 +2685,8 @@ HTML_PAGE = r"""
             const signature = currentPrewarmSignature(label);
             if (state && state.signature === signature && state.state === "ready") ready += 1;
             else if (state && state.signature === signature && state.state === "warming") warming += 1;
-            if (Number(item.minutes_until) <= NEXT_TRAIN_PREWARM_MINUTES) near += 1;
+            const prewarm = prewarmInfoForTrain(item);
+            if (Number.isFinite(prewarm.minutesUntilPrewarm) && prewarm.minutesUntilPrewarm <= 0) near += 1;
         });
 
         if (warming) {
@@ -2631,9 +2694,9 @@ HTML_PAGE = r"""
         } else if (ready) {
             status.textContent = `✅ มีเสียงพร้อม ${ready} ขบวน · ระบบติดตามและเลื่อนขบวนถัดไปให้อัตโนมัติ ไม่ต้องรีเฟรช`;
         } else if (near) {
-            status.textContent = "⚡ มีขบวนเข้าเขต 20 นาที · ระบบกำลังเริ่มเตรียมเสียงอัตโนมัติ";
+            status.textContent = "⚡ ถึงรอบเตรียมเสียง · ระบบเริ่มเตรียมอัตโนมัติตามเวลาที่ปัดลงหลัก 10 นาที";
         } else {
-            status.textContent = "🔄 อัปเดตสดทุก 30 วินาที · เตรียมเสียงอัตโนมัติเมื่อแต่ละขบวนเหลือ 20 นาที";
+            status.textContent = "🔄 อัปเดตสดทุก 30 วินาที · เตรียมเสียงตามเวลาที่ปัดลงทุก 10 นาที";
         }
     }
 
@@ -2678,8 +2741,9 @@ HTML_PAGE = r"""
         const data = trainData[label];
         if (!data) return;
 
-        const minutesUntil = Number(item.minutes_until);
-        if (Number.isFinite(minutesUntil) && minutesUntil > NEXT_TRAIN_PREWARM_MINUTES) return;
+        const prewarm = prewarmInfoForTrain(item);
+        const minutesUntilPrewarm = Number(prewarm.minutesUntilPrewarm);
+        if (!Number.isFinite(minutesUntilPrewarm) || minutesUntilPrewarm > 0) return;
 
         const signature = currentPrewarmSignature(label);
         const existing = livePrewarmStates.get(label);
@@ -2764,8 +2828,8 @@ HTML_PAGE = r"""
         // ขบวนใดเข้าเขต 20 นาทีจะถูกเตรียมให้เอง โดยทำทีละขบวนเพื่อลดภาระ Render/TTS
         for (const item of quickTrains) {
             if (runId !== nextTrainPrewarmRunId || isBusy || !navigator.onLine) return;
-            const mins = Number(item.minutes_until);
-            if (!Number.isFinite(mins) || mins > NEXT_TRAIN_PREWARM_MINUTES) continue;
+            const prewarm = prewarmInfoForTrain(item);
+            if (!Number.isFinite(prewarm.minutesUntilPrewarm) || prewarm.minutesUntilPrewarm > 0) continue;
             await prewarmOneTrain(item, runId);
             await new Promise(resolve => setTimeout(resolve, 260));
         }
@@ -4533,7 +4597,7 @@ def api_health():
 @app.route("/api/next-trains", methods=["GET"])
 @roles_required("announcer", "admin")
 def api_next_trains():
-    """อัปเดตขบวนถัดไปตามเวลาจริง โดยไม่ต้อง Refresh หน้าเว็บ"""
+    """อัปเดตขบวนถัดไปและเวลารอบเตรียมเสียงโดยไม่ต้อง Refresh หน้าเว็บ"""
     try:
         inbound, outbound, train_data, schedule_version = get_active_train_lists()
         quick_trains = get_quick_train_snapshot(inbound, outbound, limit=3)
@@ -4547,7 +4611,9 @@ def api_next_trains():
             trains=quick_trains,
             train_data=train_data,
             schedule_version=schedule_version,
-            prewarm_minutes=20,
+            prewarm_minutes=0,
+            prewarm_rule="ปัดเวลาลงทุก 10 นาที",
+            prewarm_bucket_minutes=10,
         )
     except Exception as exc:
         return jsonify(status="error", message=str(exc)), 500
