@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v11.2 - TTS TrainView probe for train 367 + 10-minute floor prewarm + v10.5 ticket notice special voice
-# Version: v11.2 - binds train 367 to the supplied TTS tracking URL; verifies page access before live parsing
+# Build: v11.6 - delay-safe real-time ETA + overdue protection + auto reorder + 10-minute prewarm
+# Version: v11.6 - keeps delayed trains visible until TTS confirms departure; stale data never decides that a train has passed
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -122,6 +122,7 @@ SRT_TTS_REALTIME_URL = os.environ.get("SRT_TTS_REALTIME_URL", "").strip()
 SRT_TTS_STATION_KEY = os.environ.get("SRT_TTS_STATION_KEY", "Khlong Bang Phra").strip()
 SRT_TTS_REALTIME_TIMEOUT = max(3, min(20, int(os.environ.get("SRT_TTS_REALTIME_TIMEOUT", "8"))))
 SRT_TTS_REALTIME_CACHE_SECONDS = max(5, min(60, int(os.environ.get("SRT_TTS_REALTIME_CACHE_SECONDS", "20"))))
+SRT_TTS_REALTIME_STALE_SECONDS = max(30, min(300, int(os.environ.get("SRT_TTS_REALTIME_STALE_SECONDS", "120"))))
 SRT_TTS_TRACKING_URLS = {
     "367": os.environ.get(
         "SRT_TTS_TRACKING_URL_367",
@@ -924,7 +925,15 @@ def add_preparation_window(item):
 
 
 # Cache สั้น ๆ เพื่อลดการเรียกแหล่งข้อมูลซ้ำ
-_REALTIME_CACHE = {"at": 0.0, "data": {}, "status": "disabled", "detail": "ยังไม่ได้ตั้งค่าแหล่งข้อมูล TTS", "updated_at": ""}
+_REALTIME_CACHE = {
+    "at": 0.0,
+    "data": {},
+    "status": "disabled",
+    "detail": "ยังไม่ได้ตั้งค่าแหล่งข้อมูล TTS",
+    "updated_at": "",
+    "last_success_at": "",
+    "fetched_at_epoch": 0.0,
+}
 
 def _hhmm_from_any(value):
     if value is None:
@@ -946,6 +955,50 @@ def _minutes_from_any(value):
         return int(round(float(m.group(0))))
     except Exception:
         return None
+
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on", "departed", "passed", "ออกแล้ว", "ผ่านแล้ว"}
+
+
+def _add_minutes_to_hhmm(hhmm, minutes):
+    base = _hhmm_from_any(hhmm)
+    if not base or minutes is None:
+        return ""
+    try:
+        h, m = [int(x) for x in base.split(":", 1)]
+        total = (h * 60 + m + int(minutes)) % (24 * 60)
+        return f"{total // 60:02d}:{total % 60:02d}"
+    except Exception:
+        return ""
+
+
+def _realtime_snapshot_view(snapshot):
+    snap = dict(snapshot or {})
+    fetched = float(snap.get("fetched_at_epoch") or 0.0)
+    age = max(0, int(time.time() - fetched)) if fetched else None
+    snap["age_seconds"] = age
+    has_data = bool(snap.get("data"))
+    snap["fresh"] = bool(has_data and age is not None and age <= SRT_TTS_REALTIME_STALE_SECONDS)
+    if has_data and not snap["fresh"] and snap.get("status") in {"ok", "stale"}:
+        snap["status"] = "stale"
+        snap["detail"] = f"ข้อมูล TTS ล่าสุด {age} วินาทีที่แล้ว · ไม่ใช้ข้อมูลเก่าตัดสินว่ารถผ่านแล้ว"
+    return snap
+
+
+def _status_confirms_departed(text):
+    value = str(text or "").strip().lower()
+    if not value:
+        return False
+    keywords = (
+        "ออกจากสถานี", "ออกจาก", "ผ่านสถานี", "ผ่านแล้ว", "พ้นสถานี",
+        "departed", "passed", "left station", "left", "ผ่านจุด"
+    )
+    return any(key in value for key in keywords)
 
 
 def _normalize_realtime_record(raw):
@@ -980,6 +1033,10 @@ def _normalize_realtime_record(raw):
         "realtime_status": str(pick("status_th", "status", "state", "train_status", "trainStatus") or "").strip(),
         "realtime_station": str(pick("station_th", "station", "current_station", "currentStation", "last_station", "lastStation") or "").strip(),
         "realtime_updated_at": str(pick("updated_at", "updatedAt", "last_update", "lastUpdate", "timestamp") or "").strip(),
+        "realtime_confirmed_departed": _as_bool(pick(
+            "departed", "is_departed", "isDeparted", "passed", "passed_station", "passedStation",
+            "departed_from_station", "departedFromStation"
+        )),
     }
 
 
@@ -1081,38 +1138,44 @@ def fetch_srt_realtime_records(force=False):
     """
     Adapter สำหรับแหล่งข้อมูล TTS ที่กำหนดโดยผู้ดูแลระบบผ่าน Environment.
     รองรับ JSON หลายรูปแบบและ HTML แบบ server-rendered เป็น fallback.
+
+    หลักสำคัญของ v11.6:
+    - ข้อมูลสดไม่เกิน SRT_TTS_REALTIME_STALE_SECONDS จึงใช้ตัดสิน ETA/การเรียงขบวนได้
+    - ถ้าข้อมูลเก่าเกินกำหนด จะยังเก็บไว้แสดง แต่ห้ามใช้ตัดสินว่ารถผ่านแล้ว
+    - ถ้าแหล่งข้อมูลล่ม แต่มีข้อมูลสดครั้งก่อน ระบบจะคง snapshot เดิมไว้เป็น stale อย่างปลอดภัย
     """
     global _REALTIME_CACHE
     now = time.monotonic()
     if not force and now - float(_REALTIME_CACHE.get("at", 0)) < SRT_TTS_REALTIME_CACHE_SECONDS:
-        return dict(_REALTIME_CACHE)
+        return _realtime_snapshot_view(_REALTIME_CACHE)
 
     if not SRT_TTS_REALTIME_ENABLED or not SRT_TTS_REALTIME_URL:
         _REALTIME_CACHE = {
             "at": now, "data": {}, "status": "disabled",
             "detail": "ยังไม่ได้ตั้งค่า SRT_TTS_REALTIME_URL",
             "updated_at": now_iso(),
+            "last_success_at": "",
+            "fetched_at_epoch": 0.0,
         }
-        return dict(_REALTIME_CACHE)
+        return _realtime_snapshot_view(_REALTIME_CACHE)
 
     try:
         url = SRT_TTS_REALTIME_URL.replace("{station}", url_quote(SRT_TTS_STATION_KEY))
         url = url.replace("{station_code}", url_quote(SRT_TTS_STATION_KEY))
-        # รองรับการเลือกหน้า TrainView รายขบวนโดยตรงเมื่อผู้ดูแลตั้ง {train_no}
         if "{train_no}" in url:
-            # ใช้ URL ที่ระบุใน SRT_TTS_TRACKING_URLS เป็นตัวจริงสำหรับขบวน 367
-            # โดยไม่สร้าง qParam ขึ้นเอง
             train_url = SRT_TTS_TRACKING_URLS.get("367", "")
             url = url.replace("{train_no}", "367")
             if train_url:
                 url = train_url
+
         request = UrlRequest(
             url,
-            headers={"User-Agent": "KhlongBangPhra-Station-Announcement/11.1"},
+            headers={"User-Agent": "KhlongBangPhra-Station-Announcement/11.6"},
         )
         with urlopen(request, timeout=SRT_TTS_REALTIME_TIMEOUT) as response:
             content_type = (response.headers.get("content-type") or "").lower()
             body = response.read().decode("utf-8", errors="replace")
+
         if "json" in content_type:
             records = _extract_realtime_records(json.loads(body))
         else:
@@ -1120,20 +1183,35 @@ def fetch_srt_realtime_records(force=False):
                 records = _extract_realtime_records(json.loads(body))
             except Exception:
                 records = _extract_realtime_from_html(body)
+
         data = {item["train_no"]: item for item in records}
+        success_at = now_iso()
         _REALTIME_CACHE = {
-            "at": now, "data": data, "status": "ok",
+            "at": now,
+            "data": data,
+            "status": "ok",
             "detail": f"รับข้อมูล {len(data)} ขบวน",
-            "updated_at": now_iso(),
+            "updated_at": success_at,
+            "last_success_at": success_at,
+            "fetched_at_epoch": time.time(),
         }
-        return dict(_REALTIME_CACHE)
+        return _realtime_snapshot_view(_REALTIME_CACHE)
+
     except Exception as exc:
+        previous_data = dict(_REALTIME_CACHE.get("data") or {})
         _REALTIME_CACHE = {
-            "at": now, "data": {}, "status": "error",
-            "detail": str(exc)[:220],
-            "updated_at": now_iso(),
+            "at": now,
+            "data": previous_data,
+            "status": "stale" if previous_data else "error",
+            "detail": (
+                f"TTS ขัดข้องชั่วคราว · ใช้ข้อมูลครั้งล่าสุดอย่างระมัดระวัง · {str(exc)[:160]}"
+                if previous_data else str(exc)[:220]
+            ),
+            "updated_at": _REALTIME_CACHE.get("updated_at", "") if previous_data else now_iso(),
+            "last_success_at": _REALTIME_CACHE.get("last_success_at", "") if previous_data else "",
+            "fetched_at_epoch": float(_REALTIME_CACHE.get("fetched_at_epoch") or 0.0) if previous_data else 0.0,
         }
-        return dict(_REALTIME_CACHE)
+        return _realtime_snapshot_view(_REALTIME_CACHE)
 
 
 @app.get("/api/tts-tracking-probe/<train_no>")
@@ -1145,24 +1223,139 @@ def api_tts_tracking_probe(train_no):
 def merge_realtime_into_trains(trains, force=False):
     snapshot = fetch_srt_realtime_records(force=force)
     records = snapshot.get("data") or {}
+    fresh = bool(snapshot.get("fresh"))
     merged = []
+
     for item in trains:
         row = dict(item)
+        row["realtime_live_fresh"] = False
+        row["realtime_stale"] = False
+        row["realtime_age_seconds"] = snapshot.get("age_seconds")
+        row["realtime_last_success_at"] = snapshot.get("last_success_at", "")
+
         live = records.get(re.sub(r"\D+", "", str(item.get("num", ""))))
         if live:
-            if live.get("realtime_eta_hhmm"):
-                row["realtime_eta_hhmm"] = live["realtime_eta_hhmm"]
-            if live.get("delay_minutes") is not None:
-                row["delay_minutes"] = live["delay_minutes"]
-            if live.get("realtime_status"):
-                row["realtime_status"] = live["realtime_status"]
-            if live.get("realtime_station"):
-                row["realtime_station"] = live["realtime_station"]
-            if live.get("realtime_updated_at"):
-                row["realtime_updated_at"] = live["realtime_updated_at"]
+            row["realtime_record_found"] = True
+            if fresh:
+                row["realtime_live_fresh"] = True
+                if live.get("realtime_eta_hhmm"):
+                    row["realtime_eta_hhmm"] = live["realtime_eta_hhmm"]
+                elif live.get("delay_minutes") is not None:
+                    derived_eta = _add_minutes_to_hhmm(row.get("time_hhmm"), live.get("delay_minutes"))
+                    if derived_eta:
+                        row["realtime_eta_hhmm"] = derived_eta
+                        row["realtime_eta_derived_from_delay"] = True
+
+                if live.get("delay_minutes") is not None:
+                    row["delay_minutes"] = live["delay_minutes"]
+                if live.get("realtime_status"):
+                    row["realtime_status"] = live["realtime_status"]
+                if live.get("realtime_station"):
+                    row["realtime_station"] = live["realtime_station"]
+                if live.get("realtime_updated_at"):
+                    row["realtime_updated_at"] = live["realtime_updated_at"]
+                row["realtime_confirmed_departed"] = bool(
+                    live.get("realtime_confirmed_departed")
+                    or _status_confirms_departed(live.get("realtime_status"))
+                )
+            else:
+                row["realtime_stale"] = True
+                row["realtime_stale_eta_hhmm"] = live.get("realtime_eta_hhmm", "")
+                row["realtime_stale_delay_minutes"] = live.get("delay_minutes")
+                row["realtime_stale_status"] = live.get("realtime_status", "")
+                row["realtime_confirmed_departed"] = False
+
         add_preparation_window(row)
         merged.append(row)
+
     return merged, snapshot
+
+
+def _train_reference_minutes(item):
+    value = item.get("realtime_eta_hhmm") if item.get("realtime_live_fresh") else None
+    value = value or item.get("time_hhmm") or _label_time(item.get("label", ""))
+    try:
+        h, m = value.split(":", 1)
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 24 * 60
+
+
+def get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=False):
+    """
+    เลือกขบวนถัดไปโดยให้ ETA สดเป็นตัวนำเมื่อข้อมูลยังสด.
+    ถ้าเวลาในตารางผ่านแล้ว แต่ TTS ยังไม่ยืนยันว่าขบวนออก/ผ่านสถานี
+    จะเก็บ 'ขบวนที่ค้างล่าสุด' ไว้ 1 ขบวนเพื่อป้องกันรถล่าช้าหายจากหน้าจอ.
+    """
+    now = now_bangkok()
+    current_minutes = now.hour * 60 + now.minute
+
+    today = [dict(t) for t in inbound + outbound]
+    tomorrow = now.date() + timedelta(days=1)
+    next_inbound, next_outbound, _, _ = get_active_train_lists(tomorrow)
+    tomorrow_items = [dict(t) for t in next_inbound + next_outbound]
+
+    today_merged, snapshot = merge_realtime_into_trains(today, force=force)
+    tomorrow_merged, _ = merge_realtime_into_trains(tomorrow_items, force=False)
+
+    candidates = []
+    overdue_candidates = []
+
+    def decorate(item, day_offset):
+        row = dict(item)
+        row["day_offset"] = day_offset
+        row["service_date"] = (now.date() if day_offset == 0 else tomorrow).isoformat()
+
+        ref = _train_reference_minutes(row)
+        schedule_ref = item.get("time_hhmm") or _label_time(item.get("label", ""))
+
+        if day_offset == 0:
+            row["minutes_until"] = ref - current_minutes
+            row["effective_time_hhmm"] = (
+                row.get("realtime_eta_hhmm") if row.get("realtime_live_fresh") else row.get("time_hhmm")
+            ) or schedule_ref
+
+            if row.get("realtime_confirmed_departed") and row.get("realtime_live_fresh"):
+                row["keep_visible_when_overdue"] = False
+                row["confirmed_departed"] = True
+                return None
+
+            overdue = row["minutes_until"] <= 0
+            row["overdue_unconfirmed"] = bool(overdue)
+            row["keep_visible_when_overdue"] = bool(overdue)
+
+            if overdue:
+                overdue_candidates.append(row)
+            else:
+                candidates.append(row)
+        else:
+            row["minutes_until"] = (24 * 60 - current_minutes) + ref
+            row["effective_time_hhmm"] = row.get("realtime_eta_hhmm") if row.get("realtime_live_fresh") else schedule_ref
+            row["keep_visible_when_overdue"] = False
+            candidates.append(row)
+
+        add_preparation_window(row)
+        return row
+
+    for item in today_merged:
+        decorate(item, 0)
+    for item in tomorrow_merged:
+        decorate(item, 1)
+
+    if overdue_candidates:
+        overdue_candidates.sort(key=lambda x: _train_reference_minutes(x), reverse=True)
+        candidates.insert(0, overdue_candidates[0])
+
+    def sort_key(item):
+        mins = _train_reference_minutes(item)
+        if int(item.get("day_offset", 0)) > 0:
+            return 1440 + mins
+        if item.get("overdue_unconfirmed"):
+            return -1
+        return mins
+
+    candidates.sort(key=sort_key)
+    return candidates[:limit], snapshot
 
 
 def get_quick_train_snapshot(inbound, outbound, limit=3):
@@ -1868,6 +2061,12 @@ HTML_PAGE = r"""
         .quick-live-status.warming { background:#fff3cd; color:#785b00; }
         .quick-live-status.waiting { background:#f5efe6; color:#6f625a; }
         .quick-live-status.error { background:#fdebea; color:#a31d16; }
+        .quick-live-status.realtime-delay { background:#fff1df; color:#9a4d00; }
+        .quick-live-status.realtime-on-time { background:#e9f8ef; color:#116735; }
+        .quick-live-status.realtime-live { background:#eef4ff; color:#1e5aa8; }
+        .quick-live-status.realtime-stale { background:#fff8d9; color:#7d6500; }
+        .quick-live-status.realtime-overdue { background:#fdebea; color:#a31d16; }
+        .quick-train.is-overdue { border-color:#c62828; box-shadow:inset 0 0 0 1px rgba(198,40,40,.12); }
         .quick-time { font-weight:900; color:var(--maroon); font-size:17px; }
         .quick-route { margin-top:3px; font-weight:800; }
         .train-search-results { display:grid; gap:6px; margin-top:7px; max-height:240px; overflow:auto; }
@@ -2894,7 +3093,8 @@ HTML_PAGE = r"""
     }
 
     function minutesUntilTrain(item) {
-        const reference = item?.realtime_eta_hhmm || item?.time_hhmm || "";
+        if (item?.confirmed_departed) return -999999;
+        const reference = (item?.realtime_live_fresh ? item?.realtime_eta_hhmm : null) || item?.time_hhmm || "";
         const referenceMinutes = hhmmToMinutes(reference);
         if (!Number.isFinite(referenceMinutes)) return Number(item?.minutes_until);
 
@@ -2926,7 +3126,9 @@ HTML_PAGE = r"""
         const before = quickTrains.length;
         const visible = quickTrains.filter(item => {
             const mins = minutesUntilTrain(item);
-            return !Number.isFinite(mins) || mins > 0;
+            return !item?.confirmed_departed && (
+                !Number.isFinite(mins) || mins > 0 || item?.keep_visible_when_overdue
+            );
         });
 
         if (visible.length !== before) {
@@ -2974,11 +3176,23 @@ HTML_PAGE = r"""
     function realtimeStatusForTrain(item) {
         const delay = Number(item?.delay_minutes);
         const eta = item?.realtime_eta_hhmm || "";
+        const stale = !!item?.realtime_stale;
+        const age = Number(item?.realtime_age_seconds);
+
+        if (stale) {
+            const ageText = Number.isFinite(age) ? ` · ข้อมูล ${Math.max(1, Math.round(age))} วินาทีที่แล้ว` : "";
+            return { cls: "realtime-stale", text: `🟡 TTS ข้อมูลเก่า${ageText} · ยังไม่ใช้ตัดสินว่ารถผ่านแล้ว` };
+        }
+
         if (Number.isFinite(delay)) {
             if (delay > 0) return { cls: "realtime-delay", text: `🟠 ล่าช้า ${delay} นาที${eta ? ` · คาดถึง ${eta} น.` : ""}` };
             if (delay === 0) return { cls: "realtime-on-time", text: `🟢 ตรงเวลา${eta ? ` · คาดถึง ${eta} น.` : ""}` };
         }
         if (eta) return { cls: "realtime-live", text: `🔵 TTS · คาดถึง ${eta} น.` };
+        if (item?.overdue_unconfirmed) {
+            const mins = Math.max(1, Math.floor(Math.abs(minutesUntilTrain(item))));
+            return { cls: "realtime-overdue", text: `🔴 เกินกำหนด ${mins} นาที · ยังไม่ได้รับการยืนยันจาก TTS` };
+        }
         return null;
     }
 
@@ -3002,6 +3216,13 @@ HTML_PAGE = r"""
         }
         if (!Number.isFinite(mins)) {
             return { cls: "waiting", cardCls: "", text: "🔄 กำลังติดตามเวลาอัตโนมัติ" };
+        }
+        if (item?.overdue_unconfirmed && !item?.realtime_live_fresh) {
+            return {
+                cls: "error",
+                cardCls: "is-overdue",
+                text: "🔴 รถเลยกำหนด · ระบบจะไม่เอาออกจนกว่าจะยืนยันจาก TTS"
+            };
         }
         const prewarm = prewarmInfoForTrain(item);
         const prewarmAt = prewarm.prewarmAt || "";
@@ -3031,7 +3252,9 @@ HTML_PAGE = r"""
 
         const visibleItems = (Array.isArray(items) ? items : []).filter(item => {
             const mins = minutesUntilTrain(item);
-            return !Number.isFinite(mins) || mins > 0;
+            return !item?.confirmed_departed && (
+                !Number.isFinite(mins) || mins > 0 || item?.keep_visible_when_overdue
+            );
         });
 
         if (!visibleItems.length) {
@@ -3078,7 +3301,11 @@ HTML_PAGE = r"""
         });
 
         const rt = realtimeStatus.enabled
-            ? ` · TTS ${realtimeStatus.status === "ok" ? "เชื่อมต่อแล้ว" : "รอข้อมูล"}`
+            ? (
+                realtimeStatus.fresh
+                    ? " · TTS สด"
+                    : (realtimeStatus.status === "stale" ? " · TTS ข้อมูลเก่า" : " · TTS รอข้อมูล")
+              )
             : " · TTS ยังไม่เชื่อมต่อ";
         if (warming) {
             status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · กำลังเตรียมเสียง ${warming} ขบวน${rt}`;
@@ -3109,8 +3336,12 @@ HTML_PAGE = r"""
             realtimeStatus = result.realtime || realtimeStatus;
             const rtBox = byId("realtimeSourceStatus");
             if (rtBox) {
-                if (realtimeStatus.enabled && realtimeStatus.status === "ok") {
-                    rtBox.textContent = `🟢 TTS Real-time เชื่อมต่อแล้ว · ${realtimeStatus.detail || "รับข้อมูลแล้ว"} · ${realtimeStatus.updated_at || ""}`;
+                if (realtimeStatus.enabled && realtimeStatus.fresh) {
+                    const age = Number(realtimeStatus.age_seconds);
+                    const ageText = Number.isFinite(age) ? ` · อัปเดต ${Math.max(0, Math.round(age))} วินาทีที่แล้ว` : "";
+                    rtBox.textContent = `🟢 TTS Real-time สด · ${realtimeStatus.detail || "รับข้อมูลแล้ว"}${ageText}`;
+                } else if (realtimeStatus.enabled && realtimeStatus.status === "stale") {
+                    rtBox.textContent = `🟡 TTS ข้อมูลเก่า · ระบบยังแสดงข้อมูล แต่ไม่ใช้ข้อมูลเก่าตัดสินว่ารถผ่านแล้ว · ${realtimeStatus.detail || ""}`;
                 } else if (realtimeStatus.enabled) {
                     rtBox.textContent = `🟠 TTS Real-time รอข้อมูล · ${realtimeStatus.detail || ""}`;
                 } else {
@@ -3148,6 +3379,7 @@ HTML_PAGE = r"""
 
         const prewarm = prewarmInfoForTrain(item);
         const minutesUntilPrewarm = Number(prewarm.minutesUntilPrewarm);
+        if (item?.overdue_unconfirmed && !item?.realtime_live_fresh) return;
         if (!Number.isFinite(minutesUntilPrewarm) || minutesUntilPrewarm > 0) return;
 
         const signature = currentPrewarmSignature(label);
@@ -4644,6 +4876,26 @@ HISTORY_DETAIL_HTML = r"""
 HEALTH_HTML = r"""
 <!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ตรวจสุขภาพระบบ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🩺 ตรวจสุขภาพระบบ</h1><p>ตรวจ Backend, TTS, ไฟล์เสียง, พื้นที่จัดเก็บ, เวลาเครื่อง และอุปกรณ์เสียง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}{% if current_user.role in ['admin','auditor'] %}<a href="{{ url_for('history_page') }}">🕘 ประวัติ</a>{% endif %}<a class="active" href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ผลตรวจอัตโนมัติ</h2><div class="body"><div id="healthList" class="health-list"><div class="health-item"><div class="health-icon">⏳</div><div><b>กำลังตรวจสอบ...</b></div></div></div><div class="actions"><button class="btn" onclick="runHealth()">ตรวจใหม่</button><button class="btn gold" onclick="testSpeaker()">▶ ทดลองลำโพงด้วยเสียงเตือน</button></div><p class="muted">เบราว์เซอร์ไม่สามารถรับรองว่าลำโพงภายนอกเปิดอยู่จริงได้ จึงมีปุ่มทดลองเสียงสำหรับยืนยันด้วยการฟัง</p></div></div></main><script>
 function esc(v){const d=document.createElement('div');d.textContent=v??'';return d.innerHTML}function item(label,ok,detail){return `<div class="health-item"><div class="health-icon" style="background:${ok?'#e8f6ed':'#fdebea'}">${ok?'✓':'!'}</div><div><b>${esc(label)}</b><div class="muted">${esc(detail)}</div></div></div>`}async function runHealth(){const list=document.getElementById('healthList');list.innerHTML=item('กำลังตรวจสอบ',true,'กรุณารอสักครู่');try{const started=Date.now();const r=await fetch('/api/health',{cache:'no-store'});const data=await r.json();let html=data.checks.map(c=>item(c.label,c.ok,c.detail)).join('');const delta=Math.abs(Date.now()-data.server_epoch_ms);html+=item('เวลาเครื่อง',delta<120000,`เวลาต่างจาก Backend ${Math.round(delta/1000)} วินาที`);let audioOk=!!(window.Audio&&document.createElement('audio').canPlayType('audio/mpeg'));let detail=audioOk?'เบราว์เซอร์รองรับ MP3 และระบบเสียง':'เบราว์เซอร์ไม่รองรับการเล่น MP3';try{if(navigator.mediaDevices?.enumerateDevices){const devices=await navigator.mediaDevices.enumerateDevices();const outputs=devices.filter(d=>d.kind==='audiooutput');if(outputs.length)detail+=` · พบช่องเสียงออก ${outputs.length} รายการ`;}}catch(e){}html+=item('ลำโพง / อุปกรณ์เสียง',audioOk,detail);list.innerHTML=html}catch(e){list.innerHTML=item('Backend',false,e.message)}}async function testSpeaker(){try{const a=new Audio('/audio/chime.mp3');await a.play()}catch(e){alert('เล่นเสียงไม่ได้: '+e.message)}}runHealth();
+</script>
+<script>
+(function(){
+  function kbpClock(){
+    var el=document.getElementById("stationLiveClock");
+    if(!el) return;
+    var span=el.querySelector(".clock-seconds");
+    if(!span) return;
+    try{
+      var p=new Intl.DateTimeFormat("th-TH",{timeZone:"Asia/Bangkok",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(new Date());
+      var g=function(k){var x=p.find(function(v){return v.type===k;});return x?x.value:"00";};
+      span.textContent=g("hour")+":"+g("minute")+":"+g("second");
+    }catch(e){
+      var d=new Date();
+      span.textContent=String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0");
+    }
+  }
+  kbpClock();
+  setInterval(kbpClock,1000);
+})();
 </script></body></html>
 """
 
@@ -5055,6 +5307,10 @@ def api_realtime_status():
             source_status=snapshot.get("status"),
             detail=snapshot.get("detail"),
             updated_at=snapshot.get("updated_at"),
+            last_success_at=snapshot.get("last_success_at"),
+            age_seconds=snapshot.get("age_seconds"),
+            fresh=bool(snapshot.get("fresh")),
+            stale_after_seconds=SRT_TTS_REALTIME_STALE_SECONDS,
             enabled=SRT_TTS_REALTIME_ENABLED and bool(SRT_TTS_REALTIME_URL),
             station=SRT_TTS_STATION_KEY,
             trains=list((snapshot.get("data") or {}).values()),
@@ -5069,8 +5325,9 @@ def api_next_trains():
     """อัปเดตขบวนถัดไปและเวลารอบเตรียมเสียงโดยไม่ต้อง Refresh หน้าเว็บ"""
     try:
         inbound, outbound, train_data, schedule_version = get_active_train_lists()
-        quick_trains = get_quick_train_snapshot(inbound, outbound, limit=3)
-        quick_trains, realtime_snapshot = merge_realtime_into_trains(quick_trains, force=True)
+        quick_trains, realtime_snapshot = get_realtime_aware_quick_train_snapshot(
+            inbound, outbound, limit=3, force=True
+        )
         # ขบวนช่วงหลังเที่ยงคืนอาจมาจากตารางวันถัดไป จึงรวมไว้ให้หน้าเว็บเลือกได้ทันที
         for train in quick_trains:
             if train.get("label"):
@@ -5088,6 +5345,10 @@ def api_next_trains():
                 "status": realtime_snapshot.get("status"),
                 "detail": realtime_snapshot.get("detail"),
                 "updated_at": realtime_snapshot.get("updated_at"),
+                "last_success_at": realtime_snapshot.get("last_success_at"),
+                "age_seconds": realtime_snapshot.get("age_seconds"),
+                "fresh": bool(realtime_snapshot.get("fresh")),
+                "stale_after_seconds": SRT_TTS_REALTIME_STALE_SECONDS,
                 "enabled": SRT_TTS_REALTIME_ENABLED and bool(SRT_TTS_REALTIME_URL),
             },
         )
@@ -5123,8 +5384,9 @@ def api_history_event():
 def index():
     inbound, outbound, train_data, schedule_version = get_active_train_lists()
     user = get_current_user()
-    quick_trains = get_quick_train_snapshot(inbound, outbound)
-    quick_trains, _realtime_snapshot = merge_realtime_into_trains(quick_trains, force=True)
+    quick_trains, _realtime_snapshot = get_realtime_aware_quick_train_snapshot(
+        inbound, outbound, limit=3, force=True
+    )
     for train in quick_trains:
         if train.get("label"):
             train_data[train["label"]] = dict(train)
