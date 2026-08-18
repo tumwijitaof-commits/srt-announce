@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.0 - quick queue completion fix + history fallback + SQLite row-safe lookup
-# Version: v12.0 - a successful รถจอด / ออก announcement is the source of truth for hiding a train from the quick queue
+# Build: v12.1 - playback success is independent from quick-queue sync + automatic queue retry
+# Version: v12.1 - successful รถจอด / ออก playback is recorded as success even if queue persistence is temporarily unavailable
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -1388,10 +1388,12 @@ def get_successfully_announced_quick_train_nums(service_date=None):
 
 
 def mark_quick_train_handled_record(train_label, train_num="", time_hhmm="", service_date=None):
-    """บันทึกว่า quick-train รายการนี้ถูกประกาศรถจอด / ออกสำเร็จแล้ว."""
+    """บันทึกว่า quick-train รายการนี้ถูกประกาศรถจอด / ออกสำเร็จแล้ว และยืนยันผลใน transaction เดียวกัน."""
     service_date = service_date or now_bangkok().date().isoformat()
     label = str(train_label or "").strip()
-    if not label and not str(train_num or "").strip():
+    num = str(train_num or "").strip()
+    time_hhmm = str(time_hhmm or "").strip()
+    if not label and not num:
         raise ValueError("ไม่พบข้อมูลขบวนรถสำหรับปิดคิว")
     today = now_bangkok().date().isoformat()
     if service_date != today:
@@ -1410,10 +1412,21 @@ def mark_quick_train_handled_record(train_label, train_num="", time_hhmm="", ser
                 username=excluded.username
             """,
             (
-                service_date, label, str(train_num or "").strip(), str(time_hhmm or "").strip(),
+                service_date, label, num, time_hhmm,
                 now_iso(), user.get("id"), user.get("username", "")
             )
         )
+
+        # ยืนยันจากแถวที่เพิ่งเขียนโดยตรง ไม่อาศัย helper ที่ตั้งใจ swallow error
+        # เพื่อไม่ให้ API ตอบ recorded=false ทั้งที่ INSERT สำเร็จแล้ว
+        verify = conn.execute(
+            "SELECT train_num FROM quick_train_handled WHERE service_date=? AND train_label=?",
+            (service_date, label),
+        ).fetchone()
+        if not verify:
+            raise RuntimeError("บันทึกปิดคิวแล้วแต่ตรวจสอบรายการไม่พบ")
+        if num and str(verify["train_num"] or "").strip() != num:
+            raise RuntimeError("ข้อมูลเลขขบวนหลังบันทึกปิดคิวไม่ตรงกัน")
     return True
 
 
@@ -2678,6 +2691,9 @@ HTML_PAGE = r"""
     const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
     const NEXT_TRAIN_PREWARM_LEAD_MINUTES = 10;
     const NEXT_TRAIN_RETRY_MS = 60 * 1000;
+    // ถ้าเสียงประกาศจบแล้ว แต่การบันทึกปิดคิวสะดุด ให้ลองซ้ำเองโดยไม่ตีตราการเล่นเสียงว่าล้มเหลว
+    const QUICK_TRAIN_CLOSE_RETRY_DELAYS_MS = [3000, 10000, 30000, 60000];
+    const quickTrainCloseRetryTimers = new Map();
     const prewarmedNextTrainKeys = new Set();
     const livePrewarmStates = new Map();
 
@@ -4021,52 +4037,102 @@ HTML_PAGE = r"""
     }
 
 
-    async function markSelectedQuickTrainAsHandled(tabIndex) {
-        if (Number(tabIndex) !== 4 || !selectedQuickTrain?.label) return false;
+    function quickTrainCloseKey(item) {
+        return [item?.service_date || "", item?.num || "", item?.label || ""].join("|");
+    }
 
-        const item = selectedQuickTrain;
+    function quickTrainClosePayload(item) {
+        return {
+            tab_index: 4,
+            train_label: item?.label || "",
+            train_num: item?.num || value("num"),
+            time_hhmm: item?.time_hhmm || value("time"),
+            service_date: item?.service_date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" })
+        };
+    }
+
+    async function requestQuickTrainClose(item) {
+        const response = await fetch("/api/quick-train/mark-announced", {
+            method: "POST",
+            headers: jsonHeaders(),
+            body: JSON.stringify(quickTrainClosePayload(item))
+        });
+
+        let data = {};
         try {
-            const response = await fetch("/api/quick-train/mark-announced", {
-                method: "POST",
-                headers: jsonHeaders(),
-                body: JSON.stringify({
-                    tab_index: 4,
-                    train_label: item.label,
-                    train_num: item.num || value("num"),
-                    time_hhmm: item.time_hhmm || value("time"),
-                    service_date: item.service_date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" })
-                })
-            });
-            const data = await response.json();
-            if (!response.ok || data.status !== "success") {
-                throw new Error(data.message || "ปิดคิวขบวนไม่สำเร็จ");
-            }
-            const requestNum = String(item.num || value("num") || "").trim();
-            if (requestNum && data.recorded === false) {
-                throw new Error("ระบบยังไม่ยืนยันการบันทึกขบวนลงคิวที่ปิดแล้ว");
-            }
+            data = await response.json();
+        } catch (e) {
+            throw new Error(`ปิดคิวขบวนไม่สำเร็จ (HTTP ${response.status})`);
+        }
 
-            const handledLabel = item.label;
-            const handledNum = String(item.num || value("num") || "").trim();
-            quickTrains = quickTrains.filter(train =>
-                train.label !== handledLabel &&
-                String(train.num || "").trim() !== handledNum
-            );
-            quickTrainLabels = quickTrains.map(train => train.label).filter(Boolean);
-            livePrewarmStates.delete(handledLabel);
-            prewarmedNextTrainKeys.forEach(key => {
-                if (String(key).includes(handledLabel)) prewarmedNextTrainKeys.delete(key);
-            });
-            renderQuickTrainCards(quickTrains);
-            updateNextTrainWaitingStatus();
+        if (!response.ok || data.status !== "success") {
+            throw new Error(data.message || "ปิดคิวขบวนไม่สำเร็จ");
+        }
+        if (data.recorded === false) {
+            throw new Error("ระบบยังไม่ยืนยันการบันทึกขบวนลงคิวที่ปิดแล้ว");
+        }
+        return data;
+    }
+
+    function removeQuickTrainLocally(item) {
+        const handledLabel = item?.label || "";
+        const handledNum = String(item?.num || value("num") || "").trim();
+
+        quickTrains = quickTrains.filter(train =>
+            train.label !== handledLabel &&
+            (!handledNum || String(train.num || "").trim() !== handledNum)
+        );
+        quickTrainLabels = quickTrains.map(train => train.label).filter(Boolean);
+        livePrewarmStates.delete(handledLabel);
+        prewarmedNextTrainKeys.forEach(key => {
+            if (handledLabel && String(key).includes(handledLabel)) prewarmedNextTrainKeys.delete(key);
+        });
+        renderQuickTrainCards(quickTrains);
+        updateNextTrainWaitingStatus();
+
+        if (selectedQuickTrain?.label === handledLabel) {
             selectedQuickTrain = null;
+        }
+    }
 
-            // ดึงขบวนถัดไปทันที เพื่อเติมช่องที่ว่าง โดยไม่ Refresh หน้า
+    function scheduleQuickTrainCloseRetry(item, attempt = 0) {
+        const snapshot = { ...(item || {}) };
+        const key = quickTrainCloseKey(snapshot);
+        if (!snapshot.label || !key || attempt >= QUICK_TRAIN_CLOSE_RETRY_DELAYS_MS.length) return;
+        if (quickTrainCloseRetryTimers.has(key)) return;
+
+        const delay = QUICK_TRAIN_CLOSE_RETRY_DELAYS_MS[attempt];
+        const timer = setTimeout(async () => {
+            quickTrainCloseRetryTimers.delete(key);
+            try {
+                await requestQuickTrainClose(snapshot);
+                removeQuickTrainLocally(snapshot);
+                console.info(`Quick train queue sync recovered: ${snapshot.num || snapshot.label}`);
+                refreshNextTrainsFromServer(true);
+            } catch (error) {
+                console.warn(`Quick train queue sync retry ${attempt + 1} failed:`, error);
+                scheduleQuickTrainCloseRetry(snapshot, attempt + 1);
+            }
+        }, delay);
+
+        quickTrainCloseRetryTimers.set(key, timer);
+    }
+
+    async function markSelectedQuickTrainAsHandled(tabIndex) {
+        if (Number(tabIndex) !== 4 || !selectedQuickTrain?.label) return true;
+
+        // เก็บ snapshot ไว้ เพราะหลังเสียงจบ เราจะเอาขบวนออกจากหน้าจอทันที
+        // แม้การ sync ฐานข้อมูลจะสะดุดชั่วคราวก็ตาม
+        const item = { ...selectedQuickTrain };
+        removeQuickTrainLocally(item);
+
+        try {
+            await requestQuickTrainClose(item);
             refreshNextTrainsFromServer(true);
             return true;
         } catch (error) {
-            console.warn("Mark quick train handled failed:", error);
-            setStatus("ประกาศเสร็จแล้ว แต่ปิดคิวขบวนไม่สำเร็จ · กรุณากดรีเฟรชข้อมูลอีกครั้ง", "error");
+            console.warn("Mark quick train handled failed; automatic retry scheduled:", error);
+            scheduleQuickTrainCloseRetry(item, 0);
             return false;
         }
     }
@@ -4127,15 +4193,21 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
 
-            // v12.0: เมื่อเสียงเล่นจบสำเร็จ = ถือว่าขบวนไปแล้ว
-            // ปิดคิวจากเลขขบวน และ sync จาก server ทันที
+            // v12.1: ผลการเล่นเสียงและการ sync คิวเป็นคนละสถานะกัน
+            // ถ้าเสียงเล่นจบครบ ให้ History = สำเร็จเสมอ ส่วนคิวถ้าสะดุดให้ retry เองเบื้องหลัง
             const queueClosed = await markSelectedQuickTrainAsHandled(tabIndex);
-            if (!queueClosed && Number(tabIndex) === 4) {
-                throw new Error("เสียงประกาศจบแล้ว แต่ระบบบันทึกการปิดคิวไม่สำเร็จ");
-            }
-
-            setStatus("ประกาศเสร็จแล้ว · ขบวนออกจากคิวแล้ว", "ok");
             await logHistoryEvent("success");
+
+            if (!queueClosed && Number(tabIndex) === 4) {
+                await logHistoryEvent("queue_close_retry_scheduled", {
+                    reason: "เสียงเล่นจบสำเร็จ แต่การบันทึกปิดคิวรอบแรกไม่สำเร็จ ระบบตั้งเวลาลองใหม่อัตโนมัติ"
+                });
+                setStatus("ประกาศเสร็จแล้ว · กำลังซิงก์คิวอัตโนมัติ", "ok");
+                // History ที่เป็น success เป็น fallback ของเซิร์ฟเวอร์อยู่แล้ว จึงสั่งดึงคิวใหม่ทันที
+                refreshNextTrainsFromServer(true);
+            } else {
+                setStatus("ประกาศเสร็จแล้ว · ขบวนออกจากคิวแล้ว", "ok");
+            }
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
                 console.error(err);
@@ -5558,15 +5630,14 @@ def api_mark_quick_train_announced():
         num = str(data.get("train_num") or "").strip()
         time_hhmm = str(data.get("time_hhmm") or "").strip()
         service_date = str(data.get("service_date") or now_bangkok().date().isoformat()).strip()
-        mark_quick_train_handled_record(label, num, time_hhmm, service_date)
-        handled_nums = get_handled_quick_train_nums(service_date)
+        recorded = bool(mark_quick_train_handled_record(label, num, time_hhmm, service_date))
         return jsonify(
             status="success",
             train_label=label,
             train_num=num,
             service_date=service_date,
-            recorded=(str(num).strip() in handled_nums if num else False),
-            message="ปิดคิวขบวนแล้ว · ใช้เลขขบวนเป็นตัวอ้างอิง · ตารางรถจริงยังคงอยู่"
+            recorded=recorded,
+            message="ปิดคิวขบวนแล้ว · ยืนยันการบันทึกในฐานข้อมูลแล้ว · ตารางรถจริงยังคงอยู่"
         )
     except Exception as exc:
         return jsonify(status="error", message=str(exc)), 400
