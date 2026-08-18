@@ -17,6 +17,8 @@ except ImportError:
 import csv
 import io
 import shutil
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.parse import quote as url_quote
 import secrets
 from datetime import datetime, date, time as dt_time, timedelta
 from functools import wraps
@@ -25,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v11.0 - realtime-ready prewarm scheduling (10-minute floor) + v10.5 ticket notice special voice
-# Version: v11.0 - prewarm audio at the rounded-down 10-minute boundary; TTS realtime connector remains separate
+# Build: v11.1 - realtime bridge + 10-minute floor prewarm + v10.5 ticket notice special voice
+# Version: v11.1 - optional SRT TTS realtime connector; safe schedule fallback; no auto-announce
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -109,6 +111,17 @@ TICKET_NOTICE_EN_VOLUME = os.environ.get("TICKET_NOTICE_EN_VOLUME", "+25%")
 TICKET_NOTICE_EN_PITCH = os.environ.get("TICKET_NOTICE_EN_PITCH", "+0Hz")
 STATION_NAME = "คลองบางพระ"
 CHIME_FILENAME = "chime.mp3"
+
+# ------------------------------------------------------------
+# SRT TTS Real-time Bridge
+# ------------------------------------------------------------
+# ไม่เดา endpoint ของ TTS: หากยังไม่ได้กำหนด URL ระบบใช้ตารางรถเป็น fallback
+# URL รองรับ placeholder: {train_no}, {station}, {station_code}
+SRT_TTS_REALTIME_ENABLED = os.environ.get("SRT_TTS_REALTIME_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SRT_TTS_REALTIME_URL = os.environ.get("SRT_TTS_REALTIME_URL", "").strip()
+SRT_TTS_STATION_KEY = os.environ.get("SRT_TTS_STATION_KEY", "Khlong Bang Phra").strip()
+SRT_TTS_REALTIME_TIMEOUT = max(3, min(20, int(os.environ.get("SRT_TTS_REALTIME_TIMEOUT", "8"))))
+SRT_TTS_REALTIME_CACHE_SECONDS = max(5, min(60, int(os.environ.get("SRT_TTS_REALTIME_CACHE_SECONDS", "20"))))
 
 # แคชไฟล์เสียงและล็อกสำหรับป้องกันการสร้างเสียงซ้ำพร้อมกัน
 _AUDIO_CACHE_LOCKS = {}
@@ -899,6 +912,194 @@ def add_preparation_window(item):
     item["prewarm_at_hhmm"] = prewarm_at
     item["prewarm_reference"] = "realtime_eta" if item.get("realtime_eta_hhmm") else "schedule"
     return item
+
+
+
+# Cache สั้น ๆ เพื่อลดการเรียกแหล่งข้อมูลซ้ำ
+_REALTIME_CACHE = {"at": 0.0, "data": {}, "status": "disabled", "detail": "ยังไม่ได้ตั้งค่าแหล่งข้อมูล TTS", "updated_at": ""}
+
+def _hhmm_from_any(value):
+    if value is None:
+        return ""
+    text = str(value).strip()
+    m = re.search(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?(?!\d)", text)
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else ""
+
+
+def _minutes_from_any(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(round(float(value)))
+    m = re.search(r"-?\d+(?:\.\d+)?", str(value))
+    if not m:
+        return None
+    try:
+        return int(round(float(m.group(0))))
+    except Exception:
+        return None
+
+
+def _normalize_realtime_record(raw):
+    if not isinstance(raw, dict):
+        return None
+
+    def pick(*keys):
+        for key in keys:
+            value = raw.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+
+    train_no = pick("train_no", "trainNo", "train_number", "trainNumber", "number", "num", "no")
+    if train_no is None:
+        return None
+    train_no = re.sub(r"\D+", "", str(train_no))
+    if not train_no:
+        return None
+
+    return {
+        "train_no": train_no,
+        "realtime_eta_hhmm": _hhmm_from_any(pick(
+            "realtime_eta_hhmm", "eta_hhmm", "eta", "estimated_arrival",
+            "estimatedArrival", "expected_arrival", "expectedArrival",
+            "arrival_time", "arrivalTime", "forecast_time", "forecastTime"
+        )),
+        "delay_minutes": _minutes_from_any(pick(
+            "delay_minutes", "delayMinutes", "delay_min", "delay",
+            "late_minutes", "lateMinutes", "lateness", "delay_time"
+        )),
+        "realtime_status": str(pick("status_th", "status", "state", "train_status", "trainStatus") or "").strip(),
+        "realtime_station": str(pick("station_th", "station", "current_station", "currentStation", "last_station", "lastStation") or "").strip(),
+        "realtime_updated_at": str(pick("updated_at", "updatedAt", "last_update", "lastUpdate", "timestamp") or "").strip(),
+    }
+
+
+def _extract_realtime_records(payload):
+    if isinstance(payload, list):
+        source = payload
+    elif isinstance(payload, dict):
+        source = None
+        for key in ("trains", "data", "results", "items", "records", "train", "rows"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                source = candidate
+                break
+        if source is None:
+            if any(re.fullmatch(r"\d{1,5}", str(k)) for k in payload.keys()):
+                source = []
+                for k, v in payload.items():
+                    if isinstance(v, dict):
+                        item = dict(v)
+                        item.setdefault("train_no", k)
+                        source.append(item)
+            else:
+                source = [payload]
+    else:
+        source = []
+
+    result = []
+    for raw in source:
+        item = _normalize_realtime_record(raw)
+        if item:
+            result.append(item)
+    return result
+
+
+def _extract_realtime_from_html(html):
+    text = re.sub(r"<[^>]+>", " ", html or "")
+    text = re.sub(r"\s+", " ", text)
+    records = []
+    for m in re.finditer(r"(?:ขบวน(?:รถ)?\s*)?(?:ที่\s*)?(\d{1,4})(?=[^\d])", text):
+        train_no = m.group(1)
+        window = text[max(0, m.start()-80):m.end()+260]
+        delay_match = re.search(r"(?:ล่าช้า|delay|late)\s*(?:ประมาณ\s*)?(\d{1,4})\s*(?:นาที|min|minutes)?", window, re.I)
+        eta_match = re.search(r"(?:คาด(?:ว่า)?(?:จะ)?ถึง|estimated arrival|ETA)\D{0,40}([01]?\d|2[0-3]):([0-5]\d)", window, re.I)
+        if not delay_match and not eta_match:
+            continue
+        records.append({
+            "train_no": train_no,
+            "delay_minutes": int(delay_match.group(1)) if delay_match else None,
+            "realtime_eta_hhmm": f"{int(eta_match.group(1)):02d}:{eta_match.group(2)}" if eta_match else "",
+            "realtime_status": "ล่าช้า" if delay_match else "ติดตาม",
+            "realtime_station": "",
+            "realtime_updated_at": "",
+        })
+    return list({x["train_no"]: x for x in records}.values())
+
+
+def fetch_srt_realtime_records(force=False):
+    """
+    Adapter สำหรับแหล่งข้อมูล TTS ที่กำหนดโดยผู้ดูแลระบบผ่าน Environment.
+    รองรับ JSON หลายรูปแบบและ HTML แบบ server-rendered เป็น fallback.
+    """
+    global _REALTIME_CACHE
+    now = time.monotonic()
+    if not force and now - float(_REALTIME_CACHE.get("at", 0)) < SRT_TTS_REALTIME_CACHE_SECONDS:
+        return dict(_REALTIME_CACHE)
+
+    if not SRT_TTS_REALTIME_ENABLED or not SRT_TTS_REALTIME_URL:
+        _REALTIME_CACHE = {
+            "at": now, "data": {}, "status": "disabled",
+            "detail": "ยังไม่ได้ตั้งค่า SRT_TTS_REALTIME_URL",
+            "updated_at": now_iso(),
+        }
+        return dict(_REALTIME_CACHE)
+
+    try:
+        url = SRT_TTS_REALTIME_URL.replace("{station}", url_quote(SRT_TTS_STATION_KEY))
+        url = url.replace("{station_code}", url_quote(SRT_TTS_STATION_KEY))
+        request = UrlRequest(
+            url,
+            headers={"User-Agent": "KhlongBangPhra-Station-Announcement/11.1"},
+        )
+        with urlopen(request, timeout=SRT_TTS_REALTIME_TIMEOUT) as response:
+            content_type = (response.headers.get("content-type") or "").lower()
+            body = response.read().decode("utf-8", errors="replace")
+        if "json" in content_type:
+            records = _extract_realtime_records(json.loads(body))
+        else:
+            try:
+                records = _extract_realtime_records(json.loads(body))
+            except Exception:
+                records = _extract_realtime_from_html(body)
+        data = {item["train_no"]: item for item in records}
+        _REALTIME_CACHE = {
+            "at": now, "data": data, "status": "ok",
+            "detail": f"รับข้อมูล {len(data)} ขบวน",
+            "updated_at": now_iso(),
+        }
+        return dict(_REALTIME_CACHE)
+    except Exception as exc:
+        _REALTIME_CACHE = {
+            "at": now, "data": {}, "status": "error",
+            "detail": str(exc)[:220],
+            "updated_at": now_iso(),
+        }
+        return dict(_REALTIME_CACHE)
+
+
+def merge_realtime_into_trains(trains, force=False):
+    snapshot = fetch_srt_realtime_records(force=force)
+    records = snapshot.get("data") or {}
+    merged = []
+    for item in trains:
+        row = dict(item)
+        live = records.get(re.sub(r"\D+", "", str(item.get("num", ""))))
+        if live:
+            if live.get("realtime_eta_hhmm"):
+                row["realtime_eta_hhmm"] = live["realtime_eta_hhmm"]
+            if live.get("delay_minutes") is not None:
+                row["delay_minutes"] = live["delay_minutes"]
+            if live.get("realtime_status"):
+                row["realtime_status"] = live["realtime_status"]
+            if live.get("realtime_station"):
+                row["realtime_station"] = live["realtime_station"]
+            if live.get("realtime_updated_at"):
+                row["realtime_updated_at"] = live["realtime_updated_at"]
+        add_preparation_window(row)
+        merged.append(row)
+    return merged, snapshot
 
 
 def get_quick_train_snapshot(inbound, outbound, limit=3):
@@ -1713,6 +1914,7 @@ HTML_PAGE = r"""
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
             <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🔄 อัปเดตอัตโนมัติ · ไม่ต้องกดรีเฟรช · เตรียมเสียงตามเวลาปัดลงหลัก 10 นาที</div>
+            <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
         </div>
     </section>
 
@@ -2040,6 +2242,7 @@ HTML_PAGE = r"""
     let nextTrainPrewarmTimer = null;
     let nextTrainPrewarmRunId = 0;
     let nextTrainRefreshTimer = null;
+    let realtimeStatus = { status: "disabled", detail: "ยังไม่ได้ตั้งค่า TTS", updated_at: "", enabled: false };
     const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
     const NEXT_TRAIN_PREWARM_BUCKET_MINUTES = 10;
     const NEXT_TRAIN_RETRY_MS = 60 * 1000;
@@ -2605,6 +2808,17 @@ HTML_PAGE = r"""
         };
     }
 
+    function realtimeStatusForTrain(item) {
+        const delay = Number(item?.delay_minutes);
+        const eta = item?.realtime_eta_hhmm || "";
+        if (Number.isFinite(delay)) {
+            if (delay > 0) return { cls: "realtime-delay", text: `🟠 ล่าช้า ${delay} นาที${eta ? ` · คาดถึง ${eta} น.` : ""}` };
+            if (delay === 0) return { cls: "realtime-on-time", text: `🟢 ตรงเวลา${eta ? ` · คาดถึง ${eta} น.` : ""}` };
+        }
+        if (eta) return { cls: "realtime-live", text: `🔵 TTS · คาดถึง ${eta} น.` };
+        return null;
+    }
+
     function liveStatusForTrain(item) {
         const label = item?.label || "";
         const mins = Number(item?.minutes_until);
@@ -2658,10 +2872,12 @@ HTML_PAGE = r"""
         box.innerHTML = items.map(item => {
             const tomorrow = Number(item.day_offset || 0) > 0 ? " · พรุ่งนี้" : "";
             const live = liveStatusForTrain(item);
+            const realtime = realtimeStatusForTrain(item);
             return `<button type="button" class="quick-train ${live.cardCls}" data-label="${escapeHtml(item.label || "")}">
                 <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}</div>
                 <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
                 <div class="helper">${escapeHtml(item.origin || "")} → ${escapeHtml(item.dest || "")}</div>
+                ${realtime ? `<div class="quick-live-status ${realtime.cls}">${escapeHtml(realtime.text)}</div>` : ""}
                 <div class="quick-live-status ${live.cls}">${escapeHtml(live.text)}</div>
             </button>`;
         }).join("");
@@ -2689,14 +2905,17 @@ HTML_PAGE = r"""
             if (Number.isFinite(prewarm.minutesUntilPrewarm) && prewarm.minutesUntilPrewarm <= 0) near += 1;
         });
 
+        const rt = realtimeStatus.enabled
+            ? ` · TTS ${realtimeStatus.status === "ok" ? "เชื่อมต่อแล้ว" : "รอข้อมูล"}`
+            : " · TTS ยังไม่เชื่อมต่อ";
         if (warming) {
-            status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · กำลังเตรียมเสียง ${warming} ขบวน`;
+            status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · กำลังเตรียมเสียง ${warming} ขบวน${rt}`;
         } else if (ready) {
-            status.textContent = `✅ มีเสียงพร้อม ${ready} ขบวน · ระบบติดตามและเลื่อนขบวนถัดไปให้อัตโนมัติ ไม่ต้องรีเฟรช`;
+            status.textContent = `✅ มีเสียงพร้อม ${ready} ขบวน · ระบบติดตามและเลื่อนขบวนถัดไปให้อัตโนมัติ ไม่ต้องรีเฟรช${rt}`;
         } else if (near) {
-            status.textContent = "⚡ ถึงรอบเตรียมเสียง · ระบบเริ่มเตรียมอัตโนมัติตามเวลาที่ปัดลงหลัก 10 นาที";
+            status.textContent = `⚡ ถึงรอบเตรียมเสียง · ระบบเริ่มเตรียมอัตโนมัติตามเวลาที่ปัดลงหลัก 10 นาที${rt}`;
         } else {
-            status.textContent = "🔄 อัปเดตสดทุก 30 วินาที · เตรียมเสียงตามเวลาที่ปัดลงทุก 10 นาที";
+            status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · เตรียมเสียงตามเวลาที่ปัดลงทุก 10 นาที${rt}`;
         }
     }
 
@@ -2714,6 +2933,17 @@ HTML_PAGE = r"""
             if (!response.ok || result.status !== "success") throw new Error(result.message || "อ่านขบวนถัดไปไม่สำเร็จ");
 
             quickTrains = Array.isArray(result.trains) ? result.trains : [];
+            realtimeStatus = result.realtime || realtimeStatus;
+            const rtBox = byId("realtimeSourceStatus");
+            if (rtBox) {
+                if (realtimeStatus.enabled && realtimeStatus.status === "ok") {
+                    rtBox.textContent = `🟢 TTS Real-time เชื่อมต่อแล้ว · ${realtimeStatus.detail || "รับข้อมูลแล้ว"} · ${realtimeStatus.updated_at || ""}`;
+                } else if (realtimeStatus.enabled) {
+                    rtBox.textContent = `🟠 TTS Real-time รอข้อมูล · ${realtimeStatus.detail || ""}`;
+                } else {
+                    rtBox.textContent = "⚪ TTS Real-time ยังไม่เชื่อมต่อ · ระบบใช้เวลาตารางรถเป็นข้อมูลสำรอง";
+                }
+            }
             quickTrainLabels = quickTrains.map(item => item.label).filter(Boolean);
             if (result.train_data && typeof result.train_data === "object") {
                 trainData = result.train_data;
@@ -4594,6 +4824,24 @@ def api_health():
     return jsonify(status="success",checks=backend_health_checks(),server_epoch_ms=int(time.time()*1000),server_time=now_iso())
 
 
+@app.route("/api/realtime-status", methods=["GET"])
+@roles_required("announcer", "admin")
+def api_realtime_status():
+    try:
+        snapshot = fetch_srt_realtime_records(force=True)
+        return jsonify(
+            status="success",
+            source_status=snapshot.get("status"),
+            detail=snapshot.get("detail"),
+            updated_at=snapshot.get("updated_at"),
+            enabled=SRT_TTS_REALTIME_ENABLED and bool(SRT_TTS_REALTIME_URL),
+            station=SRT_TTS_STATION_KEY,
+            trains=list((snapshot.get("data") or {}).values()),
+        )
+    except Exception as exc:
+        return jsonify(status="error", message=str(exc)), 500
+
+
 @app.route("/api/next-trains", methods=["GET"])
 @roles_required("announcer", "admin")
 def api_next_trains():
@@ -4601,6 +4849,7 @@ def api_next_trains():
     try:
         inbound, outbound, train_data, schedule_version = get_active_train_lists()
         quick_trains = get_quick_train_snapshot(inbound, outbound, limit=3)
+        quick_trains, realtime_snapshot = merge_realtime_into_trains(quick_trains, force=True)
         # ขบวนช่วงหลังเที่ยงคืนอาจมาจากตารางวันถัดไป จึงรวมไว้ให้หน้าเว็บเลือกได้ทันที
         for train in quick_trains:
             if train.get("label"):
@@ -4614,6 +4863,12 @@ def api_next_trains():
             prewarm_minutes=0,
             prewarm_rule="ปัดเวลาลงทุก 10 นาที",
             prewarm_bucket_minutes=10,
+            realtime={
+                "status": realtime_snapshot.get("status"),
+                "detail": realtime_snapshot.get("detail"),
+                "updated_at": realtime_snapshot.get("updated_at"),
+                "enabled": SRT_TTS_REALTIME_ENABLED and bool(SRT_TTS_REALTIME_URL),
+            },
         )
     except Exception as exc:
         return jsonify(status="error", message=str(exc)), 500
@@ -4648,6 +4903,7 @@ def index():
     inbound, outbound, train_data, schedule_version = get_active_train_lists()
     user = get_current_user()
     quick_trains = get_quick_train_snapshot(inbound, outbound)
+    quick_trains, _realtime_snapshot = merge_realtime_into_trains(quick_trains, force=True)
     for train in quick_trains:
         if train.get("label"):
             train_data[train["label"]] = dict(train)
