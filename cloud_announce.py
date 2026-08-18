@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v11.7 - fresh schedule reads for live quick-train panel + delay-safe real-time ETA
-# Version: v11.7 - the live panel always reads the latest published schedule instead of waiting for the 30-second schedule cache
+# Build: v11.9 - quick-train completion keyed by train number + immediate queue removal
+# Version: v11.9 - marking a completed รถจอด / ออก announcement hides the train by train number even if its timetable time/label changes
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -1305,6 +1305,22 @@ def _train_reference_minutes(item):
 
 
 
+def get_handled_quick_train_nums(service_date=None):
+    """คืนเลขขบวนที่ประกาศ 'รถจอด / ออก' สำเร็จแล้วในวันนั้น.
+    ใช้เลขขบวนเป็นตัวหลัก เพื่อไม่ให้การแก้เวลาในตารางทำให้ขบวนกลับเข้าคิวอีกครั้ง
+    """
+    service_date = service_date or now_bangkok().date().isoformat()
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT train_num FROM quick_train_handled WHERE service_date=? AND train_num IS NOT NULL AND train_num<>''",
+                (service_date,)
+            ).fetchall()
+        return {str(row["train_num"]).strip() for row in rows if row.get("train_num")}
+    except Exception:
+        return set()
+
+
 def get_handled_quick_train_labels(service_date=None):
     """คืน label ของขบวนที่ประกาศ 'รถจอด / ออก' สำเร็จแล้วในวันนั้น."""
     service_date = service_date or now_bangkok().date().isoformat()
@@ -1324,7 +1340,7 @@ def mark_quick_train_handled_record(train_label, train_num="", time_hhmm="", ser
     """บันทึกว่า quick-train รายการนี้ถูกประกาศรถจอด / ออกสำเร็จแล้ว."""
     service_date = service_date or now_bangkok().date().isoformat()
     label = str(train_label or "").strip()
-    if not label:
+    if not label and not str(train_num or "").strip():
         raise ValueError("ไม่พบข้อมูลขบวนรถสำหรับปิดคิว")
     today = now_bangkok().date().isoformat()
     if service_date != today:
@@ -1358,9 +1374,15 @@ def get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=Fa
     """
     now = now_bangkok()
     current_minutes = now.hour * 60 + now.minute
-    handled_today = get_handled_quick_train_labels(now.date().isoformat())
+    service_date_today = now.date().isoformat()
+    handled_today_labels = get_handled_quick_train_labels(service_date_today)
+    handled_today_nums = get_handled_quick_train_nums(service_date_today)
 
-    today = [dict(t) for t in inbound + outbound if str(t.get("label") or "") not in handled_today]
+    today = [
+        dict(t) for t in inbound + outbound
+        if str(t.get("label") or "") not in handled_today_labels
+        and str(t.get("num") or "").strip() not in handled_today_nums
+    ]
     tomorrow = now.date() + timedelta(days=1)
     next_inbound, next_outbound, _, _ = get_active_train_lists(tomorrow)
     tomorrow_items = [dict(t) for t in next_inbound + next_outbound]
@@ -2264,7 +2286,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 เวลาเดินแบบเรียลไทม์ · เมื่อประกาศ “รถจอด / ออก” เสร็จแล้ว ขบวนจะปิดคิวและหายจากรายการ · ระบบดึงขบวนถัดไปให้โดยไม่ต้องรีเฟรช</div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 ขบวนที่ประกาศ “รถจอด / ออก” เสร็จแล้ว = ถือว่าจบงาน · ปิดคิวด้วยเลขขบวนและหายจากรายการทันที · ตารางรถจริงยังอยู่</div>
             <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
         </div>
     </section>
@@ -3968,7 +3990,11 @@ HTML_PAGE = r"""
             }
 
             const handledLabel = item.label;
-            quickTrains = quickTrains.filter(train => train.label !== handledLabel);
+            const handledNum = String(item.num || value("num") || "").trim();
+            quickTrains = quickTrains.filter(train =>
+                train.label !== handledLabel &&
+                String(train.num || "").trim() !== handledNum
+            );
             quickTrainLabels = quickTrains.map(train => train.label).filter(Boolean);
             livePrewarmStates.delete(handledLabel);
             prewarmedNextTrainKeys.forEach(key => {
@@ -3983,7 +4009,7 @@ HTML_PAGE = r"""
             return true;
         } catch (error) {
             console.warn("Mark quick train handled failed:", error);
-            setStatus("ประกาศเสร็จแล้ว แต่ปิดคิวขบวนไม่สำเร็จ · ระบบจะลองใหม่", "error");
+            setStatus("ประกาศเสร็จแล้ว แต่ปิดคิวขบวนไม่สำเร็จ · กรุณากดรีเฟรชข้อมูลอีกครั้ง", "error");
             return false;
         }
     }
@@ -5476,8 +5502,9 @@ def api_mark_quick_train_announced():
         return jsonify(
             status="success",
             train_label=label,
+            train_num=num,
             service_date=service_date,
-            message="ปิดคิวขบวนแล้ว · ตารางรถจริงยังคงอยู่"
+            message="ปิดคิวขบวนแล้ว · ใช้เลขขบวนเป็นตัวอ้างอิง · ตารางรถจริงยังคงอยู่"
         )
     except Exception as exc:
         return jsonify(status="error", message=str(exc)), 400
