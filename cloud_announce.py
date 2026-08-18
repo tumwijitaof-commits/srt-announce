@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v11.1 - realtime bridge + 10-minute floor prewarm + v10.5 ticket notice special voice
-# Version: v11.1 - optional SRT TTS realtime connector; safe schedule fallback; no auto-announce
+# Build: v11.2 - TTS TrainView probe for train 367 + 10-minute floor prewarm + v10.5 ticket notice special voice
+# Version: v11.2 - binds train 367 to the supplied TTS tracking URL; verifies page access before live parsing
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -122,6 +122,12 @@ SRT_TTS_REALTIME_URL = os.environ.get("SRT_TTS_REALTIME_URL", "").strip()
 SRT_TTS_STATION_KEY = os.environ.get("SRT_TTS_STATION_KEY", "Khlong Bang Phra").strip()
 SRT_TTS_REALTIME_TIMEOUT = max(3, min(20, int(os.environ.get("SRT_TTS_REALTIME_TIMEOUT", "8"))))
 SRT_TTS_REALTIME_CACHE_SECONDS = max(5, min(60, int(os.environ.get("SRT_TTS_REALTIME_CACHE_SECONDS", "20"))))
+SRT_TTS_TRACKING_URLS = {
+    "367": os.environ.get(
+        "SRT_TTS_TRACKING_URL_367",
+        "https://ttsview.railway.co.th/v3/search/?qType=21&qParam=fWJfuc2KHiIuL6Oy",
+    ).strip(),
+}
 
 # แคชไฟล์เสียงและล็อกสำหรับป้องกันการสร้างเสียงซ้ำพร้อมกัน
 _AUDIO_CACHE_LOCKS = {}
@@ -1028,6 +1034,47 @@ def _extract_realtime_from_html(html):
     return list({x["train_no"]: x for x in records}.values())
 
 
+def fetch_srt_tracking_page(train_no="367"):
+    """ดึงหน้า TTS TrainView ของขบวนที่กำหนดเพื่อยืนยันว่า URL ใช้งานได้
+    หมายเหตุ: หน้า TrainView อาจโหลดข้อมูลด้วย JavaScript; ฟังก์ชันนี้จึงไม่อ้างว่า
+    HTML shell เพียงอย่างเดียวคือข้อมูล real-time และจะไม่สร้างสถานะรถจากการเดา
+    """
+    train_no = re.sub(r"\D+", "", str(train_no or ""))
+    url = SRT_TTS_TRACKING_URLS.get(train_no, "")
+    if not url:
+        return {"ok": False, "train_no": train_no, "detail": "ยังไม่มี Tracking URL ของขบวนนี้", "url": ""}
+    try:
+        request = UrlRequest(
+            url,
+            headers={"User-Agent": "KhlongBangPhra-Station-Announcement/11.2"},
+        )
+        with urlopen(request, timeout=SRT_TTS_REALTIME_TIMEOUT) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            content_type = (response.headers.get("content-type") or "").lower()
+            status = getattr(response, "status", 200)
+        # ตรวจเฉพาะสัญญาณว่าหน้า TTS ถูกโหลด ไม่ตีความว่าเป็น ETA จริง
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body or "", re.I | re.S)
+        title = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", title_match.group(1))).strip() if title_match else ""
+        return {
+            "ok": 200 <= int(status) < 400,
+            "train_no": train_no,
+            "url": url,
+            "http_status": int(status),
+            "content_type": content_type,
+            "title": title[:160],
+            "body_bytes": len(body.encode("utf-8")),
+            "has_trainview_marker": "TTS-TrainView" in body,
+            "detail": "เปิดหน้า TTS ได้ แต่ยังไม่ยืนยันข้อมูล Real-time จาก HTML" if status == 200 else f"HTTP {status}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "train_no": train_no,
+            "url": url,
+            "detail": str(exc)[:220],
+        }
+
+
 def fetch_srt_realtime_records(force=False):
     """
     Adapter สำหรับแหล่งข้อมูล TTS ที่กำหนดโดยผู้ดูแลระบบผ่าน Environment.
@@ -1049,6 +1096,14 @@ def fetch_srt_realtime_records(force=False):
     try:
         url = SRT_TTS_REALTIME_URL.replace("{station}", url_quote(SRT_TTS_STATION_KEY))
         url = url.replace("{station_code}", url_quote(SRT_TTS_STATION_KEY))
+        # รองรับการเลือกหน้า TrainView รายขบวนโดยตรงเมื่อผู้ดูแลตั้ง {train_no}
+        if "{train_no}" in url:
+            # ใช้ URL ที่ระบุใน SRT_TTS_TRACKING_URLS เป็นตัวจริงสำหรับขบวน 367
+            # โดยไม่สร้าง qParam ขึ้นเอง
+            train_url = SRT_TTS_TRACKING_URLS.get("367", "")
+            url = url.replace("{train_no}", "367")
+            if train_url:
+                url = train_url
         request = UrlRequest(
             url,
             headers={"User-Agent": "KhlongBangPhra-Station-Announcement/11.1"},
@@ -1077,6 +1132,12 @@ def fetch_srt_realtime_records(force=False):
             "updated_at": now_iso(),
         }
         return dict(_REALTIME_CACHE)
+
+
+@app.get("/api/tts-tracking-probe/<train_no>")
+def api_tts_tracking_probe(train_no):
+    """ตรวจหน้า TTS Tracking ที่ผูกไว้ โดยไม่ประกาศและไม่สร้างเสียง"""
+    return jsonify(fetch_srt_tracking_page(train_no))
 
 
 def merge_realtime_into_trains(trains, force=False):
@@ -1789,6 +1850,12 @@ HTML_PAGE = r"""
             .sticky { position: static; }
         }
         .quick-card { margin-top: 14px; }
+        .quick-card-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+        .station-live-clock { display:inline-flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid #e4d4bf; border-radius:12px; background:#fff8ee; color:var(--maroon-dark); font-weight:900; font-size:15px; white-space:nowrap; }
+        .station-live-clock .clock-seconds { font-variant-numeric:tabular-nums; letter-spacing:.4px; }
+        .quick-train.is-next { border-color:var(--maroon); box-shadow:inset 0 0 0 1px rgba(139,0,0,.10); }
+        .quick-next-badge { display:inline-block; margin-left:6px; padding:2px 7px; border-radius:999px; background:#fff1f1; color:var(--maroon); font-size:10px; font-weight:900; vertical-align:middle; }
+
         .quick-trains { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin-top:10px; }
         .quick-train { border:1px solid #e4d4bf; background:#fff; border-radius:14px; padding:11px; text-align:left; min-height:98px; transition:.18s ease; }
         .quick-train:hover { border-color:var(--maroon); background:#fff5f5; }
@@ -1895,7 +1962,10 @@ HTML_PAGE = r"""
     </details>
 
     <section class="card quick-card">
-        <div class="card-head"><h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2></div>
+        <div class="card-head quick-card-head">
+            <h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2>
+            <div class="station-live-clock" id="stationLiveClock" aria-live="polite">🕐 <span class="clock-seconds">--:--:--</span> น.</div>
+        </div>
         <div class="card-body">
             <div class="quick-trains" id="quickTrainList">
                 {% for train in quick_trains %}
@@ -1913,7 +1983,7 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🔄 อัปเดตอัตโนมัติ · ไม่ต้องกดรีเฟรช · เตรียมเสียงตามเวลาปัดลงหลัก 10 นาที</div>
+            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 เวลาเดินแบบเรียลไทม์ · ขบวนที่ถึงเวลาแล้วจะหายไปเอง · ระบบดึงขบวนถัดไปให้โดยไม่ต้องรีเฟรช</div>
             <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
         </div>
     </section>
@@ -2242,6 +2312,9 @@ HTML_PAGE = r"""
     let nextTrainPrewarmTimer = null;
     let nextTrainPrewarmRunId = 0;
     let nextTrainRefreshTimer = null;
+    let nextTrainClockTimer = null;
+    let nextTrainRefreshInFlight = false;
+    let nextTrainAdvanceRefreshAt = 0;
     let realtimeStatus = { status: "disabled", detail: "ยังไม่ได้ตั้งค่า TTS", updated_at: "", enabled: false };
     const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
     const NEXT_TRAIN_PREWARM_BUCKET_MINUTES = 10;
@@ -2791,8 +2864,74 @@ HTML_PAGE = r"""
         return hour * 60 + minute;
     }
 
+    function currentTimeString() {
+        const now = new Date();
+        return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+    }
+
+    function minutesUntilTrain(item) {
+        const reference = item?.realtime_eta_hhmm || item?.time_hhmm || "";
+        const referenceMinutes = hhmmToMinutes(reference);
+        if (!Number.isFinite(referenceMinutes)) return Number(item?.minutes_until);
+
+        const now = new Date();
+        const target = new Date(now);
+        target.setHours(Math.floor(referenceMinutes / 60), referenceMinutes % 60, 0, 0);
+
+        const dayOffset = Number(item?.day_offset || 0);
+        if (dayOffset > 0) {
+            target.setDate(target.getDate() + dayOffset);
+        } else {
+            const serverMinutes = Number(item?.minutes_until);
+            if (target.getTime() < now.getTime() && Number.isFinite(serverMinutes) && serverMinutes > 0) {
+                target.setDate(target.getDate() + 1);
+            }
+        }
+        return (target.getTime() - now.getTime()) / 60000;
+    }
+
+    function updateStationLiveClock() {
+        const clock = byId("stationLiveClock");
+        if (clock) {
+            const span = clock.querySelector(".clock-seconds");
+            if (span) span.textContent = currentTimeString();
+        }
+
+        if (!Array.isArray(quickTrains) || !quickTrains.length) return;
+
+        const before = quickTrains.length;
+        const visible = quickTrains.filter(item => {
+            const mins = minutesUntilTrain(item);
+            return !Number.isFinite(mins) || mins > 0;
+        });
+
+        if (visible.length !== before) {
+            quickTrains = visible;
+            quickTrainLabels = quickTrains.map(item => item.label).filter(Boolean);
+            renderQuickTrainCards(quickTrains);
+            updateNextTrainWaitingStatus();
+
+            // ขอข้อมูลชุดใหม่ทันที เพื่อดึงขบวนลำดับถัดไปมาแทน โดยไม่ต้อง Refresh หน้า
+            const now = Date.now();
+            if (now >= nextTrainAdvanceRefreshAt && !nextTrainRefreshInFlight) {
+                nextTrainAdvanceRefreshAt = now + 5000;
+                refreshNextTrainsFromServer(true);
+            }
+        } else {
+            // อัปเดต countdown/สถานะทุกวินาที โดยไม่ต้องเรียกเซิร์ฟเวอร์
+            renderQuickTrainCards(quickTrains);
+            updateNextTrainWaitingStatus();
+        }
+    }
+
+    function startNextTrainLiveClock() {
+        if (nextTrainClockTimer) clearInterval(nextTrainClockTimer);
+        updateStationLiveClock();
+        nextTrainClockTimer = setInterval(updateStationLiveClock, 1000);
+    }
+
     function prewarmInfoForTrain(item) {
-        const minutesUntil = Number(item?.minutes_until);
+        const minutesUntil = minutesUntilTrain(item);
         const reference = item?.realtime_eta_hhmm || item?.time_hhmm || "";
         const referenceMinutes = hhmmToMinutes(reference);
         if (!Number.isFinite(minutesUntil) || !Number.isFinite(referenceMinutes)) {
@@ -2821,7 +2960,7 @@ HTML_PAGE = r"""
 
     function liveStatusForTrain(item) {
         const label = item?.label || "";
-        const mins = Number(item?.minutes_until);
+        const mins = minutesUntilTrain(item);
         const signature = currentPrewarmSignature(label);
         const state = livePrewarmStates.get(label);
         const matchingState = state && state.signature === signature ? state : null;
@@ -2865,22 +3004,31 @@ HTML_PAGE = r"""
     function renderQuickTrainCards(items) {
         const box = byId("quickTrainList");
         if (!box) return;
-        if (!Array.isArray(items) || !items.length) {
-            box.innerHTML = '<div class="helper">ไม่พบขบวนถัดไปในตารางที่เปิดใช้งาน</div>';
+
+        const visibleItems = (Array.isArray(items) ? items : []).filter(item => {
+            const mins = minutesUntilTrain(item);
+            return !Number.isFinite(mins) || mins > 0;
+        });
+
+        if (!visibleItems.length) {
+            box.innerHTML = '<div class="helper">กำลังค้นหาขบวนถัดไปอัตโนมัติ…</div>';
             return;
         }
-        box.innerHTML = items.map(item => {
+
+        box.innerHTML = visibleItems.map((item, index) => {
             const tomorrow = Number(item.day_offset || 0) > 0 ? " · พรุ่งนี้" : "";
             const live = liveStatusForTrain(item);
             const realtime = realtimeStatusForTrain(item);
-            return `<button type="button" class="quick-train ${live.cardCls}" data-label="${escapeHtml(item.label || "")}">
-                <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}</div>
+            const nextBadge = index === 0 ? '<span class="quick-next-badge">ใกล้สุด</span>' : "";
+            return `<button type="button" class="quick-train ${live.cardCls} ${index === 0 ? "is-next" : ""}" data-label="${escapeHtml(item.label || "")}">
+                <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}${nextBadge}</div>
                 <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
                 <div class="helper">${escapeHtml(item.origin || "")} → ${escapeHtml(item.dest || "")}</div>
                 ${realtime ? `<div class="quick-live-status ${realtime.cls}">${escapeHtml(realtime.text)}</div>` : ""}
                 <div class="quick-live-status ${live.cls}">${escapeHtml(live.text)}</div>
             </button>`;
         }).join("");
+
         box.querySelectorAll(".quick-train").forEach(button => {
             button.addEventListener("click", () => selectTrainByLabel(button.dataset.label, 1));
         });
@@ -2920,7 +3068,8 @@ HTML_PAGE = r"""
     }
 
     async function refreshNextTrainsFromServer(runPrewarm = true) {
-        if (!navigator.onLine) return;
+        if (!navigator.onLine || nextTrainRefreshInFlight) return;
+        nextTrainRefreshInFlight = true;
         try {
             const response = await fetch("/api/next-trains", {
                 method: "GET",
@@ -2962,6 +3111,8 @@ HTML_PAGE = r"""
             console.warn("Auto next-train refresh failed:", error);
             const status = byId("nextTrainPrewarmStatus");
             if (status) status.textContent = "⚠️ อัปเดตขบวนถัดไปไม่สำเร็จชั่วคราว · ระบบจะลองใหม่เอง";
+        } finally {
+            nextTrainRefreshInFlight = false;
         }
     }
 
@@ -3571,6 +3722,7 @@ HTML_PAGE = r"""
     updateDepartureAction();
     renderQuickTrainCards(quickTrains);
     updateNextTrainWaitingStatus();
+    startNextTrainLiveClock();
     startNextTrainAutoRefresh();
     window.addEventListener("online", () => refreshNextTrainsFromServer(true));
     document.addEventListener("visibilitychange", () => {
