@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v11.6 - delay-safe real-time ETA + overdue protection + auto reorder + 10-minute prewarm
-# Version: v11.6 - keeps delayed trains visible until TTS confirms departure; stale data never decides that a train has passed
+# Build: v11.7 - fresh schedule reads for live quick-train panel + delay-safe real-time ETA
+# Version: v11.7 - the live panel always reads the latest published schedule instead of waiting for the 30-second schedule cache
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -840,10 +840,10 @@ def train_operates_on(row, target_date):
     return target_date.isoformat() in dates
 
 
-def get_active_train_lists(target_date=None):
+def get_active_train_lists(target_date=None, fresh=False):
     target_date = target_date or now_bangkok().date()
     cache_key = target_date.isoformat()
-    if TRAIN_CACHE_SECONDS:
+    if TRAIN_CACHE_SECONDS and not fresh:
         with _TRAIN_LIST_CACHE_LOCK:
             cached = _TRAIN_LIST_CACHE.get(cache_key)
             if cached and time.monotonic() - cached[0] < TRAIN_CACHE_SECONDS:
@@ -872,7 +872,7 @@ def get_active_train_lists(target_date=None):
             data = {train["label"]: train for train in inbound + outbound}
             result = (inbound, outbound, data, version)
 
-    if TRAIN_CACHE_SECONDS:
+    if TRAIN_CACHE_SECONDS and not fresh:
         with _TRAIN_LIST_CACHE_LOCK:
             _TRAIN_LIST_CACHE[cache_key] = (time.monotonic(), _clone_train_result(result))
     return _clone_train_result(result)
@@ -3314,7 +3314,7 @@ HTML_PAGE = r"""
         } else if (near) {
             status.textContent = `⚡ ถึงรอบเตรียมเสียง · ระบบเริ่มเตรียมอัตโนมัติตามเวลาที่ปัดลงหลัก 10 นาที${rt}`;
         } else {
-            status.textContent = `🔄 อัปเดตสดทุก 30 วินาที · เตรียมเสียงตามเวลาที่ปัดลงทุก 10 นาที${rt}`;
+            status.textContent = `🔄 อัปเดตขบวนล่าสุดทุก 30 วินาที · อ่านตารางล่าสุดจากเซิร์ฟเวอร์ · เตรียมเสียงตามเวลาที่ปัดลงทุก 10 นาที${rt}`;
         }
     }
 
@@ -5324,7 +5324,7 @@ def api_realtime_status():
 def api_next_trains():
     """อัปเดตขบวนถัดไปและเวลารอบเตรียมเสียงโดยไม่ต้อง Refresh หน้าเว็บ"""
     try:
-        inbound, outbound, train_data, schedule_version = get_active_train_lists()
+        inbound, outbound, train_data, schedule_version = get_active_train_lists(fresh=True)
         quick_trains, realtime_snapshot = get_realtime_aware_quick_train_snapshot(
             inbound, outbound, limit=3, force=True
         )
@@ -5338,6 +5338,7 @@ def api_next_trains():
             trains=quick_trains,
             train_data=train_data,
             schedule_version=schedule_version,
+            schedule_read_mode="fresh",
             prewarm_minutes=0,
             prewarm_rule="ปัดเวลาลงทุก 10 นาที",
             prewarm_bucket_minutes=10,
