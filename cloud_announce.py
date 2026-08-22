@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.3 - safety validation + three-round pass-train playback; TTS voice settings unchanged
-# Version: v12.3 - รถผ่านสถานีเล่นอัตโนมัติ 3 รอบ โดยคงข้อความ เสียง ความเร็ว ความดัง พิทช์ และจังหวะเดิม
+# Build: v12.4 - safer repeat controls + natural female closing; core TTS settings unchanged
+# Version: v12.4 - ปรับเฉพาะจังหวะคำลงท้าย "ขอบคุณค่ะ" สำหรับเสียงหญิง พร้อมเพิ่มความปลอดภัยระหว่างเล่นซ้ำ
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -1875,6 +1875,13 @@ def add_history_event(history_id, event_type, details=None):
                 "UPDATE announcement_history SET stop_time=?,playback_success=0,completed_at=? WHERE id=?",
                 (event_at, event_at, history_id),
             )
+        elif event_type == "stopped_after_round":
+            round_no = details.get("round", "")
+            total_rounds = details.get("total_rounds", "")
+            conn.execute(
+                "UPDATE announcement_history SET stop_time=?,playback_success=0,completed_at=?,failure_reason=? WHERE id=?",
+                (event_at, event_at, f"ผู้ใช้เลือกหยุดหลังจบรอบ {round_no}/{total_rounds}", history_id),
+            )
         elif event_type == "success":
             conn.execute(
                 "UPDATE announcement_history SET playback_success=1,completed_at=?,failure_reason=NULL WHERE id=?",
@@ -2179,7 +2186,7 @@ HTML_PAGE = r"""
             background: #fffaf0; line-height: 1.7; font-size: 14px;
         }
         .action-stack { display: grid; gap: 9px; margin-top: 13px; }
-        .primary, .secondary, .danger, .pause-btn {
+        .primary, .secondary, .danger, .pause-btn, .round-stop-btn {
             width: 100%; border: 0; border-radius: 14px; padding: 14px;
             color: white; font-weight: 900;
         }
@@ -2187,7 +2194,8 @@ HTML_PAGE = r"""
         .pause-btn { background: #b06b00; }
         .secondary { background: #665b55; }
         .danger { background: var(--red); }
-        .primary:disabled, .pause-btn:disabled, .danger:disabled { opacity: .45; cursor: not-allowed; }
+        .round-stop-btn { background:#8a5a00; }
+        .primary:disabled, .pause-btn:disabled, .danger:disabled, .round-stop-btn:disabled, .mobile-round-stop:disabled { opacity: .45; cursor: not-allowed; }
         .playback-controls { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 9px; }
         .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
         .voice-quick-panel {
@@ -2332,7 +2340,9 @@ HTML_PAGE = r"""
             .mobile-controls { position:fixed; display:grid; grid-template-columns:1.5fr 1fr 1fr; gap:7px; left:8px; right:8px; bottom:8px; z-index:1000; padding:8px; background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:16px; box-shadow:0 14px 36px rgba(40,20,20,.2); backdrop-filter:blur(10px); }
             .mobile-controls button { border:0; border-radius:11px; padding:11px 7px; color:#fff; font-weight:900; }
             .mobile-play { background:var(--maroon); } .mobile-pause{background:#b06b00}.mobile-stop{background:var(--red)}
+            .mobile-round-stop { grid-column:1/-1; background:#8a5a00; }
             body { padding-bottom:88px; }
+            body.repeat-controls-visible { padding-bottom:142px; }
         }
 
         @media (max-width: 560px) {
@@ -2716,6 +2726,7 @@ HTML_PAGE = r"""
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
+                    <button type="button" class="round-stop-btn hidden" id="stopAfterRoundButton" onclick="requestStopAfterCurrentRound()" disabled>⏹ จบรอบนี้แล้วหยุด</button>
                     <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
                 </div>
                 <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ โดยเสียงภาษาไทยและภาษาอังกฤษจะใช้เพศเดียวกันตามปุ่มที่เลือกด้านบน</p>
@@ -2727,6 +2738,7 @@ HTML_PAGE = r"""
     <button type="button" class="mobile-play" id="mobilePlayButton" onclick="playOrResumeAudio()">▶ ประกาศ</button>
     <button type="button" class="mobile-pause" id="mobilePauseButton" onclick="pauseAudio()">⏸ พัก</button>
     <button type="button" class="mobile-stop" id="mobileStopButton" onclick="stopAudio()">■ หยุด</button>
+    <button type="button" class="mobile-round-stop hidden" id="mobileStopAfterRoundButton" onclick="requestStopAfterCurrentRound()">⏹ จบรอบนี้แล้วหยุด</button>
 </div>
 
 <script>
@@ -2747,6 +2759,12 @@ HTML_PAGE = r"""
     let playbackState = "idle"; // idle | loading | playing | paused
     let playbackRunId = 0;
     let activePlaybackCancel = null;
+    let stopAfterCurrentRound = false;
+    let currentRepeatRound = 0;
+    let passTrainCooldownUntil = 0;
+    let passTrainCooldownTimer = null;
+    let announcementWakeLock = null;
+    let isAnnouncementPlaybackActive = false;
     let activeHistoryId = null;
     let activeHistoryPromise = null;
     let previewTimer = null;
@@ -2764,6 +2782,7 @@ HTML_PAGE = r"""
     const NEXT_TRAIN_RETRY_MS = 60 * 1000;
     const PASS_TRAIN_REPEAT_COUNT = 3;
     const PASS_TRAIN_REPEAT_GAP_MS = 1800;
+    const PASS_TRAIN_COOLDOWN_MS = 10 * 1000;
     // ถ้าเสียงประกาศจบแล้ว แต่การบันทึกปิดคิวสะดุด ให้ลองซ้ำเองโดยไม่ตีตราการเล่นเสียงว่าล้มเหลว
     const QUICK_TRAIN_CLOSE_RETRY_DELAYS_MS = [3000, 10000, 30000, 60000];
     const quickTrainCloseRetryTimers = new Map();
@@ -3820,21 +3839,62 @@ HTML_PAGE = r"""
         else el.style.background = "rgba(255,255,255,.12)";
     }
 
+    function passTrainCooldownSeconds() {
+        return Math.max(0, Math.ceil((passTrainCooldownUntil - Date.now()) / 1000));
+    }
+
+    function startPassTrainCooldown() {
+        passTrainCooldownUntil = Date.now() + PASS_TRAIN_COOLDOWN_MS;
+        if (passTrainCooldownTimer) clearInterval(passTrainCooldownTimer);
+        passTrainCooldownTimer = setInterval(() => {
+            if (passTrainCooldownSeconds() <= 0) {
+                clearInterval(passTrainCooldownTimer);
+                passTrainCooldownTimer = null;
+                passTrainCooldownUntil = 0;
+            }
+            refreshPlaybackControls();
+        }, 500);
+        refreshPlaybackControls();
+    }
+
+    function requestStopAfterCurrentRound() {
+        if (!isAnnouncementPlaybackActive || Number(selectedAnnouncement) !== 9) return;
+        if (currentRepeatRound < 1 || currentRepeatRound >= PASS_TRAIN_REPEAT_COUNT) return;
+        stopAfterCurrentRound = true;
+        setStatus(`รับคำสั่งแล้ว · จะหยุดเมื่อจบรอบ ${currentRepeatRound}`, "work");
+        refreshPlaybackControls();
+        logHistoryEvent("stop_after_round_requested", { round: currentRepeatRound, total_rounds: PASS_TRAIN_REPEAT_COUNT });
+    }
+
     function refreshPlaybackControls() {
         const playButton = byId("playButton");
         const pauseButton = byId("pauseButton");
         const stopButton = byId("stopButton");
         if (!playButton || !pauseButton || !stopButton) return;
 
-        const playText = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ เริ่มประกาศ";
-        const playDisabled = playbackState === "loading" || playbackState === "playing" || (playbackState === "idle" && selectedAnnouncement === null);
+        const cooldownSeconds = Number(selectedAnnouncement) === 9 ? passTrainCooldownSeconds() : 0;
+        const playText = playbackState === "paused"
+            ? "▶ เล่นต่อ"
+            : (cooldownSeconds > 0 ? `⏳ รอ ${cooldownSeconds} วิ` : "▶ เริ่มประกาศ");
+        const playDisabled = playbackState === "loading" || playbackState === "playing" || cooldownSeconds > 0 || (playbackState === "idle" && selectedAnnouncement === null);
         const pauseDisabled = playbackState !== "playing";
         const stopDisabled = !["loading", "playing", "paused"].includes(playbackState);
         playButton.textContent = playText; playButton.disabled = playDisabled;
         pauseButton.disabled = pauseDisabled; stopButton.disabled = stopDisabled;
-        if (byId("mobilePlayButton")) { byId("mobilePlayButton").textContent = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ ประกาศ"; byId("mobilePlayButton").disabled = playDisabled; }
+        if (byId("mobilePlayButton")) { byId("mobilePlayButton").textContent = playbackState === "paused" ? "▶ เล่นต่อ" : (cooldownSeconds > 0 ? `⏳ ${cooldownSeconds} วิ` : "▶ ประกาศ"); byId("mobilePlayButton").disabled = playDisabled; }
         if (byId("mobilePauseButton")) byId("mobilePauseButton").disabled = pauseDisabled;
         if (byId("mobileStopButton")) byId("mobileStopButton").disabled = stopDisabled;
+
+        const repeatActive = isAnnouncementPlaybackActive && Number(selectedAnnouncement) === 9 && ["loading", "playing", "paused"].includes(playbackState);
+        const canStopAfterRound = repeatActive && currentRepeatRound > 0 && currentRepeatRound < PASS_TRAIN_REPEAT_COUNT && !stopAfterCurrentRound;
+        const roundStopText = stopAfterCurrentRound ? `✓ จะหยุดเมื่อจบรอบ ${currentRepeatRound}` : "⏹ จบรอบนี้แล้วหยุด";
+        [byId("stopAfterRoundButton"), byId("mobileStopAfterRoundButton")].forEach(button => {
+            if (!button) return;
+            button.classList.toggle("hidden", !repeatActive);
+            button.disabled = !canStopAfterRound;
+            button.textContent = roundStopText;
+        });
+        document.body.classList.toggle("repeat-controls-visible", repeatActive);
     }
 
     function setPlaybackState(state) {
@@ -3847,6 +3907,40 @@ HTML_PAGE = r"""
         document.querySelectorAll(".announce-option, .lang-btn, .voice-choice-btn, .voice-test-btn").forEach(btn => btn.disabled = active);
         refreshPlaybackControls();
     }
+
+    async function acquireAnnouncementWakeLock() {
+        if (!isAnnouncementPlaybackActive || document.visibilityState !== "visible" || !navigator.wakeLock?.request) return;
+        try {
+            if (!announcementWakeLock) {
+                const lock = await navigator.wakeLock.request("screen");
+                announcementWakeLock = lock;
+                lock.addEventListener("release", () => {
+                    if (announcementWakeLock === lock) announcementWakeLock = null;
+                });
+            }
+        } catch (error) {
+            console.warn("Screen wake lock unavailable:", error);
+        }
+    }
+
+    async function releaseAnnouncementWakeLock() {
+        const lock = announcementWakeLock;
+        announcementWakeLock = null;
+        if (!lock) return;
+        try { await lock.release(); } catch (e) {}
+    }
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && isAnnouncementPlaybackActive) {
+            acquireAnnouncementWakeLock();
+        }
+    });
+
+    window.addEventListener("beforeunload", event => {
+        if (!isAnnouncementPlaybackActive) return;
+        event.preventDefault();
+        event.returnValue = "";
+    });
 
     function getMainPlayer() {
         if (!mainPlayer) {
@@ -3983,6 +4077,10 @@ HTML_PAGE = r"""
         }
         playbackRunId += 1;
         cancelActivePlayback(true);
+        stopAfterCurrentRound = false;
+        currentRepeatRound = 0;
+        isAnnouncementPlaybackActive = false;
+        releaseAnnouncementWakeLock();
         isBusy = false;
         setLoading(false);
         setPlaybackState("idle");
@@ -4177,6 +4275,11 @@ HTML_PAGE = r"""
     }
 
     async function playSelectedAnnouncement() {
+        const cooldownSeconds = Number(selectedAnnouncement) === 9 ? passTrainCooldownSeconds() : 0;
+        if (cooldownSeconds > 0) {
+            setStatus(`เพิ่งประกาศรถผ่านครบแล้ว · กรุณารออีก ${cooldownSeconds} วินาที`, "work");
+            return;
+        }
         const error = validateSelection();
         if (error) {
             setStatus("ข้อมูลไม่ครบ", "error");
@@ -4296,10 +4399,18 @@ HTML_PAGE = r"""
         if (isBusy) return;
         const runId = beginPlaybackRun();
         isBusy = true;
+        stopAfterCurrentRound = false;
+        currentRepeatRound = 0;
+        isAnnouncementPlaybackActive = true;
         activeHistoryId = null;
         activeHistoryPromise = startHistoryRecord(tabIndex);
         await unlockMobileAudio();
         if (runId !== playbackRunId) return;
+        await acquireAnnouncementWakeLock();
+        if (runId !== playbackRunId) {
+            await releaseAnnouncementWakeLock();
+            return;
+        }
         setLoading(true);
 
         // v9.4: เตรียม TTS และโหลดไฟล์เสียงให้พร้อมก่อน แล้วค่อยเล่นเสียงเตือน
@@ -4335,9 +4446,15 @@ HTML_PAGE = r"""
             }
 
             const repeatCount = Number(tabIndex) === 9 ? PASS_TRAIN_REPEAT_COUNT : 1;
+            let stoppedAfterRound = false;
             for (let round = 1; round <= repeatCount; round++) {
                 if (runId !== playbackRunId) throw makePlaybackStoppedError();
+                currentRepeatRound = round;
+                refreshPlaybackControls();
                 const roundText = repeatCount > 1 ? ` · รอบ ${round}/${repeatCount}` : "";
+                if (repeatCount > 1 && byId("audioReadyBadge")) {
+                    byId("audioReadyBadge").textContent = `⚠️ รถผ่านสถานี · กำลังเล่นรอบ ${round}/${repeatCount}`;
+                }
                 setStatus(`เสียงเตือน${roundText}`, "work");
                 await playOriginalChime(runId);
                 if (runId !== playbackRunId) throw makePlaybackStoppedError();
@@ -4355,12 +4472,28 @@ HTML_PAGE = r"""
                     await logHistoryEvent("repeat_round", { round, total_rounds: repeatCount });
                 }
                 if (round < repeatCount) {
+                    if (stopAfterCurrentRound) {
+                        stoppedAfterRound = true;
+                        break;
+                    }
                     setPlaybackState("loading");
-                    setStatus(`จบรอบ ${round}/${repeatCount} · เว้นช่วงก่อนรอบถัดไป`, "work");
+                    setStatus(`จบรอบ ${round}/${repeatCount} · รอบถัดไปใน 1.8 วินาที`, "work");
+                    if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = `⏳ จบรอบ ${round}/${repeatCount} · เตรียมรอบถัดไป`;
                     await waitBetweenAnnouncementRounds(PASS_TRAIN_REPEAT_GAP_MS, runId);
+                    if (stopAfterCurrentRound) {
+                        stoppedAfterRound = true;
+                        break;
+                    }
                 }
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
+
+            if (stoppedAfterRound) {
+                await logHistoryEvent("stopped_after_round", { round: currentRepeatRound, total_rounds: repeatCount });
+                setStatus(`หยุดเรียบร้อยหลังจบรอบ ${currentRepeatRound}/${repeatCount}`, "work");
+                if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = `⏹ หยุดหลังจบรอบ ${currentRepeatRound}/${repeatCount}`;
+                return;
+            }
 
             // v12.1: ผลการเล่นเสียงและการ sync คิวเป็นคนละสถานะกัน
             // ถ้าเสียงเล่นจบครบ ให้ History = สำเร็จเสมอ ส่วนคิวถ้าสะดุดให้ retry เองเบื้องหลัง
@@ -4379,7 +4512,9 @@ HTML_PAGE = r"""
                     setStatus("ประกาศเสร็จแล้ว · ขบวนออกจากคิวแล้ว", "ok");
                 }
             } else if (repeatCount > 1) {
+                startPassTrainCooldown();
                 setStatus(`ประกาศครบ ${repeatCount} รอบแล้ว`, "ok");
+                if (byId("audioReadyBadge")) byId("audioReadyBadge").textContent = `✅ ประกาศรถผ่านครบ ${repeatCount} รอบแล้ว`;
             } else {
                 setStatus("ประกาศเสร็จแล้ว", "ok");
             }
@@ -4397,6 +4532,10 @@ HTML_PAGE = r"""
             }
         } finally {
             if (runId === playbackRunId) {
+                isAnnouncementPlaybackActive = false;
+                stopAfterCurrentRound = false;
+                currentRepeatRound = 0;
+                await releaseAnnouncementWakeLock();
                 setLoading(false);
                 isBusy = false;
                 setPlaybackState("idle");
@@ -4794,6 +4933,10 @@ def prepare_tts_text(text):
     # คำลงท้ายควรมีจังหวะก่อนกล่าวขอบคุณ แต่ไม่เพิ่มถ้ามีเครื่องหมายอยู่แล้ว
     tts_text = re.sub(r"(?<![.!?])\s+(ขอขอบคุณในความร่วมมือ(?:ครับ|ค่ะ))$", r". \1", tts_text)
     tts_text = re.sub(r"(?<![.!?])\s+(ขอบคุณ(?:ครับ|ค่ะ))$", r". \1", tts_text)
+
+    # เสียงหญิง Premwadee อาจอ่าน "ขอบคุณค่ะ" ติดกันจนคำว่า "ค่ะ" แข็งเกินไป
+    # แทรกจังหวะสั้นเฉพาะข้อความที่ส่งเข้า TTS; ข้อความบนหน้าเว็บยังแสดง "ขอบคุณค่ะ" ตามเดิม
+    tts_text = re.sub(r"(ขอบคุณ(?:ในความร่วมมือ)?)ค่ะ", r"\1, ค่ะ", tts_text)
 
     return _normalize_punctuation_spacing(tts_text)
 
@@ -5899,7 +6042,7 @@ def api_history_start():
 def api_history_event():
     try:
         data=request.get_json(silent=True) or {}; history_id=int(data.get('history_id')); event_type=(data.get('event_type') or '').strip()
-        if event_type not in {'generated','pause','resume','stop','success','failed','repeat_round','queue_close_retry_scheduled'}: raise ValueError("ประเภทเหตุการณ์ไม่ถูกต้อง")
+        if event_type not in {'generated','pause','resume','stop','success','failed','repeat_round','stop_after_round_requested','stopped_after_round','queue_close_retry_scheduled'}: raise ValueError("ประเภทเหตุการณ์ไม่ถูกต้อง")
         event_at=add_history_event(history_id,event_type,data.get('details') or {})
         return jsonify(status="success",event_at=event_at)
     except Exception as exc:
