@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.1 - playback success is independent from quick-queue sync + automatic queue retry
-# Version: v12.1 - successful รถจอด / ออก playback is recorded as success even if queue persistence is temporarily unavailable
+# Build: v12.2 - multi-train wording and validation fix; TTS voice settings unchanged
+# Version: v12.2 - removes duplicated "ขบวนรถ" in multi-train announcements without changing voice/rate/volume/pitch
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -2680,6 +2680,7 @@ HTML_PAGE = r"""
     let activeHistoryId = null;
     let activeHistoryPromise = null;
     let previewTimer = null;
+    let previewRequestId = 0;
     let activeTrainPickerCount = 1;
     let nextTrainPrewarmTimer = null;
     let nextTrainPrewarmRunId = 0;
@@ -3043,6 +3044,7 @@ HTML_PAGE = r"""
     function collectPayload(tabIndex) {
         return {
             tab_index: tabIndex,
+            train_count: activeTrainPickerCount,
             announce_mode: value("announce_mode") || "thai_only",
             thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
             num: value("num"), origin: value("origin"), dest: value("dest"), time: value("time"),
@@ -3144,18 +3146,22 @@ HTML_PAGE = r"""
     function schedulePreview(delay = 120) {
         if (previewTimer) clearTimeout(previewTimer);
         if (selectedAnnouncement === null) return;
+        const requestId = ++previewRequestId;
         previewTimer = setTimeout(async () => {
             previewTimer = null;
             const error = validateSelection(selectedAnnouncement, true);
             if (error) {
+                if (requestId !== previewRequestId) return;
                 byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
                 byId("audioReadyBadge").textContent = "";
                 return;
             }
             try {
                 const data = await requestPreviewData(selectedAnnouncement);
+                if (requestId !== previewRequestId) return;
                 renderServerPreview(data.text_preview || "-");
             } catch (error) {
+                if (requestId !== previewRequestId) return;
                 byId("previewBox").innerHTML = `<b>แสดงตัวอย่างไม่ได้</b><br><br>${escapeHtml(error.message || String(error))}`;
             }
         }, delay);
@@ -3680,6 +3686,11 @@ HTML_PAGE = r"""
             return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
 
         if ([0, 1, 2].includes(index)) {
+            if (activeTrainPickerCount >= 2 && !value("num_2"))
+                return "กรุณาเลือกขบวนที่ 2 หรือลบช่องขบวนที่ 2";
+            if (activeTrainPickerCount >= 3 && !value("num_3"))
+                return "กรุณาเลือกขบวนที่ 3 หรือลบช่องขบวนที่ 3";
+
             const selectedNums = [];
             if (value("num")) selectedNums.push(value("num"));
             if (activeTrainPickerCount >= 2 && value("num_2")) selectedNums.push(value("num_2"));
@@ -4234,6 +4245,7 @@ HTML_PAGE = r"""
     function clearData() {
         stopAudio();
         invalidatePreparedAudio();
+        previewRequestId += 1;
         if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
         ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "custom_text", "custom_text_en",
          "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
@@ -5019,7 +5031,7 @@ def build_announcement(data):
             ]
             detail_text = " และ ".join(details)
             text = (
-                f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ {detail_text} "
+                f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับ{detail_text} "
                 f"ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
             )
     elif idx == 1:
@@ -5037,7 +5049,7 @@ def build_announcement(data):
                 for n, o, d, tt, p in waiting_trains
             ]
             detail_text = " และ ".join(details)
-            text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ {detail_text} ขอบคุณครับ"
+            text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับ{detail_text} ขอบคุณครับ"
     elif idx == 11:
         text = (
             f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} "
