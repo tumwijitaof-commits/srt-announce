@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.2 - multi-train wording and validation fix; TTS voice settings unchanged
-# Version: v12.2 - removes duplicated "ขบวนรถ" in multi-train announcements without changing voice/rate/volume/pitch
+# Build: v12.3 - safety validation + three-round pass-train playback; TTS voice settings unchanged
+# Version: v12.3 - รถผ่านสถานีเล่นอัตโนมัติ 3 รอบ โดยคงข้อความ เสียง ความเร็ว ความดัง พิทช์ และจังหวะเดิม
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -181,7 +181,7 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "เลือกขบวนและชานชาลาได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 11, "title": "รถเปลี่ยนเส้นทาง", "hint": "แจ้งกรณีเปลี่ยนทางหรือชานชาลาเข้าเทียบจากปกติ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
-    {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับพร้อมกัน 1–3 ทาง", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับ 1–3 ทาง · เล่นอัตโนมัติ 3 รอบ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย", "visible": True},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศอื่น", "visible": True},
@@ -1430,8 +1430,11 @@ def mark_quick_train_handled_record(train_label, train_num="", time_hhmm="", ser
     return True
 
 
-def get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=False):
+def _legacy_get_realtime_aware_quick_train_snapshot(inbound, outbound, limit=3, force=False):
     """
+    รุ่นเดิมเก็บไว้เป็นข้อมูลอ้างอิงเท่านั้น ไม่ถูกเรียกใช้งาน.
+    ฟังก์ชันใช้งานจริงอยู่ในส่วน v12.1 QUICK TRAIN OVERDUE AUTO-HIDE FIX ด้านท้ายไฟล์.
+
     เลือกขบวนถัดไปโดยให้ ETA สดเป็นตัวนำเมื่อข้อมูลยังสด.
     ถ้าเวลาในตารางผ่านแล้ว แต่ TTS ยังไม่ยืนยันว่าขบวนออก/ผ่านสถานี
     จะเก็บ 'ขบวนที่ค้างล่าสุด' ไว้ 1 ขบวนเพื่อป้องกันรถล่าช้าหายจากหน้าจอ.
@@ -1747,6 +1750,73 @@ def announcement_title(tab_index):
         return "ไม่ทราบประเภท"
     item = next((item for item in ANNOUNCEMENT_BUTTONS if item["idx"] == tab_index), None)
     return item["title"] if item else "ไม่ทราบประเภท"
+
+
+def validate_announcement_payload(payload):
+    """ตรวจข้อมูลซ้ำที่ Backend ก่อน Preview/สร้างเสียง โดยไม่แก้ข้อความหรือค่าของ TTS"""
+    try:
+        idx = int(payload.get("tab_index", -1))
+    except (TypeError, ValueError):
+        return "กรุณาเลือกประเภทประกาศ"
+
+    if idx not in {item["idx"] for item in ANNOUNCEMENT_BUTTONS}:
+        return "ประเภทประกาศไม่ถูกต้อง"
+
+    def field(name):
+        return str(payload.get(name, "") or "").strip()
+
+    if idx not in {7, 8, 9, 12} and not field("num"):
+        return "กรุณาเลือกขบวนรถ"
+
+    if idx == 4 and not field("next"):
+        return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ"
+
+    if idx in {0, 1, 2}:
+        try:
+            train_count = max(1, min(3, int(payload.get("train_count", 1) or 1)))
+        except (TypeError, ValueError):
+            train_count = 1
+
+        nums = [field("num")]
+        if train_count >= 2:
+            if not field("num_2"):
+                return "กรุณาเลือกขบวนที่ 2 หรือลบช่องขบวนที่ 2"
+            nums.append(field("num_2"))
+        if train_count >= 3:
+            if not field("num_3"):
+                return "กรุณาเลือกขบวนที่ 3 หรือลบช่องขบวนที่ 3"
+            nums.append(field("num_3"))
+        if len(set(nums)) != len(nums):
+            return "กรุณาเลือกขบวนรถไม่ให้ซ้ำกัน"
+
+        if idx == 2:
+            platforms = [field("platform")]
+            if train_count >= 2:
+                platforms.append(field("platform_2"))
+            if train_count >= 3:
+                platforms.append(field("platform_3"))
+            if any(value not in {"1", "2", "3"} for value in platforms):
+                return "กรุณาเลือกชานชาลาให้ถูกต้อง"
+            if len(set(platforms)) != len(platforms):
+                return "กรุณาเลือกชานชาลาของขบวนรถที่เข้าเทียบไม่ให้ซ้ำกัน"
+
+    if idx == 9:
+        try:
+            pass_train_items(payload)
+        except ValueError as exc:
+            return str(exc)
+
+    if idx == 5 and not field("delay"):
+        return "กรุณาระบุเวลาที่คาดว่าจะถึง"
+
+    if idx == 8:
+        mode = field("announce_mode") or "thai_only"
+        if mode != "english_only" and not field("custom_text"):
+            return "กรุณาพิมพ์ข้อความภาษาไทย"
+        if mode != "thai_only" and not field("custom_text_en"):
+            return "กรุณาพิมพ์ข้อความภาษาอังกฤษ"
+
+    return ""
 
 
 def insert_history(payload, user):
@@ -2692,6 +2762,8 @@ HTML_PAGE = r"""
     const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
     const NEXT_TRAIN_PREWARM_LEAD_MINUTES = 10;
     const NEXT_TRAIN_RETRY_MS = 60 * 1000;
+    const PASS_TRAIN_REPEAT_COUNT = 3;
+    const PASS_TRAIN_REPEAT_GAP_MS = 1800;
     // ถ้าเสียงประกาศจบแล้ว แต่การบันทึกปิดคิวสะดุด ให้ลองซ้ำเองโดยไม่ตีตราการเล่นเสียงว่าล้มเหลว
     const QUICK_TRAIN_CLOSE_RETRY_DELAYS_MS = [3000, 10000, 30000, 60000];
     const quickTrainCloseRetryTimers = new Map();
@@ -2767,12 +2839,25 @@ HTML_PAGE = r"""
         box.querySelectorAll(".train-search-result").forEach(btn => btn.addEventListener("click", () => selectTrainByLabel(btn.dataset.label, 1)));
     }
 
+    function supportsMultipleTrainSelection(index = selectedAnnouncement) {
+        return index === null || index === undefined || [0, 1, 2].includes(Number(index));
+    }
+
+    function updateMultiTrainControls(index = selectedAnnouncement) {
+        const supported = supportsMultipleTrainSelection(index);
+        if (byId("trainAddControls")) byId("trainAddControls").classList.toggle("hidden", !supported);
+        if (byId("trainPicker2")) byId("trainPicker2").classList.toggle("hidden", !supported || activeTrainPickerCount < 2);
+        if (byId("trainPicker3")) byId("trainPicker3").classList.toggle("hidden", !supported || activeTrainPickerCount < 3);
+    }
+
     function addTrainPicker() {
+        if (!supportsMultipleTrainSelection()) return;
         if (activeTrainPickerCount >= 3) return;
         activeTrainPickerCount += 1;
         byId(`trainPicker${activeTrainPickerCount}`).classList.remove("hidden");
         byId("addTrain2Button").textContent = activeTrainPickerCount === 2 ? "＋ เพิ่มขบวนที่ 3" : "เพิ่มครบ 3 ขบวนแล้ว";
         byId("addTrain2Button").disabled = activeTrainPickerCount >= 3;
+        updateMultiTrainControls();
         schedulePreview();
     }
 
@@ -2792,6 +2877,7 @@ HTML_PAGE = r"""
         activeTrainPickerCount -= 1;
         byId("addTrain2Button").disabled = false;
         byId("addTrain2Button").textContent = activeTrainPickerCount === 1 ? "＋ เพิ่มขบวนที่ 2" : "＋ เพิ่มขบวนที่ 3";
+        updateMultiTrainControls();
         invalidatePreparedAudio();
         schedulePreview();
         schedulePrepareAnnouncement(250);
@@ -3009,10 +3095,12 @@ HTML_PAGE = r"""
 
     function selectAnnouncement(index, button) {
         selectedAnnouncement = index;
+        updateMultiTrainControls(index);
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
         refreshPlaybackControls();
-        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>ตรวจข้อความด้านล่างก่อนกดประกาศ`;
+        const repeatNote = Number(index) === 9 ? `<br>ระบบจะเล่นอัตโนมัติ ${PASS_TRAIN_REPEAT_COUNT} รอบ` : "";
+        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>ตรวจข้อความด้านล่างก่อนกดประกาศ${repeatNote}`;
 
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         if (index === 5) byId("delayFields").classList.add("show");
@@ -3190,6 +3278,7 @@ HTML_PAGE = r"""
 
         return {
             tab_index: tabIndex,
+            train_count: 1,
             announce_mode: value("announce_mode") || "thai_only",
             thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
             num: data.num || "",
@@ -4037,11 +4126,66 @@ HTML_PAGE = r"""
         }
     }
 
+    function waitBetweenAnnouncementRounds(milliseconds, runId = playbackRunId) {
+        return new Promise((resolve, reject) => {
+            let finished = false;
+            const timer = setTimeout(() => finish(), milliseconds);
+
+            function cleanup() {
+                clearTimeout(timer);
+                if (activePlaybackCancel === cancelWait) activePlaybackCancel = null;
+            }
+            function finish() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                if (runId !== playbackRunId) reject(makePlaybackStoppedError());
+                else resolve();
+            }
+            function cancelWait() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                reject(makePlaybackStoppedError());
+            }
+
+            if (runId !== playbackRunId) return cancelWait();
+            activePlaybackCancel = cancelWait;
+        });
+    }
+
+    function confirmationMessage(tabIndex) {
+        const index = Number(tabIndex);
+        if (index === 2) {
+            const trains = [];
+            if (value("num")) trains.push(`ขบวน ${value("num")} — ชานชาลา ${value("platform")}`);
+            if (activeTrainPickerCount >= 2 && value("num_2")) trains.push(`ขบวน ${value("num_2")} — ชานชาลา ${value("platform_2")}`);
+            if (activeTrainPickerCount >= 3 && value("num_3")) trains.push(`ขบวน ${value("num_3")} — ชานชาลา ${value("platform_3")}`);
+            if (trains.length > 1) return `ตรวจสอบรถเข้าเทียบพร้อมกัน\n\n${trains.join("\n")}\n\nยืนยันเริ่มประกาศหรือไม่`;
+        }
+        if (index === 9) {
+            const count = Math.max(1, Math.min(3, parseInt(value("pass_count") || "1", 10)));
+            const trains = [`รถ${value("train_type") || "สินค้า"} — ชานชาลา ${value("pass_platform")}`];
+            if (count >= 2) trains.push(`รถ${value("train_type_2") || "สินค้า"} — ชานชาลา ${value("pass_platform_2")}`);
+            if (count >= 3) trains.push(`รถ${value("train_type_3") || "สินค้า"} — ชานชาลา ${value("pass_platform_3")}`);
+            return `ตรวจสอบประกาศรถผ่านสถานี\n\n${trains.join("\n")}\n\nระบบจะประกาศอัตโนมัติ ${PASS_TRAIN_REPEAT_COUNT} รอบ\nยืนยันเริ่มประกาศหรือไม่`;
+        }
+        if (index === 8) {
+            return "กรุณาตรวจสอบข้อความประกาศเองในช่องตัวอย่างอีกครั้ง\n\nยืนยันเริ่มประกาศหรือไม่";
+        }
+        return "";
+    }
+
     async function playSelectedAnnouncement() {
         const error = validateSelection();
         if (error) {
             setStatus("ข้อมูลไม่ครบ", "error");
             byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
+            return;
+        }
+        const confirmation = confirmationMessage(selectedAnnouncement);
+        if (confirmation && !window.confirm(confirmation)) {
+            setStatus("ยกเลิกการประกาศแล้ว");
             return;
         }
         await playAnnouncement(selectedAnnouncement);
@@ -4190,17 +4334,31 @@ HTML_PAGE = r"""
                     : "🔊 สร้างไฟล์เสียงเสร็จแล้ว";
             }
 
-            setStatus(data.used_cached_audio ? "ใช้ไฟล์เสียงสำรองเดิม" : "เสียงเตือน...", "work");
-            await playOriginalChime(runId);
-            if (runId !== playbackRunId) throw makePlaybackStoppedError();
-
-            for (let i = 0; i < audioUrls.length; i++) {
+            const repeatCount = Number(tabIndex) === 9 ? PASS_TRAIN_REPEAT_COUNT : 1;
+            for (let round = 1; round <= repeatCount; round++) {
                 if (runId !== playbackRunId) throw makePlaybackStoppedError();
-                setStatus(`กำลังประกาศ ${audioLabels[i] || ""}`.trim(), "ok");
-                await playUrl(audioUrls[i], {
-                    errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
-                    runId
-                });
+                const roundText = repeatCount > 1 ? ` · รอบ ${round}/${repeatCount}` : "";
+                setStatus(`เสียงเตือน${roundText}`, "work");
+                await playOriginalChime(runId);
+                if (runId !== playbackRunId) throw makePlaybackStoppedError();
+
+                for (let i = 0; i < audioUrls.length; i++) {
+                    if (runId !== playbackRunId) throw makePlaybackStoppedError();
+                    setStatus(`กำลังประกาศ ${audioLabels[i] || ""}${roundText}`.trim(), "ok");
+                    await playUrl(audioUrls[i], {
+                        errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
+                        runId
+                    });
+                }
+
+                if (repeatCount > 1) {
+                    await logHistoryEvent("repeat_round", { round, total_rounds: repeatCount });
+                }
+                if (round < repeatCount) {
+                    setPlaybackState("loading");
+                    setStatus(`จบรอบ ${round}/${repeatCount} · เว้นช่วงก่อนรอบถัดไป`, "work");
+                    await waitBetweenAnnouncementRounds(PASS_TRAIN_REPEAT_GAP_MS, runId);
+                }
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
 
@@ -4209,15 +4367,21 @@ HTML_PAGE = r"""
             const queueClosed = await markSelectedQuickTrainAsHandled(tabIndex);
             await logHistoryEvent("success");
 
-            if (!queueClosed && Number(tabIndex) === 4) {
-                await logHistoryEvent("queue_close_retry_scheduled", {
-                    reason: "เสียงเล่นจบสำเร็จ แต่การบันทึกปิดคิวรอบแรกไม่สำเร็จ ระบบตั้งเวลาลองใหม่อัตโนมัติ"
-                });
-                setStatus("ประกาศเสร็จแล้ว · กำลังซิงก์คิวอัตโนมัติ", "ok");
-                // History ที่เป็น success เป็น fallback ของเซิร์ฟเวอร์อยู่แล้ว จึงสั่งดึงคิวใหม่ทันที
-                refreshNextTrainsFromServer(true);
+            if (Number(tabIndex) === 4) {
+                if (!queueClosed) {
+                    await logHistoryEvent("queue_close_retry_scheduled", {
+                        reason: "เสียงเล่นจบสำเร็จ แต่การบันทึกปิดคิวรอบแรกไม่สำเร็จ ระบบตั้งเวลาลองใหม่อัตโนมัติ"
+                    });
+                    setStatus("ประกาศเสร็จแล้ว · กำลังซิงก์คิวอัตโนมัติ", "ok");
+                    // History ที่เป็น success เป็น fallback ของเซิร์ฟเวอร์อยู่แล้ว จึงสั่งดึงคิวใหม่ทันที
+                    refreshNextTrainsFromServer(true);
+                } else {
+                    setStatus("ประกาศเสร็จแล้ว · ขบวนออกจากคิวแล้ว", "ok");
+                }
+            } else if (repeatCount > 1) {
+                setStatus(`ประกาศครบ ${repeatCount} รอบแล้ว`, "ok");
             } else {
-                setStatus("ประกาศเสร็จแล้ว · ขบวนออกจากคิวแล้ว", "ok");
+                setStatus("ประกาศเสร็จแล้ว", "ok");
             }
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -4259,6 +4423,7 @@ HTML_PAGE = r"""
         byId("trainPicker2").classList.add("hidden"); byId("trainPicker3").classList.add("hidden");
         byId("addTrain2Button").disabled = false; byId("addTrain2Button").textContent = "＋ เพิ่มขบวนที่ 2";
         selectedAnnouncement = null;
+        updateMultiTrainControls(null);
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         refreshPlaybackControls();
@@ -5720,6 +5885,9 @@ def api_next_trains():
 def api_history_start():
     try:
         payload=request.get_json(silent=True) or {}
+        validation_error = validate_announcement_payload(payload)
+        if validation_error:
+            return jsonify(status="error", message=validation_error), 400
         history_id=insert_history(payload,get_current_user())
         return jsonify(status="success",history_id=history_id)
     except Exception as exc:
@@ -5731,7 +5899,7 @@ def api_history_start():
 def api_history_event():
     try:
         data=request.get_json(silent=True) or {}; history_id=int(data.get('history_id')); event_type=(data.get('event_type') or '').strip()
-        if event_type not in {'generated','pause','resume','stop','success','failed'}: raise ValueError("ประเภทเหตุการณ์ไม่ถูกต้อง")
+        if event_type not in {'generated','pause','resume','stop','success','failed','repeat_round','queue_close_retry_scheduled'}: raise ValueError("ประเภทเหตุการณ์ไม่ถูกต้อง")
         event_at=add_history_event(history_id,event_type,data.get('details') or {})
         return jsonify(status="success",event_at=event_at)
     except Exception as exc:
@@ -5861,6 +6029,10 @@ def preview_announcement():
     if mode not in {"thai_only", "english_only", "bilingual"}:
         return jsonify({"status": "error", "message": "รูปแบบภาษาที่เลือกไม่ถูกต้อง"}), 400
 
+    validation_error = validate_announcement_payload(data)
+    if validation_error:
+        return jsonify({"status": "error", "message": validation_error}), 400
+
     thai_voice = (data.get("thai_voice") or VOICE_NAME).strip()
     if thai_voice not in THAI_VOICE_OPTIONS:
         thai_voice = VOICE_NAME
@@ -5898,6 +6070,10 @@ def announce():
     allowed_modes = {"thai_only", "english_only", "bilingual"}
     if mode not in allowed_modes:
         return jsonify({"status": "error", "message": "รูปแบบภาษาที่เลือกไม่ถูกต้อง"}), 400
+
+    validation_error = validate_announcement_payload(data)
+    if validation_error:
+        return jsonify({"status": "error", "message": validation_error}), 400
 
     thai_text = ""
     english_text = ""
