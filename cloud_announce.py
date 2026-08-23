@@ -10,6 +10,7 @@ import re
 import hashlib
 import threading
 import sqlite3
+import logging
 try:
     import psycopg
 except ImportError:
@@ -24,12 +25,39 @@ from datetime import datetime, date, time as dt_time, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.5 - two-round pass-train playback; chime on first round only
-# Version: v12.5 - รถผ่านประกาศ 2 รอบ เว้น 1.8 วินาที และเล่นเสียงเตือนเฉพาะก่อนรอบแรก
+# Build: v13.0-production - security, resilience, performance and premium UI upgrade
+# Voice baseline: v12.5 unchanged — รถผ่าน 2 รอบ เว้น 1.8 วินาที และเสียงเตือนเฉพาะรอบแรก
 BASE_DIR = Path(__file__).resolve().parent
+
+# Production HTTP limits and trusted proxy handling.  Render places exactly one
+# proxy in front of the application; other environments must opt in explicitly.
+TRUST_PROXY_HOPS = max(
+    0,
+    min(3, int(os.environ.get("TRUST_PROXY_HOPS", "1" if os.environ.get("RENDER") else "0"))),
+)
+if TRUST_PROXY_HOPS:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=TRUST_PROXY_HOPS,
+        x_proto=TRUST_PROXY_HOPS,
+        x_host=TRUST_PROXY_HOPS,
+    )
+
+MAX_REQUEST_BYTES = max(1, min(25, int(os.environ.get("MAX_REQUEST_MB", "8")))) * 1024 * 1024
+app.config.update(
+    MAX_CONTENT_LENGTH=MAX_REQUEST_BYTES,
+    MAX_FORM_MEMORY_SIZE=min(MAX_REQUEST_BYTES, 2 * 1024 * 1024),
+)
+
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("station_system")
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
 # บน Render ควรกำหนด SECRET_KEY ใน Environment เสมอ
@@ -43,6 +71,7 @@ elif os.environ.get("RENDER") and _ENV_DATABASE_URL:
     app.secret_key = hashlib.sha256(
         (_ENV_DATABASE_URL + "|bangphra-station-session-v3").encode("utf-8")
     ).hexdigest()
+    logger.warning("SECRET_KEY is not set; using the compatibility fallback. Set a dedicated SECRET_KEY in production.")
 elif _SECRET_FILE.exists():
     app.secret_key = _SECRET_FILE.read_text(encoding="utf-8").strip()
 else:
@@ -53,10 +82,15 @@ else:
         pass
 
 SESSION_HOURS = max(1, int(os.environ.get("SESSION_HOURS", "24")))
+IS_PRODUCTION = (
+    str(os.environ.get("APP_ENV", "")).lower() == "production"
+    or str(os.environ.get("RENDER", "")).lower() == "true"
+)
 app.config.update(
+    SESSION_COOKIE_NAME="kbp_station_session",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=str(os.environ.get("RENDER", "")).lower() == "true",
+    SESSION_COOKIE_SECURE=IS_PRODUCTION,
     PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS),
     SESSION_REFRESH_EACH_REQUEST=True,
 )
@@ -123,6 +157,7 @@ SRT_TTS_STATION_KEY = os.environ.get("SRT_TTS_STATION_KEY", "Khlong Bang Phra").
 SRT_TTS_REALTIME_TIMEOUT = max(3, min(20, int(os.environ.get("SRT_TTS_REALTIME_TIMEOUT", "8"))))
 SRT_TTS_REALTIME_CACHE_SECONDS = max(5, min(60, int(os.environ.get("SRT_TTS_REALTIME_CACHE_SECONDS", "20"))))
 SRT_TTS_REALTIME_STALE_SECONDS = max(30, min(300, int(os.environ.get("SRT_TTS_REALTIME_STALE_SECONDS", "120"))))
+REALTIME_RESPONSE_MAX_BYTES = max(256 * 1024, min(5 * 1024 * 1024, int(os.environ.get("REALTIME_RESPONSE_MAX_BYTES", str(2 * 1024 * 1024)))))
 SRT_TTS_TRACKING_URLS = {
     "367": os.environ.get(
         "SRT_TTS_TRACKING_URL_367",
@@ -135,6 +170,9 @@ _AUDIO_CACHE_LOCKS = {}
 _AUDIO_CACHE_LOCKS_GUARD = threading.Lock()
 _AUDIO_CLEANUP_LOCK = threading.Lock()
 _LAST_AUDIO_CLEANUP = 0.0
+TTS_MAX_CONCURRENT_JOBS = max(1, min(6, int(os.environ.get("TTS_MAX_CONCURRENT_JOBS", "3"))))
+_TTS_PROCESS_LIMIT = threading.BoundedSemaphore(TTS_MAX_CONCURRENT_JOBS)
+_TTS_EXECUTOR = ThreadPoolExecutor(max_workers=TTS_MAX_CONCURRENT_JOBS, thread_name_prefix="station-tts")
 # เก็บไฟล์เสียงสำรองไว้ 30 วันเป็นค่าเริ่มต้น และเมื่อมีการนำไฟล์เดิมกลับมาใช้
 # ระบบจะต่ออายุอายุไฟล์ด้วย os.utime() เพื่อไม่ให้เสียงที่ใช้งานจริงถูกลบง่าย
 AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 30 * 24 * 60 * 60))
@@ -218,6 +256,54 @@ def now_iso():
     return now_bangkok().isoformat(timespec="seconds")
 
 
+@app.before_request
+def assign_request_context():
+    """Attach a short correlation id without exposing internal exceptions."""
+    supplied = (request.headers.get("X-Request-ID") or "").strip()
+    g.request_id = supplied[:64] if re.fullmatch(r"[A-Za-z0-9._:-]{8,64}", supplied) else uuid.uuid4().hex[:16]
+
+
+@app.after_request
+def apply_security_headers(response):
+    response.headers.setdefault("X-Request-ID", getattr(g, "request_id", ""))
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; "
+        "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
+    )
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.path.startswith("/audio/"):
+        response.headers["Cache-Control"] = "private, max-age=604800"
+    elif request.path in {"/login", "/logout"} or request.path.startswith("/api/") or session.get("user_id"):
+        response.headers["Cache-Control"] = "no-store, private"
+    return response
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    limit_mb = max(1, int(MAX_REQUEST_BYTES / (1024 * 1024)))
+    message = f"ไฟล์หรือข้อมูลมีขนาดใหญ่เกินกำหนด ({limit_mb} MB)"
+    if request.is_json or request.path.startswith("/api/"):
+        return jsonify(status="error", message=message, request_id=getattr(g, "request_id", "")), 413
+    flash(message)
+    return redirect(request.referrer or url_for("index"))
+
+
+def public_error(exc, default="ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง"):
+    """Return validation messages, but keep infrastructure details in server logs."""
+    if isinstance(exc, ValueError):
+        return str(exc)
+    request_id = getattr(g, "request_id", uuid.uuid4().hex[:16])
+    logger.exception("request_failed request_id=%s path=%s", request_id, request.path)
+    return f"{default} · รหัสอ้างอิง {request_id}"
+
+
 def csrf_token():
     token = session.get("csrf_token")
     if not token:
@@ -229,9 +315,6 @@ def csrf_token():
 @app.before_request
 def protect_csrf():
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
-        return None
-    # Login ใช้ rate-limit + SameSite cookie และยังไม่มี session ที่เชื่อถือได้ จึงยกเว้นที่นี่
-    if request.endpoint == "login":
         return None
     expected = session.get("csrf_token")
     supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
@@ -658,6 +741,31 @@ DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 if psycopg is not None:
     DB_INTEGRITY_ERRORS = DB_INTEGRITY_ERRORS + (psycopg.IntegrityError,)
 
+SCHEMA_MIGRATIONS = [
+    (1, [
+        "CREATE INDEX IF NOT EXISTS idx_history_user_started ON announcement_history(user_id, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_history_result_started ON announcement_history(announcement_type, playback_success, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_schedule_effective ON schedule_versions(status, effective_date DESC, id DESC)",
+    ]),
+]
+
+
+def apply_schema_migrations(conn):
+    """Run forward-only idempotent migrations for existing deployments."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    applied = {int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+    for version, statements in SCHEMA_MIGRATIONS:
+        if version in applied:
+            continue
+        for statement in statements:
+            conn.execute(statement)
+        conn.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?,?) ON CONFLICT(version) DO NOTHING",
+            (version, now_iso()),
+        )
+
 def _label_time(label):
     match = re.search(r"\((\d{1,2}:\d{2})\)", label or "")
     return match.group(1) if match else "00:00"
@@ -692,6 +800,7 @@ def normalize_date_list(value):
 def init_database():
     with get_db() as conn:
         conn.executescript(POSTGRES_SCHEMA if USE_POSTGRES else SQLITE_SCHEMA)
+        apply_schema_migrations(conn)
 
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             initial_password = os.environ.get("INITIAL_ADMIN_PASSWORD")
@@ -782,11 +891,17 @@ def get_current_user():
     return _store_session_user(row)
 
 
+def _authentication_required_response():
+    if request.is_json or request.path.startswith("/api/") or request.path in {"/announce", "/preview", "/test-station-voice"}:
+        return jsonify(status="error", message="เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่"), 401
+    return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
+
+
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not get_current_user():
-            return redirect(url_for("login", next=request.path))
+            return _authentication_required_response()
         return view(*args, **kwargs)
     return wrapped
 
@@ -797,9 +912,56 @@ def roles_required(*roles):
         def wrapped(*args, **kwargs):
             user = get_current_user()
             if not user:
-                return redirect(url_for("login", next=request.path))
+                return _authentication_required_response()
             if user["role"] not in roles:
                 abort(403)
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+_ENDPOINT_RATE_BUCKETS = {}
+_ENDPOINT_RATE_LOCK = threading.Lock()
+MAX_RATE_LIMIT_KEYS = max(256, int(os.environ.get("MAX_RATE_LIMIT_KEYS", "4096")))
+
+
+def rate_limited(scope, limit, window_seconds):
+    """Small bounded limiter for expensive endpoints; external stores can replace it later."""
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            identity = session.get("user_id") or request.remote_addr or "unknown"
+            key = f"{scope}:{identity}"
+            now = time.monotonic()
+            retry_after = 0
+            with _ENDPOINT_RATE_LOCK:
+                recent = [stamp for stamp in _ENDPOINT_RATE_BUCKETS.get(key, []) if now - stamp < window_seconds]
+                if len(recent) >= limit:
+                    retry_after = max(1, int(window_seconds - (now - recent[0])))
+                else:
+                    recent.append(now)
+                    _ENDPOINT_RATE_BUCKETS[key] = recent
+
+                if len(_ENDPOINT_RATE_BUCKETS) > MAX_RATE_LIMIT_KEYS:
+                    stale_before = now - max(window_seconds, 600)
+                    stale_keys = [
+                        item_key for item_key, stamps in _ENDPOINT_RATE_BUCKETS.items()
+                        if not stamps or stamps[-1] < stale_before
+                    ]
+                    for item_key in stale_keys:
+                        _ENDPOINT_RATE_BUCKETS.pop(item_key, None)
+                    while len(_ENDPOINT_RATE_BUCKETS) > MAX_RATE_LIMIT_KEYS:
+                        _ENDPOINT_RATE_BUCKETS.pop(next(iter(_ENDPOINT_RATE_BUCKETS)), None)
+
+            if retry_after:
+                response = jsonify(
+                    status="error",
+                    message="มีคำขอจำนวนมากเกินไป กรุณารอสักครู่แล้วลองใหม่",
+                    retry_after=retry_after,
+                )
+                response.status_code = 429
+                response.headers["Retry-After"] = str(retry_after)
+                return response
             return view(*args, **kwargs)
         return wrapped
     return decorator
@@ -963,6 +1125,7 @@ _REALTIME_CACHE = {
     "last_success_at": "",
     "fetched_at_epoch": 0.0,
 }
+_REALTIME_FETCH_LOCK = threading.Lock()
 
 def _hhmm_from_any(value):
     if value is None:
@@ -1137,7 +1300,10 @@ def fetch_srt_tracking_page(train_no="367"):
             headers={"User-Agent": "KhlongBangPhra-Station-Announcement/11.2"},
         )
         with urlopen(request, timeout=SRT_TTS_REALTIME_TIMEOUT) as response:
-            body = response.read().decode("utf-8", errors="replace")
+            body_bytes = response.read(REALTIME_RESPONSE_MAX_BYTES + 1)
+            if len(body_bytes) > REALTIME_RESPONSE_MAX_BYTES:
+                raise ValueError("ข้อมูลตอบกลับจาก TTS มีขนาดใหญ่เกินกำหนด")
+            body = body_bytes.decode("utf-8", errors="replace")
             content_type = (response.headers.get("content-type") or "").lower()
             status = getattr(response, "status", 200)
         # ตรวจเฉพาะสัญญาณว่าหน้า TTS ถูกโหลด ไม่ตีความว่าเป็น ETA จริง
@@ -1163,7 +1329,7 @@ def fetch_srt_tracking_page(train_no="367"):
         }
 
 
-def fetch_srt_realtime_records(force=False):
+def _fetch_srt_realtime_records_uncached(force=False):
     """
     Adapter สำหรับแหล่งข้อมูล TTS ที่กำหนดโดยผู้ดูแลระบบผ่าน Environment.
     รองรับ JSON หลายรูปแบบและ HTML แบบ server-rendered เป็น fallback.
@@ -1203,7 +1369,10 @@ def fetch_srt_realtime_records(force=False):
         )
         with urlopen(request, timeout=SRT_TTS_REALTIME_TIMEOUT) as response:
             content_type = (response.headers.get("content-type") or "").lower()
-            body = response.read().decode("utf-8", errors="replace")
+            body_bytes = response.read(REALTIME_RESPONSE_MAX_BYTES + 1)
+            if len(body_bytes) > REALTIME_RESPONSE_MAX_BYTES:
+                raise ValueError("ข้อมูลตอบกลับจาก TTS มีขนาดใหญ่เกินกำหนด")
+            body = body_bytes.decode("utf-8", errors="replace")
 
         if "json" in content_type:
             records = _extract_realtime_records(json.loads(body))
@@ -1227,14 +1396,15 @@ def fetch_srt_realtime_records(force=False):
         return _realtime_snapshot_view(_REALTIME_CACHE)
 
     except Exception as exc:
+        logger.warning("realtime_fetch_failed error=%s", str(exc)[:500])
         previous_data = dict(_REALTIME_CACHE.get("data") or {})
         _REALTIME_CACHE = {
             "at": now,
             "data": previous_data,
             "status": "stale" if previous_data else "error",
             "detail": (
-                f"TTS ขัดข้องชั่วคราว · ใช้ข้อมูลครั้งล่าสุดอย่างระมัดระวัง · {str(exc)[:160]}"
-                if previous_data else str(exc)[:220]
+                "TTS ขัดข้องชั่วคราว · ใช้ข้อมูลครั้งล่าสุดอย่างระมัดระวัง"
+                if previous_data else "เชื่อมต่อข้อมูล TTS Real-time ไม่สำเร็จชั่วคราว"
             ),
             "updated_at": _REALTIME_CACHE.get("updated_at", "") if previous_data else now_iso(),
             "last_success_at": _REALTIME_CACHE.get("last_success_at", "") if previous_data else "",
@@ -1243,7 +1413,21 @@ def fetch_srt_realtime_records(force=False):
         return _realtime_snapshot_view(_REALTIME_CACHE)
 
 
+def fetch_srt_realtime_records(force=False):
+    """Single-flight wrapper prevents multiple browser sessions from stampeding SRT TTS."""
+    now = time.monotonic()
+    if not force and now - float(_REALTIME_CACHE.get("at", 0)) < SRT_TTS_REALTIME_CACHE_SECONDS:
+        return _realtime_snapshot_view(_REALTIME_CACHE)
+    with _REALTIME_FETCH_LOCK:
+        now = time.monotonic()
+        if not force and now - float(_REALTIME_CACHE.get("at", 0)) < SRT_TTS_REALTIME_CACHE_SECONDS:
+            return _realtime_snapshot_view(_REALTIME_CACHE)
+        return _fetch_srt_realtime_records_uncached(force=force)
+
+
 @app.get("/api/tts-tracking-probe/<train_no>")
+@roles_required("admin")
+@rate_limited("tracking_probe", 10, 60)
 def api_tts_tracking_probe(train_no):
     """ตรวจหน้า TTS Tracking ที่ผูกไว้ โดยไม่ประกาศและไม่สร้างเสียง"""
     return jsonify(fetch_srt_tracking_page(train_no))
@@ -1584,6 +1768,8 @@ def save_train_record(form):
         raise ValueError("ข้อมูลประเภทตารางไม่ถูกต้อง")
     if not all([num, origin, dest, hhmm]):
         raise ValueError("กรุณากรอกเลขขบวน ต้นทาง ปลายทาง และเวลาให้ครบ")
+    if len(num) > 20 or len(origin) > 160 or len(dest) > 160 or len(next_station) > 240:
+        raise ValueError("ข้อมูลขบวนรถยาวเกินกำหนด")
     if not re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", hhmm):
         raise ValueError("เวลาต้องเป็นรูปแบบ HH:MM เช่น 05:30")
     hhmm = f"{int(hhmm.split(':')[0]):02d}:{hhmm.split(':')[1]}"
@@ -1673,6 +1859,7 @@ def canonical_import_row(row):
 def import_schedule_file(file_storage, version_id):
     filename = (file_storage.filename or "").lower()
     rows = []
+    max_rows = max(100, min(20000, int(os.environ.get("MAX_IMPORT_ROWS", "5000"))))
     if filename.endswith(".csv"):
         raw = file_storage.read()
         text = None
@@ -1684,7 +1871,10 @@ def import_schedule_file(file_storage, version_id):
                 continue
         if text is None:
             raise ValueError("อ่านไฟล์ CSV ไม่ได้ กรุณาบันทึกเป็น UTF-8")
-        rows = list(csv.DictReader(io.StringIO(text)))
+        for row_no, row in enumerate(csv.DictReader(io.StringIO(text)), start=1):
+            if row_no > max_rows:
+                raise ValueError(f"ไฟล์มีมากกว่า {max_rows:,} แถว กรุณาแบ่งไฟล์ก่อนนำเข้า")
+            rows.append(row)
     elif filename.endswith(".xlsx"):
         try:
             from openpyxl import load_workbook
@@ -1694,7 +1884,14 @@ def import_schedule_file(file_storage, version_id):
         sheet = workbook.active
         iterator = sheet.iter_rows(values_only=True)
         headers = [str(v or "").strip() for v in next(iterator, [])]
-        rows = [dict(zip(headers, values)) for values in iterator if any(v not in (None, "") for v in values)]
+        for row_no, values in enumerate(iterator, start=1):
+            if not any(v not in (None, "") for v in values):
+                continue
+            if row_no > max_rows:
+                workbook.close()
+                raise ValueError(f"ไฟล์มีมากกว่า {max_rows:,} แถว กรุณาแบ่งไฟล์ก่อนนำเข้า")
+            rows.append(dict(zip(headers, values)))
+        workbook.close()
     else:
         raise ValueError("รองรับเฉพาะไฟล์ .csv และ .xlsx")
 
@@ -1743,6 +1940,62 @@ def import_schedule_file(file_storage, version_id):
     return inserted, skipped
 
 
+def validate_restore_payload(payload):
+    """Validate the complete backup before the destructive transaction begins."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("tables"), dict):
+        raise ValueError("รูปแบบไฟล์สำรองไม่ถูกต้อง")
+    if payload.get("schema_version") not in {None, 1}:
+        raise ValueError("ไฟล์สำรองเป็นรุ่นที่ระบบนี้ยังไม่รองรับ")
+
+    tables = payload["tables"]
+    limits = {
+        "schedule_versions": 500,
+        "trains": 50000,
+        "announcement_history": 200000,
+        "announcement_events": 500000,
+        "quick_train_handled": 100000,
+    }
+    for table, maximum in limits.items():
+        rows = tables.get(table, [])
+        if not isinstance(rows, list):
+            raise ValueError(f"ตาราง {table} ในไฟล์สำรองไม่ถูกต้อง")
+        if len(rows) > maximum:
+            raise ValueError(f"ตาราง {table} มีข้อมูลเกิน {maximum:,} รายการ")
+        if any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f"ข้อมูลบางรายการในตาราง {table} ไม่ถูกต้อง")
+
+    versions = tables.get("schedule_versions", [])
+    trains = tables.get("trains", [])
+    histories = tables.get("announcement_history", [])
+    events = tables.get("announcement_events", [])
+    version_ids = {row.get("id") for row in versions}
+    history_ids = {row.get("id") for row in histories}
+    if None in version_ids or len(version_ids) != len(versions):
+        raise ValueError("รหัสเวอร์ชันตารางในไฟล์สำรองซ้ำหรือไม่ครบ")
+    if None in history_ids or len(history_ids) != len(histories):
+        raise ValueError("รหัสประวัติในไฟล์สำรองซ้ำหรือไม่ครบ")
+
+    for row in versions:
+        if not str(row.get("name") or "").strip() or len(str(row.get("name") or "")) > 160:
+            raise ValueError("ชื่อเวอร์ชันตารางในไฟล์สำรองไม่ถูกต้อง")
+        date.fromisoformat(str(row.get("effective_date") or ""))
+        if row.get("status", "published") not in {"draft", "published"}:
+            raise ValueError("สถานะเวอร์ชันตารางในไฟล์สำรองไม่ถูกต้อง")
+
+    for row in trains:
+        if row.get("version_id") not in version_ids:
+            raise ValueError("พบขบวนรถที่อ้างถึงเวอร์ชันตารางซึ่งไม่มีอยู่")
+        if row.get("direction") not in DIRECTION_LABELS or row.get("service_pattern", "daily") not in SERVICE_LABELS:
+            raise ValueError("ทิศทางหรือวันให้บริการในไฟล์สำรองไม่ถูกต้อง")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(row.get("time_hhmm") or "")):
+            raise ValueError("เวลาเดินรถในไฟล์สำรองไม่ถูกต้อง")
+
+    for row in events:
+        if row.get("history_id") not in history_ids:
+            raise ValueError("พบเหตุการณ์ที่อ้างถึงประวัติซึ่งไม่มีอยู่")
+    return tables
+
+
 def announcement_title(tab_index):
     try:
         tab_index = int(tab_index)
@@ -1754,6 +2007,24 @@ def announcement_title(tab_index):
 
 def validate_announcement_payload(payload):
     """ตรวจข้อมูลซ้ำที่ Backend ก่อน Preview/สร้างเสียง โดยไม่แก้ข้อความหรือค่าของ TTS"""
+    if not isinstance(payload, dict):
+        return "รูปแบบข้อมูลประกาศไม่ถูกต้อง"
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
+        return "ข้อมูลประกาศมีขนาดใหญ่เกินกำหนด"
+
+    field_limits = {
+        "num": 20, "num_2": 20, "num_3": 20,
+        "origin": 160, "origin_2": 160, "origin_3": 160,
+        "dest": 160, "dest_2": 160, "dest_3": 160,
+        "time": 80, "time_2": 80, "time_3": 80,
+        "current": 160, "next": 240, "next_2": 240, "next_3": 240,
+        "delay": 120, "custom_text": 2000, "custom_text_en": 2000,
+        "train_type": 40, "train_type_2": 40, "train_type_3": 40,
+    }
+    for name, maximum in field_limits.items():
+        if len(str(payload.get(name, "") or "")) > maximum:
+            return f"ข้อมูลช่อง {name} ยาวเกินกำหนด"
+
     try:
         idx = int(payload.get("tab_index", -1))
     except (TypeError, ValueError):
@@ -1850,13 +2121,20 @@ def insert_history(payload, user):
     return history_id
 
 
-def add_history_event(history_id, event_type, details=None):
+def add_history_event(history_id, event_type, details=None, actor=None):
     event_at = now_iso()
     details = details or {}
+    if not isinstance(details, dict) or len(json.dumps(details, ensure_ascii=False).encode("utf-8")) > 16 * 1024:
+        raise ValueError("รายละเอียดเหตุการณ์มีขนาดใหญ่เกินกำหนด")
+    actor = actor or get_current_user()
+    if not actor:
+        raise ValueError("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่")
     with get_db() as conn:
         row = conn.execute("SELECT * FROM announcement_history WHERE id=?", (history_id,)).fetchone()
         if not row:
             raise ValueError("ไม่พบประวัติรายการนี้")
+        if actor.get("role") != "admin" and int(row["user_id"] or 0) != int(actor.get("id") or 0):
+            raise ValueError("ไม่มีสิทธิ์แก้ไขประวัติประกาศของผู้ใช้อื่น")
         conn.execute(
             "INSERT INTO announcement_events(history_id,event_type,event_at,details) VALUES(?,?,?,?)",
             (history_id, event_type, event_at, json.dumps(details, ensure_ascii=False)),
@@ -1931,7 +2209,8 @@ def backend_health_checks():
                 )
                 _HEALTH_CACHE["tts"] = (result.returncode == 0, (result.stderr or "").strip())
             except Exception as exc:
-                _HEALTH_CACHE["tts"] = (False, str(exc))
+                logger.warning("tts_health_failed request_id=%s error=%s", getattr(g, "request_id", ""), str(exc)[:500])
+                _HEALTH_CACHE["tts"] = (False, "เชื่อมต่อบริการเสียงไม่สำเร็จ กรุณาลองใหม่")
             _HEALTH_CACHE["at"] = now_ts
         tts_connected, error = _HEALTH_CACHE["tts"]
         tts_detail = "เชื่อมต่อและเรียกรายการเสียงได้" if tts_connected else (error or "เชื่อมต่อ TTS ไม่สำเร็จ")
@@ -1944,7 +2223,8 @@ def backend_health_checks():
         database_ok = True
         database_detail = ("Supabase PostgreSQL พร้อมใช้ · เชื่อมต่อแบบ request-scoped" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน")
     except Exception as exc:
-        database_detail = f"เชื่อมต่อฐานข้อมูลไม่สำเร็จ: {str(exc)[:180]}"
+        logger.warning("database_health_failed request_id=%s error=%s", getattr(g, "request_id", ""), str(exc)[:500])
+        database_detail = "เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณาแจ้งผู้ดูแลระบบ"
 
     checks = [
         {"key": "backend", "label": "Backend", "ok": True, "detail": "Flask ตอบสนองตามปกติ"},
@@ -2358,6 +2638,93 @@ HTML_PAGE = r"""
             .voice-test-btn { width: 100%; min-width: 0; }
             .playback-controls { grid-template-columns: 1fr; }
         }
+
+        /* v13 production UI layer — visual only; announcement and TTS rules are untouched. */
+        html { color-scheme: light; scroll-behavior: smooth; }
+        body {
+            -webkit-font-smoothing: antialiased;
+            text-rendering: optimizeLegibility;
+            background:
+                radial-gradient(circle at 12% 0%, rgba(199,161,42,.14), transparent 27rem),
+                radial-gradient(circle at 100% 12%, rgba(128,0,0,.09), transparent 31rem),
+                linear-gradient(145deg, #fffdf8 0%, #f6eee4 52%, #efe2d3 100%);
+        }
+        .app { max-width: 1240px; }
+        .topbar {
+            position: relative;
+            overflow: hidden;
+            padding: 21px 24px;
+            border: 1px solid rgba(255,255,255,.16);
+            background: linear-gradient(125deg, #420006 0%, #76000b 56%, #920d19 100%);
+            box-shadow: 0 22px 55px rgba(70,0,7,.20), inset 0 1px rgba(255,255,255,.16);
+        }
+        .topbar::after {
+            content: "";
+            position: absolute;
+            right: -44px;
+            bottom: -62px;
+            width: 300px;
+            height: 160px;
+            border: 16px double rgba(255,220,129,.12);
+            border-radius: 50%;
+            transform: rotate(-8deg);
+            pointer-events: none;
+        }
+        .brand, .status, .progress { position: relative; z-index: 1; }
+        .logo {
+            border: 1px solid rgba(255,255,255,.34);
+            background: linear-gradient(145deg, #fff7d4, #d8ae35 70%, #a97b05);
+            box-shadow: 0 10px 24px rgba(0,0,0,.18), inset 0 1px #fff;
+        }
+        .system-nav {
+            padding: 7px;
+            border-color: rgba(128,0,0,.11);
+            background: rgba(255,255,255,.82);
+            box-shadow: 0 12px 35px rgba(65,31,20,.09);
+            backdrop-filter: blur(18px);
+        }
+        .system-nav a { transition: color .16s ease, background .16s ease, transform .16s ease; }
+        .system-nav a:hover { transform: translateY(-1px); }
+        .layout { grid-template-columns: minmax(0, 1.08fr) minmax(340px, .72fr); gap: 18px; }
+        .card {
+            border-color: rgba(105,57,35,.13);
+            background: rgba(255,255,255,.91);
+            box-shadow: 0 18px 46px rgba(68,27,16,.09), inset 0 1px rgba(255,255,255,.85);
+            backdrop-filter: blur(14px);
+        }
+        .card-head { background: linear-gradient(180deg, #fff, #fffaf3); }
+        .announce-option, .quick-train, .lang-btn, .voice-choice-btn,
+        .primary, .pause-btn, .danger, .secondary, .small-action {
+            transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
+        }
+        .announce-option:hover:not(:disabled), .quick-train:hover, .lang-btn:hover,
+        .voice-choice-btn:hover, .small-action:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 24px rgba(74,22,16,.10);
+        }
+        .primary:hover:not(:disabled), .pause-btn:hover:not(:disabled),
+        .danger:hover:not(:disabled), .secondary:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 11px 24px rgba(71,18,13,.18);
+        }
+        .announce-option.active, .lang-btn.active, .voice-choice-btn.active {
+            box-shadow: inset 4px 0 var(--maroon), 0 9px 22px rgba(128,0,0,.09);
+        }
+        input, select, textarea { min-height: 46px; }
+        button:focus-visible, a:focus-visible, input:focus-visible,
+        select:focus-visible, textarea:focus-visible, summary:focus-visible {
+            outline: 3px solid rgba(199,161,42,.72);
+            outline-offset: 3px;
+        }
+        .sticky { top: 12px; }
+        @media (max-width: 860px) {
+            .layout { grid-template-columns: 1fr; }
+            .topbar::after { opacity: .65; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto; }
+            *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+        }
     </style>
 </head>
 <body>
@@ -2370,8 +2737,8 @@ HTML_PAGE = r"""
                 <p class="subtitle">เลือกภาษา เลือกเสียง แล้วกดประกาศได้ทันที</p>
             </div>
         </div>
-        <div class="status" id="statusText">พร้อมใช้งาน</div>
-        <div class="progress" id="loadingBar"></div>
+        <div class="status" id="statusText" role="status" aria-live="polite">พร้อมใช้งาน</div>
+        <div class="progress" id="loadingBar" role="progressbar" aria-label="สถานะการเตรียมเสียง"></div>
     </header>
 
     <nav class="system-nav">
@@ -2430,7 +2797,7 @@ HTML_PAGE = r"""
             </div>
             <div style="margin-top:11px">
                 <label for="trainSearch">ค้นหาขบวนอื่น</label>
-                <input id="trainSearch" type="search" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
+                <input id="trainSearch" type="search" maxlength="160" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
             <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 ประกาศ “รถจอด / ออก” จบ = ถือว่าขบวนไปแล้ว · ระบบจะปิดคิวด้วยเลขขบวนและตรวจจากประวัติการประกาศซ้ำ · ตารางรถจริงยังอยู่</div>
@@ -2602,7 +2969,7 @@ HTML_PAGE = r"""
                     <div class="conditional" id="delayFields">
                         <p class="conditional-title">ข้อมูลรถล่าช้า</p>
                         <label for="delay_time">คาดว่าจะถึงเวลา</label>
-                        <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
+                        <input type="text" id="delay_time" maxlength="120" placeholder="เช่น 19 นาฬิกา 30 นาที">
                     </div>
 
                     <div class="conditional" id="passFields">
@@ -2702,11 +3069,11 @@ HTML_PAGE = r"""
                         <p class="conditional-title">ข้อความประกาศเอง</p>
                         <div id="thaiCustomWrap">
                             <label for="custom_text">ข้อความภาษาไทย</label>
-                            <textarea id="custom_text" placeholder="พิมพ์ข้อความภาษาไทยที่ต้องการประกาศ"></textarea>
+                            <textarea id="custom_text" maxlength="2000" placeholder="พิมพ์ข้อความภาษาไทยที่ต้องการประกาศ"></textarea>
                         </div>
                         <div id="englishCustomWrap" class="hidden" style="margin-top:10px;">
                             <label for="custom_text_en">English announcement</label>
-                            <textarea id="custom_text_en" placeholder="Type the English announcement"></textarea>
+                            <textarea id="custom_text_en" maxlength="2000" placeholder="Type the English announcement"></textarea>
                         </div>
                     </div>
 
@@ -2718,7 +3085,7 @@ HTML_PAGE = r"""
             <div class="card-head"><h2 class="step-title"><span class="step">3</span> ตรวจสอบและประกาศ</h2></div>
             <div class="card-body">
                 <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
-                <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง</div>
+                    <div class="preview" id="previewBox" aria-live="polite"><b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง</div>
                 <div class="preview-ready" id="audioReadyBadge"></div>
                 <div class="action-stack">
                     <div class="playback-controls">
@@ -2742,8 +3109,8 @@ HTML_PAGE = r"""
 </div>
 
 <script>
-    let trainData = {{ trains_json | safe }};
-    let quickTrains = {{ quick_trains_json | safe }};
+    let trainData = {{ trains_data | tojson }};
+    let quickTrains = {{ quick_trains_data | tojson }};
     let quickTrainLabels = quickTrains.map(item => item.label).filter(Boolean);
     let selectedAnnouncement = null;
     let selectedQuickTrain = null;
@@ -4669,12 +5036,20 @@ def cleanup_old_audio(max_age_seconds=AUDIO_CACHE_MAX_AGE):
             try:
                 if now - file.stat().st_mtime > max_age_seconds:
                     file.unlink(missing_ok=True)
+                    cache_key = file.stem.rsplit("_", 1)[-1]
+                    with _AUDIO_CACHE_LOCKS_GUARD:
+                        lock = _AUDIO_CACHE_LOCKS.get(cache_key)
+                        if lock is not None and not lock.locked():
+                            _AUDIO_CACHE_LOCKS.pop(cache_key, None)
             except OSError:
                 pass
 
 
 def _cache_lock(cache_key):
     with _AUDIO_CACHE_LOCKS_GUARD:
+        if len(_AUDIO_CACHE_LOCKS) > 4096:
+            for old_key in [key for key, lock in _AUDIO_CACHE_LOCKS.items() if not lock.locked()][:1024]:
+                _AUDIO_CACHE_LOCKS.pop(old_key, None)
         return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
 
 
@@ -4738,23 +5113,24 @@ def generate_cached_audio(segment):
 
         temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
         try:
-            subprocess.run(
-                [
-                    "edge-tts",
-                    f"--voice={segment['voice']}",
-                    f"--rate={segment['rate']}",
-                    f"--volume={segment['volume']}",
-                    f"--pitch={segment['pitch']}",
-                    "--text", tts_text,
-                    "--write-media", str(temp_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=TTS_GENERATION_TIMEOUT,
-            )
+            with _TTS_PROCESS_LIMIT:
+                subprocess.run(
+                    [
+                        "edge-tts",
+                        f"--voice={segment['voice']}",
+                        f"--rate={segment['rate']}",
+                        f"--volume={segment['volume']}",
+                        f"--pitch={segment['pitch']}",
+                        "--text", tts_text,
+                        "--write-media", str(temp_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=TTS_GENERATION_TIMEOUT,
+                )
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
             os.replace(temp_path, output_path)
@@ -4771,8 +5147,8 @@ def generate_audio_segments(segments):
     if len(segments) == 1:
         return [generate_cached_audio(segments[0])]
 
-    with ThreadPoolExecutor(max_workers=min(2, len(segments))) as executor:
-        return list(executor.map(generate_cached_audio, segments))
+    futures = [_TTS_EXECUTOR.submit(generate_cached_audio, segment) for segment in segments]
+    return [future.result() for future in futures]
 
 
 def spaced_train_number(number_text):
@@ -5471,11 +5847,12 @@ LOGIN_HTML = r"""
 <!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>เข้าสู่ระบบ</title><style>
 :root{--m:#800000;--md:#5b0000;--line:#eadfce;--muted:#766969}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:18px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,#f2e6d7);color:#251d1d}.box{width:min(440px,100%);background:#fff;border:1px solid var(--line);border-radius:24px;padding:26px;box-shadow:0 18px 50px rgba(80,20,20,.13)}h1{margin:0;color:var(--md)}p{color:var(--muted);line-height:1.6}label{display:block;margin:14px 0 6px;font-weight:800}input{width:100%;padding:13px;border:1px solid #d8c9b7;border-radius:13px;font:inherit}button{width:100%;margin-top:18px;padding:14px;border:0;border-radius:14px;background:linear-gradient(135deg,var(--md),var(--m));color:#fff;font:inherit;font-weight:900;cursor:pointer}.flash{padding:11px;border-radius:12px;background:#fff0f0;color:#9b1c1c}.note{padding:11px;border-radius:12px;background:#fff8dc;font-size:13px}
-</style></head><body><form class="box" method="post"><h1>🚆 ระบบประกาศสถานี</h1><p>เข้าสู่ระบบเพื่อใช้งานและบันทึกประวัติผู้ประกาศ</p>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}{% if show_default %}<div class="note"><b>บัญชีเริ่มต้น:</b> admin<br>รหัสผ่านใช้ค่าจาก INITIAL_ADMIN_PASSWORD; หากไม่ได้ตั้ง ระบบจะสร้างรหัสสุ่มและแสดงใน Deploy Log</div>{% endif %}<input type="hidden" name="next" value="{{ next_url }}"><label>ชื่อผู้ใช้</label><input name="username" autocomplete="username" required autofocus><label>รหัสผ่าน</label><input type="password" name="password" autocomplete="current-password" required><button>เข้าสู่ระบบ</button></form></body></html>
+</style></head><body><form class="box" method="post"><h1>🚆 ระบบประกาศสถานี</h1><p>เข้าสู่ระบบเพื่อใช้งานและบันทึกประวัติผู้ประกาศ</p>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}{% if show_default %}<div class="note"><b>บัญชีเริ่มต้น:</b> admin<br>รหัสผ่านใช้ค่าจาก INITIAL_ADMIN_PASSWORD; หากไม่ได้ตั้ง ระบบจะสร้างรหัสสุ่มและแสดงใน Deploy Log</div>{% endif %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ next_url }}"><label>ชื่อผู้ใช้</label><input name="username" autocomplete="username" maxlength="80" required autofocus><label>รหัสผ่าน</label><input type="password" name="password" autocomplete="current-password" maxlength="256" required><button>เข้าสู่ระบบ</button></form></body></html>
 """
 
 MANAGEMENT_CSS = r"""
 :root{--m:#800000;--md:#5b0000;--gold:#c7a12a;--bg:#f6eee3;--line:#e8dac6;--muted:#766969;--green:#177744;--red:#b42318}*{box-sizing:border-box}body{margin:0;padding:14px;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;background:linear-gradient(145deg,#fffaf1,var(--bg));color:#251d1d}a{color:var(--m)}.wrap{max-width:1320px;margin:auto}.head{padding:18px 20px;border-radius:20px;color:#fff;background:linear-gradient(135deg,var(--md),var(--m));box-shadow:0 10px 30px rgba(80,20,20,.12)}.head h1{margin:0;font-size:clamp(22px,3vw,31px)}.head p{margin:5px 0 0;opacity:.88}.nav{display:flex;flex-wrap:wrap;gap:8px;margin:11px 0}.nav a{padding:9px 12px;border-radius:11px;background:#fff;color:var(--md);text-decoration:none;font-weight:850;border:1px solid var(--line)}.nav a.active,.nav a:hover{background:var(--m);color:#fff}.grid{display:grid;grid-template-columns:minmax(320px,.68fr) minmax(0,1.5fr);gap:14px}.card{background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(80,20,20,.08);margin-bottom:14px}.card h2{margin:0;padding:14px 17px;color:var(--md);font-size:18px;background:#fffdf9;border-bottom:1px solid var(--line)}.body{padding:16px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.full{grid-column:1/-1}label{display:block;margin:0 0 5px;font-weight:800}input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d8c9b7;border-radius:12px;background:#fff;font:inherit}textarea{min-height:75px;resize:vertical}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 13px;border:0;border-radius:11px;background:var(--m);color:#fff;text-decoration:none;font:inherit;font-weight:850;cursor:pointer}.btn.gray{background:#665b55}.btn.green{background:var(--green)}.btn.red{background:var(--red)}.btn.gold{background:#a86900}.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}.flash{padding:11px 13px;margin:10px 0;border-radius:12px;background:#fff3cd;color:#684f00;border:1px solid #ead28a}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 10px;border-bottom:1px solid #eee4d6;text-align:left;vertical-align:top;white-space:nowrap}th{position:sticky;top:0;background:#fff9ef;color:var(--md);z-index:1}.muted{color:var(--muted);font-size:12px}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:850;background:#eee}.ok{background:#e8f6ed;color:#116735}.off{background:#fdebea;color:#a31d16}.warn{background:#fff3cd;color:#785b00}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{padding:14px;border-radius:14px;background:#fffaf1;border:1px solid var(--line)}.stat b{display:block;font-size:24px;color:var(--m)}details summary{cursor:pointer;color:var(--m);font-weight:850}.message{white-space:pre-wrap;min-width:280px;max-width:520px;line-height:1.5}.health-list{display:grid;gap:10px}.health-item{display:grid;grid-template-columns:42px 1fr;gap:11px;padding:13px;border:1px solid var(--line);border-radius:14px}.health-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:12px;font-size:20px;background:#eee}@media(max-width:850px){.grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.stats{grid-template-columns:1fr}body{padding:8px}}
+body{background:radial-gradient(circle at 8% 0%,rgba(199,161,42,.14),transparent 28rem),radial-gradient(circle at 100% 8%,rgba(128,0,0,.08),transparent 32rem),linear-gradient(145deg,#fffdf8,#f2e7da);-webkit-font-smoothing:antialiased}.head{position:relative;overflow:hidden;padding:22px 24px;background:linear-gradient(125deg,#420006,#76000b 58%,#920d19);box-shadow:0 22px 52px rgba(70,0,7,.18)}.nav{padding:7px;border:1px solid rgba(128,0,0,.1);border-radius:15px;background:rgba(255,255,255,.82);backdrop-filter:blur(16px)}.nav a,.btn{transition:transform .16s ease,box-shadow .16s ease,background .16s ease}.nav a:hover,.btn:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(70,18,12,.12)}.card{border-color:rgba(105,57,35,.13);background:rgba(255,255,255,.93);box-shadow:0 17px 44px rgba(68,27,16,.09);backdrop-filter:blur(12px)}input,select,textarea{min-height:44px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid rgba(199,161,42,.72);outline-offset:3px}@media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 """
 
 ADMIN_SCHEDULE_HTML = r"""
@@ -5483,7 +5860,7 @@ ADMIN_SCHEDULE_HTML = r"""
 <div class="grid"><section>
 <div class="card"><h2>สร้างตารางใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_schedule_version') }}"><div class="fields"><div class="full"><label>ชื่อตาราง</label><input name="name" placeholder="เช่น ตารางเดินรถเดือนตุลาคม 2569" required></div><div><label>วันที่เริ่มใช้</label><input type="date" name="effective_date" value="{{ today }}" required></div><div><label>สถานะ</label><select name="status"><option value="draft">ฉบับร่าง</option><option value="published">ประกาศใช้</option></select></div><div class="full"><label>คัดลอกจากตารางเดิม</label><select name="copy_from"><option value="">เริ่มตารางว่าง</option>{% for v in versions %}<option value="{{ v.id }}">{{ v.name }} ({{ v.effective_date }})</option>{% endfor %}</select></div></div><div class="actions"><button class="btn">＋ สร้างตาราง</button></div></form></div></div>
 <div class="card"><h2>ตารางย้อนหลัง</h2><div class="body"><form method="get"><label>เลือกตาราง</label><select name="version" onchange="this.form.submit()">{% for v in versions %}<option value="{{ v.id }}" {% if selected_version and v.id==selected_version.id %}selected{% endif %}>{{ v.effective_date }} · {{ v.name }} · {{ 'ใช้งาน' if v.status=='published' else 'ร่าง' }}</option>{% endfor %}</select></form>{% if selected_version %}<form method="post" action="{{ url_for('update_schedule_version', version_id=selected_version.id) }}" style="margin-top:12px"><div class="fields"><div class="full"><label>ชื่อ</label><input name="name" value="{{ selected_version.name }}" required></div><div><label>วันที่เริ่มใช้</label><input type="date" name="effective_date" value="{{ selected_version.effective_date }}" required></div><div><label>สถานะ</label><select name="status"><option value="draft" {% if selected_version.status=='draft' %}selected{% endif %}>ฉบับร่าง</option><option value="published" {% if selected_version.status=='published' %}selected{% endif %}>ประกาศใช้</option></select></div></div><div class="actions"><button class="btn gold">บันทึกข้อมูลตาราง</button></div></form>{% endif %}</div></div>
-<div class="card"><h2>นำเข้า / สำรอง / กู้คืน</h2><div class="body"><form method="post" enctype="multipart/form-data" action="{{ url_for('import_schedule') }}"><input type="hidden" name="version_id" value="{{ selected_version.id if selected_version else '' }}"><label>นำเข้า Excel หรือ CSV</label><input type="file" name="file" accept=".xlsx,.csv" required><p class="muted">หัวคอลัมน์: direction, num, origin, dest, time, next, service_pattern, service_dates, enabled</p><button class="btn green">นำเข้าข้อมูล</button></form><hr style="border:0;border-top:1px solid var(--line);margin:16px 0"><div class="actions"><a class="btn gray" href="{{ url_for('backup_data') }}">⬇ สำรองข้อมูล JSON</a></div><form method="post" enctype="multipart/form-data" action="{{ url_for('restore_data') }}" style="margin-top:12px" onsubmit="return confirm('ยืนยันกู้คืนข้อมูล? ตารางและประวัติปัจจุบันจะถูกแทนที่')"><label>กู้คืนจากไฟล์ JSON</label><input type="file" name="file" accept=".json" required><p class="muted">เพื่อป้องกันล็อกอินไม่ได้ ระบบจะไม่เขียนทับบัญชีผู้ใช้</p><button class="btn red">กู้คืนข้อมูล</button></form></div></div>
+<div class="card"><h2>นำเข้า / สำรอง / กู้คืน</h2><div class="body"><form method="post" enctype="multipart/form-data" action="{{ url_for('import_schedule') }}"><input type="hidden" name="version_id" value="{{ selected_version.id if selected_version else '' }}"><label>นำเข้า Excel หรือ CSV</label><input type="file" name="file" accept=".xlsx,.csv" required><p class="muted">หัวคอลัมน์: direction, num, origin, dest, time, next, service_pattern, service_dates, enabled</p><button class="btn green">นำเข้าข้อมูล</button></form><hr style="border:0;border-top:1px solid var(--line);margin:16px 0"><div class="actions"><a class="btn gray" href="{{ url_for('backup_data') }}">⬇ สำรองข้อมูล JSON</a></div><form method="post" enctype="multipart/form-data" action="{{ url_for('restore_data') }}" style="margin-top:12px" onsubmit="return confirm('ยืนยันกู้คืนข้อมูล? ตารางและประวัติปัจจุบันจะถูกแทนที่')"><label>กู้คืนจากไฟล์ JSON</label><input type="file" name="file" accept=".json" required><label style="margin-top:10px"><input style="width:auto" type="checkbox" name="confirm_restore" value="1" required> ฉันตรวจสอบไฟล์แล้วและยืนยันให้แทนที่ข้อมูลปัจจุบัน</label><p class="muted">ระบบจะตรวจสอบไฟล์ทั้งหมดก่อนเริ่ม Transaction และจะไม่เขียนทับบัญชีผู้ใช้</p><button class="btn red">กู้คืนข้อมูล</button></form></div></div>
 </section><section>
 <div class="card"><h2>{{ 'แก้ไขขบวน '+edit_train.num if edit_train else 'เพิ่มขบวนรถ' }}</h2><div class="body"><form method="post" action="{{ url_for('save_train') }}"><input type="hidden" name="version_id" value="{{ selected_version.id if selected_version else '' }}"><input type="hidden" name="train_id" value="{{ edit_train.id if edit_train else '' }}"><div class="fields"><div><label>ทิศทาง</label><select name="direction"><option value="inbound" {% if edit_train and edit_train.direction=='inbound' %}selected{% endif %}>ขาเข้า กรุงเทพ</option><option value="outbound" {% if edit_train and edit_train.direction=='outbound' %}selected{% endif %}>ขาออก ไปทางตะวันออก</option></select></div><div><label>เลขขบวน</label><input name="num" value="{{ edit_train.num if edit_train else '' }}" required></div><div><label>ต้นทาง</label><input name="origin" value="{{ edit_train.origin if edit_train else '' }}" required></div><div><label>ปลายทาง</label><input name="dest" value="{{ edit_train.dest if edit_train else '' }}" required></div><div><label>เวลา HH:MM</label><input type="time" name="time_hhmm" value="{{ edit_train.time_hhmm if edit_train else '' }}" required></div><div><label>วันให้บริการ</label><select name="service_pattern">{% for key,label in service_labels.items() %}<option value="{{ key }}" {% if edit_train and edit_train.service_pattern==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div class="full"><label>สถานีต่อไป</label><input name="next_station" value="{{ edit_train.next_station if edit_train else '' }}"></div><div class="full"><label>วันที่ให้บริการเฉพาะ (YYYY-MM-DD คั่นด้วย comma)</label><textarea name="service_dates" placeholder="2026-07-28, 2026-08-12">{{ edit_train.service_dates if edit_train else '' }}</textarea></div><div class="full"><label><input style="width:auto" type="checkbox" name="enabled" value="1" {% if not edit_train or edit_train.enabled %}checked{% endif %}> เปิดใช้งานขบวนนี้</label></div></div><div class="actions"><button class="btn">บันทึกขบวน</button>{% if edit_train %}<a class="btn gray" href="{{ url_for('admin_schedules',version=selected_version.id) }}">ยกเลิกแก้ไข</a>{% endif %}</div></form></div></div>
 <div class="card"><h2>รายการขบวนในตาราง{% if selected_version %} · {{ selected_version.name }}{% endif %}</h2><div class="body"><div class="stats"><div class="stat"><span>ทั้งหมด</span><b>{{ trains|length }}</b></div><div class="stat"><span>เปิดใช้งาน</span><b>{{ trains|selectattr('enabled')|list|length }}</b></div><div class="stat"><span>วันที่เริ่มใช้</span><b style="font-size:17px">{{ selected_version.effective_date if selected_version else '-' }}</b></div></div></div><div class="table-wrap"><table><thead><tr><th>สถานะ</th><th>ขบวน</th><th>เวลา</th><th>เส้นทาง</th><th>วันให้บริการ</th><th>สถานีต่อไป</th><th>จัดการ</th></tr></thead><tbody>{% for t in trains %}<tr><td><span class="badge {{ 'ok' if t.enabled else 'off' }}">{{ 'เปิด' if t.enabled else 'ปิด' }}</span></td><td><b>{{ t.num }}</b><div class="muted">{{ direction_labels[t.direction] }}</div></td><td>{{ t.time_hhmm }}</td><td>{{ t.origin }} → {{ t.dest }}</td><td>{{ service_labels[t.service_pattern] }}{% if t.service_dates %}<div class="muted">{{ t.service_dates }}</div>{% endif %}</td><td>{{ t.next_station }}</td><td><div class="actions" style="margin:0"><a class="btn gold" href="{{ url_for('admin_schedules',version=selected_version.id,edit=t.id) }}">แก้ไข</a><form method="post" action="{{ url_for('toggle_train',train_id=t.id) }}"><input type="hidden" name="version_id" value="{{ selected_version.id }}"><button class="btn gray">{{ 'ปิดชั่วคราว' if t.enabled else 'เปิดขบวน' }}</button></form><form method="post" action="{{ url_for('delete_train',train_id=t.id) }}" onsubmit="return confirm('ลบขบวนนี้หรือไม่?')"><input type="hidden" name="version_id" value="{{ selected_version.id }}"><button class="btn red">ลบ</button></form></div></td></tr>{% else %}<tr><td colspan="7">ยังไม่มีขบวนรถในตารางนี้</td></tr>{% endfor %}</tbody></table></div></div>
@@ -5491,7 +5868,7 @@ ADMIN_SCHEDULE_HTML = r"""
 """
 
 USERS_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บัญชีผู้ใช้</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>👥 บัญชีผู้ใช้และสิทธิ์</h1><p>แยกผู้ประกาศ ผู้ดูแลระบบ และผู้ตรวจสอบประวัติ</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a class="active" href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}<div class="grid"><section><div class="card"><h2>เพิ่มบัญชีใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_user') }}"><label>ชื่อผู้ใช้</label><input name="username" required><label style="margin-top:10px">ชื่อที่แสดง</label><input name="display_name" required><label style="margin-top:10px">สิทธิ์</label><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select><label style="margin-top:10px">รหัสผ่านเริ่มต้น</label><input type="password" name="password" minlength="6" required><div class="actions"><button class="btn">เพิ่มบัญชี</button></div></form></div></div></section><section><div class="card"><h2>บัญชีทั้งหมด</h2><div class="table-wrap"><table><thead><tr><th>ผู้ใช้</th><th>สิทธิ์</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th>แก้ไข</th></tr></thead><tbody>{% for u in users %}<tr><td><b>{{ u.display_name }}</b><div class="muted">{{ u.username }}</div></td><td>{{ role_labels[u.role] }}</td><td><span class="badge {{ 'ok' if u.active else 'off' }}">{{ 'ใช้งาน' if u.active else 'ปิด' }}</span></td><td>{{ u.last_login or '-' }}</td><td><form method="post" action="{{ url_for('update_user',user_id=u.id) }}"><div class="fields" style="min-width:460px"><div><input name="display_name" value="{{ u.display_name }}" required></div><div><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}" {% if u.role==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><input type="password" name="password" placeholder="รหัสใหม่ (เว้นว่างได้)" minlength="6"></div><div><label><input style="width:auto" type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}> เปิดใช้งาน</label></div></div><button class="btn gold" style="margin-top:7px">บันทึก</button></form></td></tr>{% endfor %}</tbody></table></div></div></section></div></main></body></html>
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บัญชีผู้ใช้</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>👥 บัญชีผู้ใช้และสิทธิ์</h1><p>แยกผู้ประกาศ ผู้ดูแลระบบ และผู้ตรวจสอบประวัติ</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a class="active" href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}<div class="grid"><section><div class="card"><h2>เพิ่มบัญชีใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_user') }}"><label>ชื่อผู้ใช้</label><input name="username" maxlength="80" required><label style="margin-top:10px">ชื่อที่แสดง</label><input name="display_name" maxlength="160" required><label style="margin-top:10px">สิทธิ์</label><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select><label style="margin-top:10px">รหัสผ่านเริ่มต้น</label><input type="password" name="password" minlength="10" maxlength="256" required><div class="actions"><button class="btn">เพิ่มบัญชี</button></div></form></div></div></section><section><div class="card"><h2>บัญชีทั้งหมด</h2><div class="table-wrap"><table><thead><tr><th>ผู้ใช้</th><th>สิทธิ์</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th>แก้ไข</th></tr></thead><tbody>{% for u in users %}<tr><td><b>{{ u.display_name }}</b><div class="muted">{{ u.username }}</div></td><td>{{ role_labels[u.role] }}</td><td><span class="badge {{ 'ok' if u.active else 'off' }}">{{ 'ใช้งาน' if u.active else 'ปิด' }}</span></td><td>{{ u.last_login or '-' }}</td><td><form method="post" action="{{ url_for('update_user',user_id=u.id) }}"><div class="fields" style="min-width:460px"><div><input name="display_name" maxlength="160" value="{{ u.display_name }}" required></div><div><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}" {% if u.role==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><input type="password" name="password" placeholder="รหัสใหม่ (เว้นว่างได้)" minlength="10" maxlength="256"></div><div><label><input style="width:auto" type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}> เปิดใช้งาน</label></div></div><button class="btn gold" style="margin-top:7px">บันทึก</button></form></td></tr>{% endfor %}</tbody></table></div></div></section></div></main></body></html>
 """
 
 AUDIT_HTML = r"""
@@ -5607,8 +5984,8 @@ HEALTH_HTML = _attach_session_keepalive(HEALTH_HTML)
 
 
 def _login_client_key():
-    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
-    return forwarded or request.remote_addr or "unknown"
+    # ProxyFix resolves the trusted hop first; never trust X-Forwarded-For directly.
+    return request.remote_addr or "unknown"
 
 
 def _login_rate_limited(key):
@@ -5625,6 +6002,12 @@ def _record_login_failure(key):
         recent = [ts for ts in _LOGIN_ATTEMPTS.get(key, []) if now - ts < LOGIN_WINDOW_SECONDS]
         recent.append(now)
         _LOGIN_ATTEMPTS[key] = recent[-LOGIN_MAX_ATTEMPTS:]
+        if len(_LOGIN_ATTEMPTS) > MAX_RATE_LIMIT_KEYS:
+            stale_before = now - LOGIN_WINDOW_SECONDS
+            for item_key in [k for k, values in _LOGIN_ATTEMPTS.items() if not values or values[-1] < stale_before]:
+                _LOGIN_ATTEMPTS.pop(item_key, None)
+            while len(_LOGIN_ATTEMPTS) > MAX_RATE_LIMIT_KEYS:
+                _LOGIN_ATTEMPTS.pop(next(iter(_LOGIN_ATTEMPTS)), None)
 
 
 def _clear_login_failures(key):
@@ -5667,8 +6050,12 @@ def login():
     return render_template_string(LOGIN_HTML, next_url=next_url, show_default=show_default)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["GET", "POST"])
+@login_required
 def logout():
+    # Keep existing navigation links working while rejecting modern cross-site logout requests.
+    if request.method == "GET" and request.headers.get("Sec-Fetch-Site", "same-origin") not in {"same-origin", "same-site", "none"}:
+        abort(405)
     session.clear()
     return redirect(url_for("login"))
 
@@ -5699,7 +6086,7 @@ def create_schedule_version():
     copy_from = request.form.get("copy_from", type=int)
     try:
         date.fromisoformat(effective_date)
-        if not name or status not in {"draft", "published"}:
+        if not name or len(name) > 160 or status not in {"draft", "published"}:
             raise ValueError("ข้อมูลตารางไม่ครบ")
         user = get_current_user()
         with get_db() as conn:
@@ -5713,7 +6100,7 @@ def create_schedule_version():
         flash("สร้างตารางใหม่แล้ว")
         return redirect(url_for("admin_schedules", version=new_id))
     except Exception as exc:
-        flash(str(exc))
+        flash(public_error(exc))
         return redirect(url_for("admin_schedules"))
 
 
@@ -5725,13 +6112,13 @@ def update_schedule_version(version_id):
     status = request.form.get("status") or "draft"
     try:
         date.fromisoformat(effective_date)
-        if not name or status not in {"draft", "published"}: raise ValueError("ข้อมูลไม่ถูกต้อง")
+        if not name or len(name) > 160 or status not in {"draft", "published"}: raise ValueError("ข้อมูลไม่ถูกต้อง")
         with get_db() as conn:
             conn.execute("UPDATE schedule_versions SET name=?,effective_date=?,status=? WHERE id=?", (name,effective_date,status,version_id))
         invalidate_train_cache()
         log_admin_audit("update_schedule_version", {"version_id": version_id, "name": name, "effective_date": effective_date, "status": status})
         flash("บันทึกข้อมูลตารางแล้ว")
-    except Exception as exc: flash(str(exc))
+    except Exception as exc: flash(public_error(exc))
     return redirect(url_for("admin_schedules", version=version_id))
 
 
@@ -5745,7 +6132,7 @@ def save_train():
         log_admin_audit("save_train", {"version_id": version_id, "train_id": request.form.get("train_id"), "num": request.form.get("num")})
         flash("บันทึกขบวนรถแล้ว และตรวจสอบข้อมูลซ้ำเรียบร้อย")
     except Exception as exc:
-        flash(str(exc))
+        flash(public_error(exc))
     return redirect(url_for("admin_schedules", version=version_id))
 
 
@@ -5774,6 +6161,7 @@ def delete_train(train_id):
 
 @app.route("/admin/schedules/import", methods=["POST"])
 @roles_required("admin")
+@rate_limited("schedule_import", 10, 600)
 def import_schedule():
     version_id = request.form.get("version_id", type=int)
     file = request.files.get("file")
@@ -5785,7 +6173,7 @@ def import_schedule():
         if skipped: message += f" · ข้าม {len(skipped)} แถว: " + " | ".join(skipped[:5])
         log_admin_audit("import_schedule", {"version_id": version_id, "inserted": inserted, "skipped": len(skipped)})
         flash(message)
-    except Exception as exc: flash(str(exc))
+    except Exception as exc: flash(public_error(exc))
     return redirect(url_for("admin_schedules", version=version_id))
 
 
@@ -5796,7 +6184,12 @@ def backup_data():
     payload = {"schema_version":1,"created_at":now_iso(),"tables":{}}
     with get_db() as conn:
         for table in tables:
-            payload["tables"][table] = [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
+            if table == "users":
+                # Password hashes are not required because restore intentionally preserves current accounts.
+                sql = "SELECT id,username,display_name,role,active,created_at,last_login FROM users"
+            else:
+                sql = f"SELECT * FROM {table}"
+            payload["tables"][table] = [dict(row) for row in conn.execute(sql).fetchall()]
     stream = io.BytesIO(json.dumps(payload,ensure_ascii=False,indent=2).encode("utf-8"))
     filename = f"station_backup_{now_bangkok().strftime('%Y%m%d_%H%M%S')}.json"
     return send_file(stream,mimetype="application/json",as_attachment=True,download_name=filename)
@@ -5804,12 +6197,17 @@ def backup_data():
 
 @app.route("/admin/restore", methods=["POST"])
 @roles_required("admin")
+@rate_limited("restore", 5, 600)
 def restore_data():
     file = request.files.get("file")
     try:
         if not file: raise ValueError("ไม่พบไฟล์สำรอง")
+        if not str(file.filename or "").lower().endswith(".json"):
+            raise ValueError("รองรับไฟล์สำรองชนิด .json เท่านั้น")
+        if request.form.get("confirm_restore") != "1":
+            raise ValueError("กรุณายืนยันว่าต้องการแทนที่ตารางและประวัติปัจจุบัน")
         payload = json.load(file)
-        tables = payload.get("tables") or {}
+        tables = validate_restore_payload(payload)
         versions = tables.get("schedule_versions",[]); trains=tables.get("trains",[])
         histories=tables.get("announcement_history",[]); events=tables.get("announcement_events",[]); handled=tables.get("quick_train_handled",[])
         if not isinstance(versions,list) or not isinstance(trains,list): raise ValueError("รูปแบบไฟล์สำรองไม่ถูกต้อง")
@@ -5839,7 +6237,7 @@ def restore_data():
         invalidate_train_cache()
         log_admin_audit("restore_data", {"versions": len(versions), "trains": len(trains), "histories": len(histories)})
         flash("กู้คืนตารางรถและประวัติแล้ว บัญชีผู้ใช้เดิมยังคงอยู่")
-    except Exception as exc: flash(f"กู้คืนไม่สำเร็จ: {exc}")
+    except Exception as exc: flash("กู้คืนไม่สำเร็จ: " + public_error(exc))
     return redirect(url_for("admin_schedules"))
 
 
@@ -5855,12 +6253,13 @@ def admin_users():
 def create_user():
     username=(request.form.get('username') or '').strip(); display=(request.form.get('display_name') or '').strip(); role=request.form.get('role'); password=request.form.get('password') or ''
     try:
-        if not username or not display or role not in ROLE_LABELS or len(password)<6: raise ValueError("กรอกข้อมูลให้ครบ และรหัสผ่านอย่างน้อย 6 ตัว")
+        if not username or not display or role not in ROLE_LABELS or len(password)<10: raise ValueError("กรอกข้อมูลให้ครบ และรหัสผ่านอย่างน้อย 10 ตัว")
+        if len(username) > 80 or len(display) > 160 or len(password) > 256: raise ValueError("ข้อมูลบัญชียาวเกินกำหนด")
         with get_db() as conn: conn.execute("INSERT INTO users(username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,1,?)",(username,generate_password_hash(password),display,role,now_iso()))
         log_admin_audit("create_user", {"username": username, "display_name": display, "role": role})
         flash("เพิ่มบัญชีแล้ว")
     except DB_INTEGRITY_ERRORS: flash("ชื่อผู้ใช้นี้มีอยู่แล้ว")
-    except Exception as exc: flash(str(exc))
+    except Exception as exc: flash(public_error(exc))
     return redirect(url_for('admin_users'))
 
 
@@ -5869,7 +6268,7 @@ def create_user():
 def update_user(user_id):
     current=get_current_user(); display=(request.form.get('display_name') or '').strip(); role=request.form.get('role'); password=request.form.get('password') or ''; active=1 if request.form.get('active') else 0
     try:
-        if not display or role not in ROLE_LABELS: raise ValueError("ข้อมูลไม่ถูกต้อง")
+        if not display or len(display)>160 or role not in ROLE_LABELS: raise ValueError("ข้อมูลไม่ถูกต้อง")
         if user_id==current['id'] and not active: raise ValueError("ไม่สามารถปิดบัญชีที่กำลังใช้งาน")
         with get_db() as conn:
             existing=conn.execute("SELECT role,active FROM users WHERE id=?",(user_id,)).fetchone()
@@ -5879,13 +6278,13 @@ def update_user(user_id):
                 if count<=1: raise ValueError("ต้องมีผู้ดูแลระบบที่เปิดใช้งานอย่างน้อย 1 บัญชี")
             conn.execute("UPDATE users SET display_name=?,role=?,active=? WHERE id=?",(display,role,active,user_id))
             if password:
-                if len(password)<6: raise ValueError("รหัสผ่านอย่างน้อย 6 ตัว")
+                if len(password)<10 or len(password)>256: raise ValueError("รหัสผ่านต้องมี 10–256 ตัว")
                 conn.execute("UPDATE users SET password_hash=? WHERE id=?",(generate_password_hash(password),user_id))
         if user_id == current["id"]:
             _store_session_user({"id": user_id, "username": current["username"], "display_name": display, "role": role, "active": active})
         log_admin_audit("update_user", {"user_id": user_id, "display_name": display, "role": role, "active": active, "password_changed": bool(password)})
         flash("บันทึกบัญชีแล้ว")
-    except Exception as exc: flash(str(exc))
+    except Exception as exc: flash(public_error(exc))
     return redirect(url_for('admin_users'))
 
 
@@ -5902,8 +6301,17 @@ def admin_audit_page():
 def history_page():
     filters={k:(request.args.get(k) or '').strip() for k in ('date_from','date_to','train_num','username')}
     where=[]; params=[]
-    if filters['date_from']: where.append("substr(started_at,1,10)>=?"); params.append(filters['date_from'])
-    if filters['date_to']: where.append("substr(started_at,1,10)<=?"); params.append(filters['date_to'])
+    try:
+        if filters['date_from']:
+            date.fromisoformat(filters['date_from'])
+            where.append("started_at>=?"); params.append(filters['date_from']+'T00:00:00')
+        if filters['date_to']:
+            date_to_exclusive = date.fromisoformat(filters['date_to']) + timedelta(days=1)
+            where.append("started_at<?"); params.append(date_to_exclusive.isoformat()+'T00:00:00')
+    except ValueError:
+        abort(400)
+    if len(filters['train_num']) > 40 or len(filters['username']) > 160:
+        abort(400)
     if filters['train_num']: where.append("train_num LIKE ?"); params.append('%'+filters['train_num']+'%')
     if filters['username']: where.append("username LIKE ?"); params.append('%'+filters['username']+'%')
     sql="SELECT * FROM announcement_history"+(" WHERE "+" AND ".join(where) if where else "")+" ORDER BY id DESC LIMIT 500"
@@ -5965,11 +6373,12 @@ def api_mark_quick_train_announced():
             message="ปิดคิวขบวนแล้ว · ยืนยันการบันทึกในฐานข้อมูลแล้ว · ตารางรถจริงยังคงอยู่"
         )
     except Exception as exc:
-        return jsonify(status="error", message=str(exc)), 400
+        return jsonify(status="error", message=public_error(exc)), 400
 
 
 @app.route("/api/realtime-status", methods=["GET"])
 @roles_required("announcer", "admin")
+@rate_limited("realtime_manual", 20, 60)
 def api_realtime_status():
     try:
         snapshot = fetch_srt_realtime_records(force=True)
@@ -5987,17 +6396,18 @@ def api_realtime_status():
             trains=list((snapshot.get("data") or {}).values()),
         )
     except Exception as exc:
-        return jsonify(status="error", message=str(exc)), 500
+        return jsonify(status="error", message=public_error(exc)), 500
 
 
 @app.route("/api/next-trains", methods=["GET"])
 @roles_required("announcer", "admin")
+@rate_limited("next_trains", 180, 60)
 def api_next_trains():
     """อัปเดตขบวนถัดไปและเวลารอบเตรียมเสียงโดยไม่ต้อง Refresh หน้าเว็บ"""
     try:
-        inbound, outbound, train_data, schedule_version = get_active_train_lists(fresh=True)
+        inbound, outbound, train_data, schedule_version = get_active_train_lists(fresh=False)
         quick_trains, realtime_snapshot = get_realtime_aware_quick_train_snapshot(
-            inbound, outbound, limit=3, force=True
+            inbound, outbound, limit=3, force=False
         )
         # ขบวนช่วงหลังเที่ยงคืนอาจมาจากตารางวันถัดไป จึงรวมไว้ให้หน้าเว็บเลือกได้ทันที
         for train in quick_trains:
@@ -6009,7 +6419,7 @@ def api_next_trains():
             trains=quick_trains,
             train_data=train_data,
             schedule_version=schedule_version,
-            schedule_read_mode="fresh",
+            schedule_read_mode="cached_with_admin_invalidation",
             prewarm_minutes=0,
             prewarm_rule="ปัดเวลาลงทุก 10 นาที",
             prewarm_bucket_minutes=10,
@@ -6025,7 +6435,7 @@ def api_next_trains():
             },
         )
     except Exception as exc:
-        return jsonify(status="error", message=str(exc)), 500
+        return jsonify(status="error", message=public_error(exc)), 500
 
 
 @app.route("/api/history/start",methods=["POST"])
@@ -6039,7 +6449,7 @@ def api_history_start():
         history_id=insert_history(payload,get_current_user())
         return jsonify(status="success",history_id=history_id)
     except Exception as exc:
-        return jsonify(status="error",message=str(exc)),500
+        return jsonify(status="error",message=public_error(exc)),500
 
 
 @app.route("/api/history/event",methods=["POST"])
@@ -6048,19 +6458,19 @@ def api_history_event():
     try:
         data=request.get_json(silent=True) or {}; history_id=int(data.get('history_id')); event_type=(data.get('event_type') or '').strip()
         if event_type not in {'generated','pause','resume','stop','success','failed','repeat_round','stop_after_round_requested','stopped_after_round','queue_close_retry_scheduled'}: raise ValueError("ประเภทเหตุการณ์ไม่ถูกต้อง")
-        event_at=add_history_event(history_id,event_type,data.get('details') or {})
+        event_at=add_history_event(history_id,event_type,data.get('details') or {},actor=get_current_user())
         return jsonify(status="success",event_at=event_at)
     except Exception as exc:
-        return jsonify(status="error",message=str(exc)),400
+        return jsonify(status="error",message=public_error(exc)),400
 
 
 @app.route("/")
 @roles_required("announcer", "admin")
 def index():
-    inbound, outbound, train_data, schedule_version = get_active_train_lists(fresh=True)
+    inbound, outbound, train_data, schedule_version = get_active_train_lists(fresh=False)
     user = get_current_user()
     quick_trains, _realtime_snapshot = get_realtime_aware_quick_train_snapshot(
-        inbound, outbound, limit=3, force=True
+        inbound, outbound, limit=3, force=False
     )
     for train in quick_trains:
         if train.get("label"):
@@ -6070,8 +6480,8 @@ def index():
         inbound=inbound,
         outbound=outbound,
         quick_trains=quick_trains,
-        quick_trains_json=json.dumps(quick_trains, ensure_ascii=False),
-        trains_json=json.dumps(train_data, ensure_ascii=False),
+        quick_trains_data=quick_trains,
+        trains_data=train_data,
         grouped_buttons=group_buttons(ANNOUNCEMENT_BUTTONS),
         voice_name=VOICE_NAME,
         en_voice_name=english_voice_for(VOICE_NAME),
@@ -6083,6 +6493,7 @@ def index():
 
 
 @app.route("/audio/<path:filename>")
+@login_required
 def serve_audio(filename):
     # ไฟล์เสียงเตือนเดิม ให้วาง chime.mp3 ไว้โฟลเดอร์เดียวกับไฟล์ Python
     if filename == CHIME_FILENAME:
@@ -6094,6 +6505,7 @@ def serve_audio(filename):
 
 @app.route("/test-station-voice", methods=["POST"])
 @roles_required("announcer", "admin")
+@rate_limited("voice_test", 20, 60)
 def test_station_voice():
     cleanup_old_audio()
     data = request.get_json(silent=True) or {}
@@ -6147,10 +6559,10 @@ def test_station_voice():
     except subprocess.TimeoutExpired:
         return jsonify({"status": "error", "message": "ระบบสร้างเสียงออนไลน์ไม่ตอบสนองภายในเวลาที่กำหนด กรุณาลองใหม่อีกครั้ง"}), 504
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or str(exc)).strip()
-        return jsonify({"status": "error", "message": f"สร้างเสียงทดสอบไม่สำเร็จ: {detail}"}), 500
+        logger.error("edge_tts_test_failed request_id=%s detail=%s", getattr(g, "request_id", ""), (exc.stderr or exc.stdout or str(exc))[:1200])
+        return jsonify({"status": "error", "message": "สร้างเสียงทดสอบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"}), 500
     except Exception as exc:
-        return jsonify({"status": "error", "message": str(exc)}), 500
+        return jsonify({"status": "error", "message": public_error(exc)}), 500
 
     if mode == "bilingual":
         preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
@@ -6171,6 +6583,7 @@ def test_station_voice():
 
 @app.route("/preview", methods=["POST"])
 @roles_required("announcer", "admin")
+@rate_limited("preview", 180, 60)
 def preview_announcement():
     data = request.get_json(silent=True) or {}
     mode = (data.get("announce_mode") or "thai_only").strip()
@@ -6193,7 +6606,7 @@ def preview_announcement():
         if mode in {"english_only", "bilingual"}:
             english_text = build_english_announcement(data)
     except Exception as exc:
-        return jsonify({"status": "error", "message": str(exc)}), 400
+        return jsonify({"status": "error", "message": public_error(exc)}), 400
 
     if mode == "bilingual":
         preview = f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}"
@@ -6209,6 +6622,7 @@ def preview_announcement():
 
 @app.route("/announce", methods=["POST"])
 @roles_required("announcer", "admin")
+@rate_limited("announce", 120, 300)
 def announce():
     generation_started = time.perf_counter()
     cleanup_old_audio()
@@ -6235,7 +6649,7 @@ def announce():
             thai_text = build_announcement(data)
             thai_text = apply_voice_politeness(thai_text, thai_voice)
         except Exception as exc:
-            return jsonify({"status": "error", "message": f"สร้างข้อความไทยไม่สำเร็จ: {exc}"}), 400
+            return jsonify({"status": "error", "message": "สร้างข้อความไทยไม่สำเร็จ: " + public_error(exc)}), 400
 
         if not thai_text:
             return jsonify({"status": "error", "message": "ไม่มีข้อความภาษาไทยสำหรับประกาศ"}), 400
@@ -6256,7 +6670,7 @@ def announce():
         try:
             english_text = build_english_announcement(data)
         except Exception as exc:
-            return jsonify({"status": "error", "message": f"สร้างข้อความอังกฤษไม่สำเร็จ: {exc}"}), 400
+            return jsonify({"status": "error", "message": "สร้างข้อความอังกฤษไม่สำเร็จ: " + public_error(exc)}), 400
 
         if not english_text:
             return jsonify({"status": "error", "message": "ไม่มีข้อความภาษาอังกฤษสำหรับประกาศ"}), 400
@@ -6296,16 +6710,16 @@ def announce():
             "text_preview": thai_text or english_text,
         }), 504
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        logger.error("edge_tts_failed request_id=%s detail=%s", getattr(g, "request_id", ""), (exc.stderr or exc.stdout or str(exc))[:1200])
         return jsonify({
             "status": "error",
-            "message": f"สร้างเสียงไม่สำเร็จ: {detail}",
+            "message": "สร้างเสียงไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
             "text_preview": thai_text or english_text,
         }), 500
     except Exception as exc:
         return jsonify({
             "status": "error",
-            "message": str(exc),
+            "message": public_error(exc),
             "text_preview": thai_text or english_text,
         }), 500
 
