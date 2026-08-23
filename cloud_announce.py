@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.5 - two-round pass-train playback; chime on first round only
-# Version: v12.5 - รถผ่านประกาศ 2 รอบ เว้น 1.8 วินาที และเล่นเสียงเตือนเฉพาะก่อนรอบแรก
+# Build: v13.0 - one-button train operation mode
+# Version: v13.0 - เพิ่มโหมดรับ–ส่งขบวนแบบปุ่มเดียว โดยคงเสียงและข้อความประกาศเดิมทั้งหมด
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -2296,6 +2296,7 @@ HTML_PAGE = r"""
         .quick-train:hover { border-color:var(--maroon); background:#fff5f5; }
         .quick-train.is-ready { border-color:#9bcbae; box-shadow:inset 0 0 0 1px rgba(23,119,68,.14); }
         .quick-train.is-warming { border-color:#d7b562; }
+        .quick-train.is-operation { border-color:var(--maroon); background:#fff3f3; box-shadow:inset 4px 0 0 var(--maroon); }
         .quick-live-status { margin-top:8px; padding:6px 8px; border-radius:9px; font-size:11px; font-weight:850; line-height:1.35; background:#f5efe6; color:var(--muted); }
         .quick-live-status.ready { background:#e8f6ed; color:#116735; }
         .quick-live-status.warming { background:#fff3cd; color:#785b00; }
@@ -2309,6 +2310,36 @@ HTML_PAGE = r"""
         .quick-train.is-overdue { border-color:#c62828; box-shadow:inset 0 0 0 1px rgba(198,40,40,.12); }
         .quick-time { font-weight:900; color:var(--maroon); font-size:17px; }
         .quick-route { margin-top:3px; font-weight:800; }
+        .operation-card {
+            margin-top:14px;
+            border:2px solid rgba(128,0,0,.34);
+            background:linear-gradient(145deg,#fff,#fff7ee);
+        }
+        .operation-card.is-active { box-shadow:0 14px 34px rgba(128,0,0,.13); }
+        .operation-card.is-playing { border-color:#b06b00; }
+        .operation-card.is-complete { border-color:#2b8d58; background:linear-gradient(145deg,#fff,#effaf3); }
+        .operation-head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+        .operation-mode-badge { padding:6px 10px; border-radius:999px; background:#f3e9dc; color:var(--muted); font-size:11px; font-weight:900; white-space:nowrap; }
+        .operation-mode-badge.ready { background:#e9f8ef; color:#116735; }
+        .operation-mode-badge.playing { background:#fff3cd; color:#785b00; }
+        .operation-mode-badge.complete { background:#dff5e8; color:#116735; }
+        .operation-train { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:13px; align-items:center; padding:13px; border:1px solid #e3d2bb; border-radius:16px; background:#fff; }
+        .operation-number { min-width:70px; padding:10px; border-radius:13px; background:var(--maroon); color:#fff; text-align:center; font-size:21px; font-weight:950; }
+        .operation-route { font-weight:900; color:var(--maroon-dark); line-height:1.35; }
+        .operation-meta { margin-top:4px; color:var(--muted); font-size:12px; line-height:1.45; }
+        .operation-platform { min-width:92px; padding:9px 10px; border-radius:12px; background:#f7efe5; color:var(--maroon-dark); text-align:center; font-weight:900; }
+        .operation-steps { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:11px; }
+        .operation-step { padding:10px 12px; border:1px solid #e2d5c3; border-radius:13px; background:#f8f4ed; color:var(--muted); font-weight:850; }
+        .operation-step.active { border-color:var(--maroon); background:#fff0f0; color:var(--maroon-dark); box-shadow:inset 3px 0 0 var(--maroon); }
+        .operation-step.done { border-color:#7dbb93; background:#eaf7ef; color:#116735; }
+        .operation-actions { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:9px; margin-top:11px; }
+        .operation-primary { min-height:58px; border:0; border-radius:15px; padding:13px 16px; background:linear-gradient(135deg,var(--maroon-dark),var(--maroon)); color:#fff; font-size:17px; font-weight:950; }
+        .operation-primary.depart { background:linear-gradient(135deg,#0f5b32,#23824d); }
+        .operation-primary:disabled { opacity:.48; cursor:not-allowed; }
+        .operation-secondary { border:1px solid #d8c9b7; border-radius:13px; padding:11px 13px; background:#fff; color:var(--maroon-dark); font-weight:900; }
+        .operation-secondary:disabled { opacity:.42; cursor:not-allowed; }
+        .operation-note { margin-top:9px; color:var(--muted); font-size:12px; line-height:1.5; }
+        .operation-note kbd { display:inline-block; min-width:25px; padding:2px 6px; border:1px solid #cdbca7; border-bottom-width:2px; border-radius:6px; background:#fff; color:var(--ink); text-align:center; font:800 11px inherit; }
         .train-search-results { display:grid; gap:6px; margin-top:7px; max-height:240px; overflow:auto; }
         .train-search-result { border:1px solid #eadcc5; background:#fffaf1; padding:9px 11px; border-radius:11px; text-align:left; }
         .compact-settings { margin-top:12px; border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:var(--shadow); overflow:hidden; }
@@ -2357,6 +2388,11 @@ HTML_PAGE = r"""
             .voice-choice-grid { grid-template-columns: 1fr; }
             .voice-test-btn { width: 100%; min-width: 0; }
             .playback-controls { grid-template-columns: 1fr; }
+            .operation-head { align-items:flex-start; }
+            .operation-train { grid-template-columns:auto 1fr; }
+            .operation-platform { grid-column:1/-1; width:100%; }
+            .operation-actions { grid-template-columns:1fr 1fr; }
+            .operation-primary { grid-column:1/-1; }
         }
     </style>
 </head>
@@ -2419,7 +2455,7 @@ HTML_PAGE = r"""
         <div class="card-body">
             <div class="quick-trains" id="quickTrainList">
                 {% for train in quick_trains %}
-                <button type="button" class="quick-train" onclick='selectTrainByLabel({{ train.label|tojson }}, 1)'>
+                <button type="button" class="quick-train" onclick='selectTrainByLabel({{ train.label|tojson }}, 1, true)'>
                     <div class="quick-time">{{ train.time_hhmm }} · ข.{{ train.num }}{% if train.day_offset %} · พรุ่งนี้{% endif %}</div>
                     <div class="quick-route">→ {{ train.dest }}</div>
                     <div class="helper">{{ train.origin }} → {{ train.dest }}</div>
@@ -2435,6 +2471,37 @@ HTML_PAGE = r"""
             </div>
             <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 ประกาศ “รถจอด / ออก” จบ = ถือว่าขบวนไปแล้ว · ระบบจะปิดคิวด้วยเลขขบวนและตรวจจากประวัติการประกาศซ้ำ · ตารางรถจริงยังอยู่</div>
             <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
+        </div>
+    </section>
+
+    <section class="card operation-card" id="trainOperationPanel" aria-live="polite">
+        <div class="card-head operation-head">
+            <h2 class="step-title"><span class="step">🎯</span> โหมดรับ–ส่งขบวน</h2>
+            <span class="operation-mode-badge" id="operationModeBadge">รอเลือกขบวน</span>
+        </div>
+        <div class="card-body">
+            <div class="operation-train">
+                <div class="operation-number" id="operationTrainNumber">–</div>
+                <div>
+                    <div class="operation-route" id="operationTrainRoute">เลือกขบวนจาก “ใช้งานด่วน · ขบวนถัดไป”</div>
+                    <div class="operation-meta" id="operationTrainMeta">ระบบจะจำขบวน เตรียมเสียง และเปลี่ยนขั้นตอนให้อัตโนมัติ</div>
+                </div>
+                <div class="operation-platform" id="operationPlatform">ชานชาลา –</div>
+            </div>
+
+            <div class="operation-steps">
+                <div class="operation-step" id="operationStepApproach">1 · รถกำลังเข้าเทียบ</div>
+                <div class="operation-step" id="operationStepDepart">2 · รถจอด / ออก</div>
+            </div>
+
+            <div class="operation-actions">
+                <button type="button" class="operation-primary" id="operationPrimaryButton" onclick="runTrainOperationStep()" disabled>▶ เลือกขบวนก่อน</button>
+                <button type="button" class="operation-secondary" id="operationUndoButton" onclick="undoTrainOperationStep()" disabled>↩ ย้อนขั้น</button>
+                <button type="button" class="operation-secondary" id="operationCancelButton" onclick="cancelTrainOperation()" disabled>✕ ยกเลิกโหมด</button>
+            </div>
+            <div class="operation-note" id="operationNote">
+                เมื่อเลือกขบวนแล้ว กด <kbd>Space</kbd> หรือ <kbd>F1</kbd> เพื่อประกาศขั้นถัดไป · ระบบจะไม่เล่นขั้นที่ 2 เอง
+            </div>
         </div>
     </section>
 
@@ -2788,6 +2855,17 @@ HTML_PAGE = r"""
     const quickTrainCloseRetryTimers = new Map();
     const prewarmedNextTrainKeys = new Set();
     const livePrewarmStates = new Map();
+    const TRAIN_OPERATION_STEPS = [
+        { tabIndex: 2, title: "รถกำลังเข้าเทียบ", buttonText: "▶ ประกาศรถกำลังเข้าเทียบ" },
+        { tabIndex: 4, title: "รถจอด / ออก", buttonText: "▶ ประกาศรถจอด / ออก" }
+    ];
+    let trainOperationState = {
+        active: false,
+        label: "",
+        train: null,
+        step: 0,
+        phase: "idle" // idle | ready | playing | complete
+    };
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -2821,6 +2899,199 @@ HTML_PAGE = r"""
         (target || select).appendChild(option);
     }
 
+    function announcementButtonByIndex(index) {
+        return document.querySelector(`.announce-option[data-index="${Number(index)}"]`);
+    }
+
+    function selectAnnouncementByIndex(index) {
+        const button = announcementButtonByIndex(index);
+        if (!button) return false;
+        selectAnnouncement(Number(index), button);
+        return true;
+    }
+
+    function resetExtraTrainPickersForOperation() {
+        [2, 3].forEach(type => {
+            const suffix = `_${type}`;
+            ["train_select", "num", "time", "origin", "dest", "next_station"].forEach(base => {
+                const element = byId(base + suffix);
+                if (element) element.value = "";
+            });
+            const picker = byId(`trainPicker${type}`);
+            if (picker) picker.classList.add("hidden");
+            refreshSummary(type);
+        });
+        activeTrainPickerCount = 1;
+        const addButton = byId("addTrain2Button");
+        if (addButton) {
+            addButton.disabled = false;
+            addButton.textContent = "＋ เพิ่มขบวนที่ 2";
+        }
+        updateMultiTrainControls(selectedAnnouncement);
+    }
+
+    function operationTrainSnapshot(label) {
+        const quick = quickTrains.find(item => item.label === label) || {};
+        const scheduled = trainData[label] || {};
+        return { ...scheduled, ...quick, label };
+    }
+
+    function renderTrainOperation() {
+        const panel = byId("trainOperationPanel");
+        const badge = byId("operationModeBadge");
+        const primary = byId("operationPrimaryButton");
+        const undo = byId("operationUndoButton");
+        const cancel = byId("operationCancelButton");
+        const approach = byId("operationStepApproach");
+        const depart = byId("operationStepDepart");
+        if (!panel || !badge || !primary || !undo || !cancel || !approach || !depart) return;
+
+        const state = trainOperationState;
+        const train = state.train || {};
+        panel.classList.toggle("is-active", state.active && state.phase !== "complete");
+        panel.classList.toggle("is-playing", state.phase === "playing");
+        panel.classList.toggle("is-complete", state.phase === "complete");
+        badge.className = "operation-mode-badge";
+
+        if (!state.active) {
+            badge.textContent = "รอเลือกขบวน";
+            byId("operationTrainNumber").textContent = "–";
+            byId("operationTrainRoute").textContent = "เลือกขบวนจาก “ใช้งานด่วน · ขบวนถัดไป”";
+            byId("operationTrainMeta").textContent = "ระบบจะจำขบวน เตรียมเสียง และเปลี่ยนขั้นตอนให้อัตโนมัติ";
+            byId("operationPlatform").textContent = "ชานชาลา –";
+            approach.className = "operation-step";
+            depart.className = "operation-step";
+            primary.textContent = "▶ เลือกขบวนก่อน";
+            primary.classList.remove("depart");
+            primary.disabled = true;
+            undo.disabled = true;
+            cancel.disabled = true;
+            return;
+        }
+
+        byId("operationTrainNumber").textContent = train.num || value("num") || "–";
+        byId("operationTrainRoute").textContent = `${train.origin || value("origin") || "–"} → ${train.dest || value("dest") || "–"}`;
+        const timeText = train.time_hhmm || train.time || value("time") || "–";
+        byId("operationTrainMeta").textContent = `เวลา ${timeText} · เลือกขบวนครั้งเดียว ระบบเปลี่ยนขั้นตอนให้เอง`;
+        byId("operationPlatform").textContent = `ชานชาลา ${value("platform") || "1"}`;
+
+        approach.className = "operation-step";
+        depart.className = "operation-step";
+        if (state.phase === "complete") {
+            approach.classList.add("done");
+            depart.classList.add("done");
+        } else if (state.step === 0) {
+            approach.classList.add("active");
+        } else {
+            approach.classList.add("done");
+            depart.classList.add("active");
+        }
+
+        if (state.phase === "playing") {
+            badge.textContent = `🔊 กำลังประกาศขั้นที่ ${state.step + 1}`;
+            badge.classList.add("playing");
+        } else if (state.phase === "complete") {
+            badge.textContent = "✅ รับ–ส่งขบวนเสร็จแล้ว";
+            badge.classList.add("complete");
+        } else {
+            badge.textContent = `พร้อมขั้นที่ ${state.step + 1}/2`;
+            badge.classList.add("ready");
+        }
+
+        const step = TRAIN_OPERATION_STEPS[Math.min(state.step, TRAIN_OPERATION_STEPS.length - 1)];
+        primary.textContent = state.phase === "complete" ? "✓ ขบวนออกจากคิวแล้ว" : step.buttonText;
+        primary.classList.toggle("depart", state.step === 1);
+        primary.disabled = state.phase !== "ready" || isBusy;
+        undo.disabled = state.phase !== "ready" || state.step === 0 || isBusy;
+        cancel.disabled = state.phase === "playing" || isBusy;
+    }
+
+    function startTrainOperation(label) {
+        if (!label || isBusy) return;
+        resetExtraTrainPickersForOperation();
+        const train = operationTrainSnapshot(label);
+        trainOperationState = { active: true, label, train, step: 0, phase: "ready" };
+        selectedQuickTrain = train;
+        selectAnnouncementByIndex(TRAIN_OPERATION_STEPS[0].tabIndex);
+        renderTrainOperation();
+        renderQuickTrainCards(quickTrains);
+        setStatus(`โหมดรับ–ส่ง · ขบวน ${train.num || ""} พร้อมประกาศเข้าเทียบ`, "ok");
+    }
+
+    function cancelTrainOperation(showStatus = true) {
+        if (isBusy || trainOperationState.phase === "playing") return;
+        trainOperationState = { active: false, label: "", train: null, step: 0, phase: "idle" };
+        selectedQuickTrain = null;
+        renderTrainOperation();
+        renderQuickTrainCards(quickTrains);
+        if (showStatus) setStatus("ยกเลิกโหมดรับ–ส่งแล้ว");
+    }
+
+    function undoTrainOperationStep() {
+        if (!trainOperationState.active || trainOperationState.phase !== "ready" || trainOperationState.step < 1 || isBusy) return;
+        trainOperationState.step = 0;
+        selectAnnouncementByIndex(TRAIN_OPERATION_STEPS[0].tabIndex);
+        renderTrainOperation();
+        setStatus("ย้อนกลับมาพร้อมประกาศรถกำลังเข้าเทียบ");
+    }
+
+    async function runTrainOperationStep() {
+        if (!trainOperationState.active || trainOperationState.phase !== "ready" || isBusy) return;
+        const stepIndex = trainOperationState.step;
+        const step = TRAIN_OPERATION_STEPS[stepIndex];
+        if (!step) return;
+
+        const selectedLabel = value("train_select");
+        if (selectedLabel !== trainOperationState.label) {
+            const select = byId("train_select");
+            ensureTrainOption(select, trainOperationState.label);
+            select.value = trainOperationState.label;
+            selectingFromQuickTrain = true;
+            autoFill(1);
+            selectingFromQuickTrain = false;
+            selectedQuickTrain = trainOperationState.train;
+        }
+
+        selectAnnouncementByIndex(step.tabIndex);
+        const error = validateSelection(step.tabIndex);
+        if (error) {
+            setStatus("ข้อมูลโหมดรับ–ส่งไม่ครบ", "error");
+            byId("previewBox").innerHTML = `<b>กรุณาตรวจสอบข้อมูล</b><br><br>${escapeHtml(error)}`;
+            return;
+        }
+
+        trainOperationState.phase = "playing";
+        renderTrainOperation();
+        await playSelectedAnnouncement();
+        // ถ้าเสียงถูกหยุดหรือเกิดข้อผิดพลาด callback สำเร็จจะไม่เปลี่ยนขั้น จึงคืนปุ่มเดิมให้ลองอีกครั้ง
+        if (trainOperationState.active && trainOperationState.step === stepIndex && trainOperationState.phase === "playing") {
+            trainOperationState.phase = "ready";
+            renderTrainOperation();
+        }
+    }
+
+    function completeTrainOperationStep(tabIndex) {
+        if (!trainOperationState.active || trainOperationState.phase !== "playing") return;
+        const expected = TRAIN_OPERATION_STEPS[trainOperationState.step];
+        if (!expected || Number(tabIndex) !== Number(expected.tabIndex)) return;
+
+        if (trainOperationState.step === 0) {
+            trainOperationState.step = 1;
+            trainOperationState.phase = "ready";
+            renderTrainOperation();
+            window.setTimeout(() => {
+                if (!isBusy && trainOperationState.active && trainOperationState.step === 1 && trainOperationState.phase === "ready") {
+                    selectAnnouncementByIndex(TRAIN_OPERATION_STEPS[1].tabIndex);
+                    renderTrainOperation();
+                    setStatus("ประกาศเข้าเทียบจบแล้ว · พร้อมรอคำสั่งรถจอด / ออก", "ok");
+                }
+            }, 80);
+        } else {
+            trainOperationState.phase = "complete";
+            renderTrainOperation();
+        }
+    }
+
     function selectTrainByLabel(label, type = 1, fromQuickTrain = false) {
         if (type > activeTrainPickerCount) {
             while (activeTrainPickerCount < type) addTrainPicker();
@@ -2838,6 +3109,11 @@ HTML_PAGE = r"""
             selectedQuickTrain = fromQuickTrain
                 ? (quickTrains.find(item => item.label === label) || trainData[label] || null)
                 : null;
+            if (fromQuickTrain) {
+                startTrainOperation(label);
+            } else if (trainOperationState.active) {
+                cancelTrainOperation(false);
+            }
         }
 
         if (type === 1 && byId("trainSearch")) {
@@ -2855,7 +3131,7 @@ HTML_PAGE = r"""
             return [label, data.num, data.origin, data.dest, data.time, data.time_hhmm, data.next].join(" ").toLowerCase().includes(q);
         }).slice(0, 8);
         box.innerHTML = matches.map(([label, data]) => `<button type="button" class="train-search-result" data-label="${escapeHtml(label)}"><b>${escapeHtml(data.time_hhmm || "")} · ข.${escapeHtml(data.num || "")}</b> ${escapeHtml(data.origin || "")} → ${escapeHtml(data.dest || "")}</button>`).join("");
-        box.querySelectorAll(".train-search-result").forEach(btn => btn.addEventListener("click", () => selectTrainByLabel(btn.dataset.label, 1)));
+        box.querySelectorAll(".train-search-result").forEach(btn => btn.addEventListener("click", () => selectTrainByLabel(btn.dataset.label, 1, true)));
     }
 
     function supportsMultipleTrainSelection(index = selectedAnnouncement) {
@@ -3071,6 +3347,7 @@ HTML_PAGE = r"""
         schedulePreview();
         schedulePrepareAnnouncement(250);
         scheduleNextTrainPrewarm(500);
+        if (type === 1 && trainOperationState.active) renderTrainOperation();
     }
 
     function resetPassTrainUI(singleOnly = false) {
@@ -3560,7 +3837,8 @@ HTML_PAGE = r"""
             const live = liveStatusForTrain(item);
             const realtime = realtimeStatusForTrain(item);
             const nextBadge = index === 0 ? '<span class="quick-next-badge">ใกล้สุด</span>' : "";
-            return `<button type="button" class="quick-train ${live.cardCls} ${index === 0 ? "is-next" : ""}" data-label="${escapeHtml(item.label || "")}">
+            const operationClass = trainOperationState.active && trainOperationState.label === item.label ? "is-operation" : "";
+            return `<button type="button" class="quick-train ${live.cardCls} ${operationClass} ${index === 0 ? "is-next" : ""}" data-label="${escapeHtml(item.label || "")}">
                 <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}${nextBadge}</div>
                 <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
                 <div class="helper">${escapeHtml(item.origin || "")} → ${escapeHtml(item.dest || "")}</div>
@@ -3906,6 +4184,7 @@ HTML_PAGE = r"""
         byId("loadingBar").classList.toggle("active", active);
         document.querySelectorAll(".announce-option, .lang-btn, .voice-choice-btn, .voice-test-btn").forEach(btn => btn.disabled = active);
         refreshPlaybackControls();
+        renderTrainOperation();
     }
 
     async function acquireAnnouncementWakeLock() {
@@ -4504,6 +4783,7 @@ HTML_PAGE = r"""
             // ถ้าเสียงเล่นจบครบ ให้ History = สำเร็จเสมอ ส่วนคิวถ้าสะดุดให้ retry เองเบื้องหลัง
             const queueClosed = await markSelectedQuickTrainAsHandled(tabIndex);
             await logHistoryEvent("success");
+            completeTrainOperationStep(tabIndex);
 
             if (Number(tabIndex) === 4) {
                 if (!queueClosed) {
@@ -4567,6 +4847,8 @@ HTML_PAGE = r"""
         byId("trainPicker2").classList.add("hidden"); byId("trainPicker3").classList.add("hidden");
         byId("addTrain2Button").disabled = false; byId("addTrain2Button").textContent = "＋ เพิ่มขบวนที่ 2";
         selectedAnnouncement = null;
+        trainOperationState = { active: false, label: "", train: null, step: 0, phase: "idle" };
+        selectedQuickTrain = null;
         updateMultiTrainControls(null);
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
@@ -4575,7 +4857,10 @@ HTML_PAGE = r"""
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง";
         byId("audioReadyBadge").textContent = "";
         if (byId("trainSearch")) { byId("trainSearch").value = ""; byId("trainSearchResults").innerHTML = ""; }
-        [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
+        [1, 2, 3].forEach(refreshSummary);
+        renderTrainOperation();
+        renderQuickTrainCards(quickTrains);
+        setStatus("พร้อมใช้งาน");
     }
 
     // Preview อัปเดตเร็ว แต่ TTS รอให้หยุดพิมพ์ก่อน เพื่อลดการสร้างไฟล์เสียงซ้ำ
@@ -4594,6 +4879,17 @@ HTML_PAGE = r"""
         });
     });
 
+    // ปุ่มลัดหน้าปฏิบัติงาน: ทำงานเฉพาะเมื่อโหมดรับ–ส่งพร้อม และไม่แย่งปุ่มขณะกรอกข้อมูล
+    document.addEventListener("keydown", event => {
+        const target = event.target;
+        const tag = String(target?.tagName || "").toLowerCase();
+        const isEditing = ["input", "textarea", "select", "button"].includes(tag) || target?.isContentEditable;
+        const isOperationKey = event.code === "Space" || event.key === "F1";
+        if (!isOperationKey || isEditing || !trainOperationState.active || trainOperationState.phase !== "ready" || isBusy) return;
+        event.preventDefault();
+        runTrainOperationStep();
+    });
+
     // คืนค่าภาษา/เสียงล่าสุดของอุปกรณ์ โดยไม่แก้ค่าความเร็วหรือจังหวะ TTS
     try {
         const savedMode = localStorage.getItem("kbp_announce_mode");
@@ -4609,6 +4905,7 @@ HTML_PAGE = r"""
     updateSettingsSummary();
     [1, 2, 3].forEach(refreshSummary);
     refreshPlaybackControls();
+    renderTrainOperation();
     updateDepartureAction();
     renderQuickTrainCards(quickTrains);
     updateNextTrainWaitingStatus();
