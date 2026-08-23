@@ -2297,6 +2297,7 @@ HTML_PAGE = r"""
         .app { max-width: 1120px; margin: 0 auto; }
         .system-nav {
             display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+            position: relative; z-index: 80; overflow: visible;
             margin-top: 11px; padding: 9px;
             border: 1px solid var(--line); border-radius: 16px;
             background: rgba(255,255,255,.92); box-shadow: var(--shadow);
@@ -2857,7 +2858,7 @@ HTML_PAGE = r"""
             font-weight: 850;
         }
         .readiness-checks span.ready { color: #126039; border-color: #b8ddc6; background: #ebf8f0; }
-        .nav-more { position: relative; }
+        .nav-more { position: relative; z-index: 90; }
         .nav-more > summary {
             display: flex;
             align-items: center;
@@ -2871,6 +2872,10 @@ HTML_PAGE = r"""
             list-style: none;
         }
         .nav-more > summary::-webkit-details-marker { display: none; }
+        .nav-more > summary span { transition: transform .16s ease; }
+        .nav-more[open] > summary { color: #fff; background: var(--maroon); }
+        .nav-more[open] > summary span { transform: rotate(180deg); }
+        .nav-more:not([open]) > .nav-more-menu { display: none; }
         .nav-more-menu {
             position: absolute;
             top: calc(100% + 7px);
@@ -2885,7 +2890,17 @@ HTML_PAGE = r"""
             background: #fff;
             box-shadow: 0 18px 45px rgba(50,20,14,.18);
         }
-        .nav-more-menu a { width: 100%; }
+        .nav-more-menu a {
+            display: flex;
+            width: 100%;
+            min-height: 42px;
+            align-items: center;
+            color: var(--maroon-dark) !important;
+            background: #fff7ed !important;
+            opacity: 1;
+            visibility: visible;
+        }
+        .nav-more-menu a:hover { color: #fff !important; background: var(--maroon) !important; }
         .logout-link { color: #8a1b1b !important; background: #fff1f1 !important; }
         @media (max-width: 860px) {
             .layout { grid-template-columns: 1fr; }
@@ -2896,7 +2911,17 @@ HTML_PAGE = r"""
             .workflow-line { display: none; }
             .nav-more { width: 100%; }
             .nav-more > summary { justify-content: space-between; }
-            .nav-more-menu { position: static; margin-top: 6px; box-shadow: none; }
+            .nav-more-menu {
+                position: relative;
+                top: auto;
+                left: auto;
+                z-index: 1;
+                width: 100%;
+                min-width: 0;
+                margin-top: 6px;
+                box-shadow: none;
+            }
+            .nav-more-menu a { padding: 11px 13px; }
             .readiness-checks { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) {
