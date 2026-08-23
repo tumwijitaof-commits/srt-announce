@@ -2717,9 +2717,187 @@ HTML_PAGE = r"""
             outline-offset: 3px;
         }
         .sticky { top: 12px; }
+        .eyebrow {
+            margin-bottom: 4px;
+            color: var(--gold);
+            font-size: 11px;
+            font-weight: 900;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .quick-card {
+            border: 1px solid rgba(128,0,0,.20);
+            box-shadow: 0 20px 48px rgba(75,20,15,.11), inset 5px 0 var(--maroon);
+        }
+        .quick-card .card-head { padding: 17px 20px; }
+        .quick-train {
+            position: relative;
+            min-height: 116px;
+            padding: 14px;
+            overflow: hidden;
+        }
+        .quick-train.is-selected {
+            border-color: var(--maroon);
+            background: linear-gradient(145deg, #fff, #fff1f1);
+            box-shadow: inset 0 0 0 2px rgba(128,0,0,.16), 0 10px 26px rgba(128,0,0,.10);
+        }
+        .operator-tip {
+            margin-top: 12px;
+            padding: 11px 13px;
+            border: 1px solid #ead3a1;
+            border-radius: 12px;
+            color: #624800;
+            background: linear-gradient(135deg, #fff9e6, #fffdf7);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .system-detail {
+            margin-top: 9px;
+            padding: 0 12px;
+            border: 1px solid #e8ded1;
+            border-radius: 11px;
+            color: var(--muted);
+            background: #faf8f5;
+        }
+        .system-detail summary { padding: 9px 0; cursor: pointer; font-size: 12px; font-weight: 800; }
+        .system-detail[open] { padding-bottom: 10px; }
+        .operator-utility-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: stretch;
+            margin-top: 12px;
+        }
+        .operator-utility-row .compact-settings { margin-top: 0; }
+        .compact-settings summary { min-height: 65px; align-items: center; }
+        .compact-settings summary > span:first-child { display: grid; gap: 3px; }
+        .utility-label { color: var(--muted); font-size: 11px; font-weight: 800; }
+        .settings-action { color: var(--maroon); font-size: 12px; font-weight: 900; }
+        .shift-ready {
+            min-width: 245px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            border: 1px solid #b9ddc7;
+            border-radius: 16px;
+            color: #115f35;
+            background: linear-gradient(135deg, #f4fff7, #e9f7ee);
+            box-shadow: 0 10px 28px rgba(18,100,58,.07);
+        }
+        .shift-ready-icon {
+            width: 34px; height: 34px; flex: 0 0 auto;
+            display: grid; place-items: center;
+            border-radius: 50%; color: #fff; background: #16824a;
+            font-weight: 900;
+        }
+        .shift-ready b, .shift-ready small { display: block; }
+        .shift-ready small { margin-top: 2px; color: #4f6f5d; }
+        .workflow-guide {
+            display: grid;
+            grid-template-columns: minmax(0,1fr) 42px minmax(0,1fr) 42px minmax(0,1fr);
+            align-items: center;
+            gap: 8px;
+            margin: 14px 0 0;
+            padding: 12px 15px;
+            border: 1px solid rgba(116,69,43,.13);
+            border-radius: 17px;
+            background: rgba(255,255,255,.78);
+            box-shadow: 0 10px 30px rgba(55,25,15,.06);
+        }
+        .workflow-step { display: flex; align-items: center; gap: 10px; color: #8a7d78; }
+        .workflow-step > span {
+            width: 34px; height: 34px; flex: 0 0 auto;
+            display: grid; place-items: center;
+            border: 1px solid #ddcfc3;
+            border-radius: 11px;
+            color: #756a65;
+            background: #f5f1ec;
+            font-weight: 900;
+        }
+        .workflow-step b, .workflow-step small { display: block; }
+        .workflow-step b { font-size: 13px; }
+        .workflow-step small { margin-top: 2px; font-size: 11px; }
+        .workflow-step.active { color: var(--maroon-dark); }
+        .workflow-step.active > span { color: #fff; border-color: var(--maroon); background: var(--maroon); box-shadow: 0 5px 14px rgba(128,0,0,.18); }
+        .workflow-step.done { color: #17663b; }
+        .workflow-step.done > span { color: #fff; border-color: #16824a; background: #16824a; }
+        .workflow-line { height: 2px; border-radius: 99px; background: #eadfd6; }
+        .announcement-group + .announcement-group { margin-top: 11px; }
+        .secondary-group {
+            padding: 0 12px 12px;
+            border: 1px solid #e7dbce;
+            border-radius: 14px;
+            background: #fffdf9;
+        }
+        .secondary-group > summary {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 0;
+            color: var(--maroon-dark);
+            cursor: pointer;
+            font-weight: 900;
+        }
+        .secondary-group > summary span { color: var(--muted); font-size: 11px; font-weight: 700; }
+        .readiness-checks {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0,1fr));
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+        .readiness-checks span {
+            padding: 7px 8px;
+            border: 1px solid #e5dbd3;
+            border-radius: 9px;
+            color: #7b706b;
+            background: #f8f5f2;
+            text-align: center;
+            font-size: 10.5px;
+            font-weight: 850;
+        }
+        .readiness-checks span.ready { color: #126039; border-color: #b8ddc6; background: #ebf8f0; }
+        .nav-more { position: relative; }
+        .nav-more > summary {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 9px 12px;
+            border-radius: 11px;
+            color: var(--maroon-dark);
+            background: #fff7ed;
+            cursor: pointer;
+            font-weight: 850;
+            list-style: none;
+        }
+        .nav-more > summary::-webkit-details-marker { display: none; }
+        .nav-more-menu {
+            position: absolute;
+            top: calc(100% + 7px);
+            left: 0;
+            z-index: 30;
+            min-width: 220px;
+            display: grid;
+            gap: 5px;
+            padding: 8px;
+            border: 1px solid var(--line);
+            border-radius: 13px;
+            background: #fff;
+            box-shadow: 0 18px 45px rgba(50,20,14,.18);
+        }
+        .nav-more-menu a { width: 100%; }
+        .logout-link { color: #8a1b1b !important; background: #fff1f1 !important; }
         @media (max-width: 860px) {
             .layout { grid-template-columns: 1fr; }
             .topbar::after { opacity: .65; }
+            .operator-utility-row { grid-template-columns: 1fr; }
+            .shift-ready { min-width: 0; }
+            .workflow-guide { grid-template-columns: 1fr; gap: 7px; }
+            .workflow-line { display: none; }
+            .nav-more { width: 100%; }
+            .nav-more > summary { justify-content: space-between; }
+            .nav-more-menu { position: static; margin-top: 6px; box-shadow: none; }
+            .readiness-checks { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) {
             html { scroll-behavior: auto; }
@@ -2734,59 +2912,46 @@ HTML_PAGE = r"""
             <div class="logo">🚆</div>
             <div>
                 <h1>ระบบประกาศสถานีคลองบางพระ</h1>
-                <p class="subtitle">เลือกภาษา เลือกเสียง แล้วกดประกาศได้ทันที</p>
+                <p class="subtitle">แผงควบคุมประกาศประจำสถานี · ทำงานตามลำดับ 3 ขั้นตอน</p>
             </div>
         </div>
         <div class="status" id="statusText" role="status" aria-live="polite">พร้อมใช้งาน</div>
         <div class="progress" id="loadingBar" role="progressbar" aria-label="สถานะการเตรียมเสียง"></div>
     </header>
 
-    <nav class="system-nav">
+    <nav class="system-nav" aria-label="เมนูหลัก">
         <a class="active" href="{{ url_for('index') }}">📢 หน้าประกาศ</a>
         <a href="#voiceTestPanel" class="voice-test-nav" id="topVoiceTestLink" onclick="openVoiceTestMenu(event)">🔊 ทดสอบเสียงประกาศ</a>
-        {% if current_user.role == 'admin' %}
-        <a href="{{ url_for('admin_schedules') }}">🚆 จัดการตารางรถ</a>
-        <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
-        <a href="{{ url_for('admin_audit_page') }}">🧾 บันทึกผู้ดูแล</a>
-        {% endif %}
-        {% if current_user.role in ['admin', 'auditor'] %}
-        <a href="{{ url_for('history_page') }}">🕘 ประวัติการประกาศ</a>
-        {% endif %}
         <a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพระบบ</a>
+        {% if current_user.role in ['admin', 'auditor'] %}
+        <details class="nav-more">
+            <summary>จัดการระบบ <span aria-hidden="true">⌄</span></summary>
+            <div class="nav-more-menu">
+                {% if current_user.role == 'admin' %}
+                <a href="{{ url_for('admin_schedules') }}">🚆 จัดการตารางรถ</a>
+                <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
+                <a href="{{ url_for('admin_audit_page') }}">🧾 บันทึกผู้ดูแล</a>
+                {% endif %}
+                <a href="{{ url_for('history_page') }}">🕘 ประวัติการประกาศ</a>
+            </div>
+        </details>
+        {% endif %}
         <span class="nav-user">{{ current_user.display_name }} · {{ role_labels[current_user.role] }}</span>
-        <a href="{{ url_for('logout') }}">ออกจากระบบ</a>
+        <a class="logout-link" href="{{ url_for('logout') }}">ออกจากระบบ</a>
     </nav>
-
-    <details class="compact-settings" id="announceSettings">
-        <summary><span id="settingsSummary">🇹🇭 ภาษาไทย · 👩 เสียงผู้หญิง</span><span>⚙️ ตั้งค่า</span></summary>
-        <div class="compact-settings-body">
-            <input type="hidden" id="announce_mode" value="thai_only">
-            <input type="hidden" id="thai_voice" value="{{ voice_name }}">
-            <label>ภาษา</label>
-            <div class="language-grid">
-                <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ภาษาไทย<small>ประกาศภาษาเดียว</small></button>
-                <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
-                <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
-            </div>
-            <label style="margin-top:12px">เสียงประกาศ</label>
-            <div class="voice-choice-grid" id="voiceTestPanel">
-                <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}" data-voice="th-TH-PremwadeeNeural" onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">👩 เสียงผู้หญิง<small>Premwadee · Jenny</small></button>
-                <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}" data-voice="th-TH-NiwatNeural" onclick="setThaiVoice('th-TH-NiwatNeural', this)">👨 เสียงผู้ชาย<small>Niwat · Guy</small></button>
-                <button type="button" class="voice-test-btn" onclick="testStationVoice()">🔊 ทดสอบเสียงจริง</button>
-            </div>
-            <div class="voice-quick-note" id="voiceHelper" style="margin-top:8px">🔊 ปุ่มนี้สร้างและเล่นเสียง TTS จริงตามภาษาและเสียงที่เลือก · ไม่ใช่เสียงตัวอย่างจำลอง · ระบบยังคงใช้สำเนียงและจังหวะเดิม</div>
-        </div>
-    </details>
 
     <section class="card quick-card">
         <div class="card-head quick-card-head">
-            <h2 class="step-title"><span class="step">⚡</span> ใช้งานด่วน · ขบวนถัดไป</h2>
+            <div>
+                <div class="eyebrow">เริ่มต้นจากตรงนี้</div>
+                <h2 class="step-title"><span class="step">⚡</span> ขบวนถัดไป</h2>
+            </div>
             <div class="station-live-clock" id="stationLiveClock" aria-live="polite">🕐 <span class="clock-label">เวลาสถานี</span> <span class="clock-seconds">{{ server_time_hhmmss }}</span> น.</div>
         </div>
         <div class="card-body">
             <div class="quick-trains" id="quickTrainList">
                 {% for train in quick_trains %}
-                <button type="button" class="quick-train" onclick='selectTrainByLabel({{ train.label|tojson }}, 1)'>
+                <button type="button" class="quick-train" onclick='selectTrainByLabel({{ train.label|tojson }}, 1, true)'>
                     <div class="quick-time">{{ train.time_hhmm }} · ข.{{ train.num }}{% if train.day_offset %} · พรุ่งนี้{% endif %}</div>
                     <div class="quick-route">→ {{ train.dest }}</div>
                     <div class="helper">{{ train.origin }} → {{ train.dest }}</div>
@@ -2800,10 +2965,46 @@ HTML_PAGE = r"""
                 <input id="trainSearch" type="search" maxlength="160" placeholder="เลขขบวน / เวลา / ปลายทาง" oninput="renderTrainSearch()">
                 <div class="train-search-results" id="trainSearchResults"></div>
             </div>
-            <div class="helper" id="nextTrainPrewarmStatus" style="margin-top:9px;">🕐 ประกาศ “รถจอด / ออก” จบ = ถือว่าขบวนไปแล้ว · ระบบจะปิดคิวด้วยเลขขบวนและตรวจจากประวัติการประกาศซ้ำ · ตารางรถจริงยังอยู่</div>
-            <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
+            <div class="operator-tip"><b>วิธีใช้:</b> เลือกขบวนจากการ์ด หรือค้นหาขบวนอื่น แล้วทำตามขั้นตอน 1–3 ด้านล่าง</div>
+            <details class="system-detail">
+                <summary>สถานะข้อมูลขบวนและ TTS Real-time</summary>
+                <div class="helper" id="nextTrainPrewarmStatus">🕐 ระบบติดตามขบวนถัดไปและเตรียมเสียงให้อัตโนมัติ</div>
+                <div class="helper" id="realtimeSourceStatus" style="margin-top:5px;">⚪ สถานะ TTS Real-time: ยังไม่เชื่อมต่อ</div>
+            </details>
         </div>
     </section>
+
+    <div class="operator-utility-row">
+        <details class="compact-settings" id="announceSettings">
+            <summary><span><span class="utility-label">ภาษาและเสียง</span><b id="settingsSummary">🇹🇭 ภาษาไทย · 👩 เสียงผู้หญิง</b></span><span class="settings-action">เปลี่ยนค่า <span aria-hidden="true">⌄</span></span></summary>
+            <div class="compact-settings-body">
+                <input type="hidden" id="announce_mode" value="thai_only">
+                <input type="hidden" id="thai_voice" value="{{ voice_name }}">
+                <label>ภาษาที่ใช้ประกาศ</label>
+                <div class="language-grid">
+                    <button type="button" class="lang-btn active" data-mode="thai_only" onclick="setLanguage('thai_only', this)">🇹🇭 ภาษาไทย<small>ประกาศภาษาเดียว</small></button>
+                    <button type="button" class="lang-btn" data-mode="english_only" onclick="setLanguage('english_only', this)">🇬🇧 English<small>English only</small></button>
+                    <button type="button" class="lang-btn" data-mode="bilingual" onclick="setLanguage('bilingual', this)">🇹🇭 + 🇬🇧 สองภาษา<small>ไทย แล้วอังกฤษ</small></button>
+                </div>
+                <label style="margin-top:12px">เสียงประกาศ</label>
+                <div class="voice-choice-grid" id="voiceTestPanel">
+                    <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-PremwadeeNeural' %}active{% endif %}" data-voice="th-TH-PremwadeeNeural" onclick="setThaiVoice('th-TH-PremwadeeNeural', this)">👩 เสียงผู้หญิง<small>Premwadee · Jenny</small></button>
+                    <button type="button" class="voice-choice-btn {% if voice_name == 'th-TH-NiwatNeural' %}active{% endif %}" data-voice="th-TH-NiwatNeural" onclick="setThaiVoice('th-TH-NiwatNeural', this)">👨 เสียงผู้ชาย<small>Niwat · Guy</small></button>
+                    <button type="button" class="voice-test-btn" onclick="testStationVoice()">🔊 ทดสอบเสียงจริง</button>
+                </div>
+                <div class="voice-quick-note" id="voiceHelper" style="margin-top:8px">ปุ่มทดสอบจะสร้างและเล่นเสียงจริงตามค่าที่เลือก โดยไม่เปลี่ยนสำเนียงและจังหวะของระบบ</div>
+            </div>
+        </details>
+        <div class="shift-ready" role="note"><span class="shift-ready-icon">✓</span><span><b>พร้อมใช้งานร่วมกัน</b><small>ค่าภาษาและเสียงจะจำเฉพาะเครื่องนี้</small></span></div>
+    </div>
+
+    <div class="workflow-guide" aria-label="ขั้นตอนการประกาศ">
+        <div class="workflow-step active" id="workflowStep1"><span>1</span><div><b>เลือกขบวน</b><small>ตรวจชานชาลา</small></div></div>
+        <div class="workflow-line" aria-hidden="true"></div>
+        <div class="workflow-step" id="workflowStep2"><span>2</span><div><b>เลือกประกาศ</b><small>เลือกประเภทงาน</small></div></div>
+        <div class="workflow-line" aria-hidden="true"></div>
+        <div class="workflow-step" id="workflowStep3"><span>3</span><div><b>ตรวจแล้วกดเล่น</b><small>อ่านข้อความตัวอย่าง</small></div></div>
+    </div>
 
     <section class="layout">
         <div class="stack">
@@ -2956,14 +3157,29 @@ HTML_PAGE = r"""
                 <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกประเภทประกาศ</h2></div>
                 <div class="card-body">
                     {% for group, buttons in grouped_buttons.items() %}
-                    <div class="group-title">{{ group }}</div>
-                    <div class="announce-grid">
+                    {% if group == 'ใช้บ่อย' %}
+                    <div class="announcement-group primary-group">
+                        <div class="group-title">ใช้บ่อย</div>
+                        <div class="announce-grid">
                         {% for button in buttons %}
                         <button type="button" class="announce-option" data-index="{{ button.idx }}" data-title="{{ button.title }}" onclick="selectAnnouncement({{ button.idx }}, this)">
                             <strong>{{ button.title }}</strong><span>{{ button.hint }}</span>
                         </button>
                         {% endfor %}
+                        </div>
                     </div>
+                    {% else %}
+                    <details class="announcement-group secondary-group">
+                        <summary>{{ group }} <span>เปิดดูรายการ</span></summary>
+                        <div class="announce-grid">
+                        {% for button in buttons %}
+                        <button type="button" class="announce-option" data-index="{{ button.idx }}" data-title="{{ button.title }}" onclick="selectAnnouncement({{ button.idx }}, this)">
+                            <strong>{{ button.title }}</strong><span>{{ button.hint }}</span>
+                        </button>
+                        {% endfor %}
+                        </div>
+                    </details>
+                    {% endif %}
                     {% endfor %}
 
                     <div class="conditional" id="delayFields">
@@ -3082,14 +3298,19 @@ HTML_PAGE = r"""
         </div>
 
         <aside class="card sticky">
-            <div class="card-head"><h2 class="step-title"><span class="step">3</span> ตรวจสอบและประกาศ</h2></div>
+            <div class="card-head"><h2 class="step-title"><span class="step">3</span> ตรวจข้อความและเริ่มประกาศ</h2></div>
             <div class="card-body">
-                <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
+                <div class="readiness-checks" aria-label="ความพร้อมก่อนประกาศ">
+                    <span id="reviewTrain">○ ขบวนรถ</span>
+                    <span id="reviewType">○ ประเภทประกาศ</span>
+                    <span id="reviewAudio">○ เสียงพร้อม</span>
+                </div>
+                <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 2 ก่อน</div>
                     <div class="preview" id="previewBox" aria-live="polite"><b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง</div>
                 <div class="preview-ready" id="audioReadyBadge"></div>
                 <div class="action-stack">
                     <div class="playback-controls">
-                        <button type="button" class="primary" id="playButton" onclick="playOrResumeAudio()" disabled>▶ เริ่มประกาศ</button>
+                        <button type="button" class="primary" id="playButton" onclick="playOrResumeAudio()" disabled>▶ เริ่มประกาศเสียง</button>
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
@@ -3162,6 +3383,37 @@ HTML_PAGE = r"""
         return { "Content-Type": "application/json", "X-CSRF-Token": window.KBP_CSRF_TOKEN || "" };
     }
 
+    function updateWorkflowGuide() {
+        const hasTrain = Boolean(value("num"));
+        const hasType = selectedAnnouncement !== null;
+        const hasAudio = Boolean(preparedAudioData && preparedAudioKey);
+        const isPreparing = Boolean(preparedAudioPromise && preparedAudioKey);
+
+        const stepStates = [
+            { id: "workflowStep1", done: hasTrain, active: !hasTrain },
+            { id: "workflowStep2", done: hasType, active: hasTrain && !hasType },
+            { id: "workflowStep3", done: hasAudio, active: hasTrain && hasType && !hasAudio }
+        ];
+        stepStates.forEach(({ id, done, active }) => {
+            const element = byId(id);
+            if (!element) return;
+            element.classList.toggle("done", done);
+            element.classList.toggle("active", active);
+        });
+
+        const checks = [
+            ["reviewTrain", hasTrain, hasTrain ? "✓ เลือกขบวนแล้ว" : "○ เลือกขบวนก่อน"],
+            ["reviewType", hasType, hasType ? "✓ เลือกประเภทแล้ว" : "○ เลือกประเภทก่อน"],
+            ["reviewAudio", hasAudio, hasAudio ? "✓ เสียงพร้อม" : (isPreparing ? "◌ กำลังเตรียมเสียง" : "○ รอเตรียมเสียง")]
+        ];
+        checks.forEach(([id, ready, label]) => {
+            const element = byId(id);
+            if (!element) return;
+            element.textContent = label;
+            element.classList.toggle("ready", ready);
+        });
+    }
+
     function updateSettingsSummary() {
         const mode = value("announce_mode") || "thai_only";
         const voice = value("thai_voice") || "th-TH-PremwadeeNeural";
@@ -3211,6 +3463,7 @@ HTML_PAGE = r"""
             byId("trainSearch").value = "";
             byId("trainSearchResults").innerHTML = "";
         }
+        updateWorkflowGuide();
     }
 
     function renderTrainSearch() {
@@ -3380,6 +3633,7 @@ HTML_PAGE = r"""
             });
             refreshSummary(type);
             invalidatePreparedAudio();
+            if (type === 1) renderQuickTrainCards(quickTrains);
             schedulePreview();
             schedulePrepareAnnouncement(250);
             return;
@@ -3397,6 +3651,7 @@ HTML_PAGE = r"""
         }
         refreshSummary(type);
         invalidatePreparedAudio();
+        if (type === 1) renderQuickTrainCards(quickTrains);
         schedulePreview();
         schedulePrepareAnnouncement(250);
     }
@@ -3502,6 +3757,7 @@ HTML_PAGE = r"""
         invalidatePreparedAudio();
         schedulePreview(30);
         schedulePrepareAnnouncement(250);
+        updateWorkflowGuide();
     }
 
     function escapeHtml(text) {
@@ -3552,6 +3808,7 @@ HTML_PAGE = r"""
             clearTimeout(prepareTimer);
             prepareTimer = null;
         }
+        updateWorkflowGuide();
     }
 
     function requestAnnouncementData(tabIndex, background = false) {
@@ -3582,6 +3839,7 @@ HTML_PAGE = r"""
             if (preparedAudioKey === key) {
                 preparedAudioData = data;
                 preparedAudioPromise = null;
+                updateWorkflowGuide();
                 if (background && !isBusy) {
                     setStatus(data.used_cached_audio ? "ใช้ไฟล์เสียงสำรองเดิม" : "เสียงพร้อมประกาศ", "ok");
                     if (byId("audioReadyBadge")) {
@@ -3596,11 +3854,13 @@ HTML_PAGE = r"""
             if (preparedAudioKey === key) {
                 preparedAudioPromise = null;
                 preparedAudioData = null;
+                updateWorkflowGuide();
             }
             throw error;
         });
 
         preparedAudioPromise = requestPromise;
+        updateWorkflowGuide();
         return requestPromise;
     }
 
@@ -3927,7 +4187,8 @@ HTML_PAGE = r"""
             const live = liveStatusForTrain(item);
             const realtime = realtimeStatusForTrain(item);
             const nextBadge = index === 0 ? '<span class="quick-next-badge">ใกล้สุด</span>' : "";
-            return `<button type="button" class="quick-train ${live.cardCls} ${index === 0 ? "is-next" : ""}" data-label="${escapeHtml(item.label || "")}">
+            const selectedClass = value("train_select") === String(item.label || "") ? "is-selected" : "";
+            return `<button type="button" class="quick-train ${live.cardCls} ${index === 0 ? "is-next" : ""} ${selectedClass}" data-label="${escapeHtml(item.label || "")}">
                 <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}${nextBadge}</div>
                 <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
                 <div class="helper">${escapeHtml(item.origin || "")} → ${escapeHtml(item.dest || "")}</div>
@@ -4242,7 +4503,7 @@ HTML_PAGE = r"""
         const cooldownSeconds = Number(selectedAnnouncement) === 9 ? passTrainCooldownSeconds() : 0;
         const playText = playbackState === "paused"
             ? "▶ เล่นต่อ"
-            : (cooldownSeconds > 0 ? `⏳ รอ ${cooldownSeconds} วิ` : "▶ เริ่มประกาศ");
+            : (cooldownSeconds > 0 ? `⏳ รอ ${cooldownSeconds} วิ` : "▶ เริ่มประกาศเสียง");
         const playDisabled = playbackState === "loading" || playbackState === "playing" || cooldownSeconds > 0 || (playbackState === "idle" && selectedAnnouncement === null);
         const pauseDisabled = playbackState !== "playing";
         const stopDisabled = !["loading", "playing", "paused"].includes(playbackState);
@@ -4934,6 +5195,7 @@ HTML_PAGE = r"""
         byId("trainPicker2").classList.add("hidden"); byId("trainPicker3").classList.add("hidden");
         byId("addTrain2Button").disabled = false; byId("addTrain2Button").textContent = "＋ เพิ่มขบวนที่ 2";
         selectedAnnouncement = null;
+        selectedQuickTrain = null;
         updateMultiTrainControls(null);
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
@@ -4942,7 +5204,9 @@ HTML_PAGE = r"""
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เลือกขบวนและประเภทประกาศ ระบบจะแสดงข้อความจริงก่อนกดเสียง";
         byId("audioReadyBadge").textContent = "";
         if (byId("trainSearch")) { byId("trainSearch").value = ""; byId("trainSearchResults").innerHTML = ""; }
+        renderQuickTrainCards(quickTrains);
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
+        updateWorkflowGuide();
     }
 
     // Preview อัปเดตเร็ว แต่ TTS รอให้หยุดพิมพ์ก่อน เพื่อลดการสร้างไฟล์เสียงซ้ำ
@@ -4976,6 +5240,7 @@ HTML_PAGE = r"""
     updateSettingsSummary();
     [1, 2, 3].forEach(refreshSummary);
     refreshPlaybackControls();
+    updateWorkflowGuide();
     updateDepartureAction();
     renderQuickTrainCards(quickTrains);
     updateNextTrainWaitingStatus();
