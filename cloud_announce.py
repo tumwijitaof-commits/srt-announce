@@ -27,8 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Build: v12.4 - safer repeat controls + natural female closing; core TTS settings unchanged
-# Version: v12.4 - ปรับเฉพาะจังหวะคำลงท้าย "ขอบคุณค่ะ" สำหรับเสียงหญิง พร้อมเพิ่มความปลอดภัยระหว่างเล่นซ้ำ
+# Build: v12.5 - two-round pass-train playback; chime on first round only
+# Version: v12.5 - รถผ่านประกาศ 2 รอบ เว้น 1.8 วินาที และเล่นเสียงเตือนเฉพาะก่อนรอบแรก
 BASE_DIR = Path(__file__).resolve().parent
 
 # รหัสลับของ session ต้องคงเดิมข้ามการพักระบบ / รีสตาร์ต / Deploy
@@ -181,7 +181,7 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "เลือกขบวนและชานชาลาได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 11, "title": "รถเปลี่ยนเส้นทาง", "hint": "แจ้งกรณีเปลี่ยนทางหรือชานชาลาเข้าเทียบจากปกติ", "group": "ใช้บ่อย", "visible": True},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "รองรับรถเข้า 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
-    {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับ 1–3 ทาง · เล่นอัตโนมัติ 3 รอบ", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 9, "title": "รถผ่านสถานี", "hint": "โดยสาร / สินค้า / พิเศษ รองรับ 1–3 ทาง · ประกาศ 2 รอบ เสียงเตือนเฉพาะรอบแรก", "group": "ใช้บ่อย", "visible": True},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย", "visible": True},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศอื่น", "visible": True},
@@ -2780,7 +2780,7 @@ HTML_PAGE = r"""
     const NEXT_TRAIN_REFRESH_MS = 30 * 1000;
     const NEXT_TRAIN_PREWARM_LEAD_MINUTES = 10;
     const NEXT_TRAIN_RETRY_MS = 60 * 1000;
-    const PASS_TRAIN_REPEAT_COUNT = 3;
+    const PASS_TRAIN_REPEAT_COUNT = 2;
     const PASS_TRAIN_REPEAT_GAP_MS = 1800;
     const PASS_TRAIN_COOLDOWN_MS = 10 * 1000;
     // ถ้าเสียงประกาศจบแล้ว แต่การบันทึกปิดคิวสะดุด ให้ลองซ้ำเองโดยไม่ตีตราการเล่นเสียงว่าล้มเหลว
@@ -4455,9 +4455,14 @@ HTML_PAGE = r"""
                 if (repeatCount > 1 && byId("audioReadyBadge")) {
                     byId("audioReadyBadge").textContent = `⚠️ รถผ่านสถานี · กำลังเล่นรอบ ${round}/${repeatCount}`;
                 }
-                setStatus(`เสียงเตือน${roundText}`, "work");
-                await playOriginalChime(runId);
-                if (runId !== playbackRunId) throw makePlaybackStoppedError();
+                const shouldPlayChime = repeatCount === 1 || round === 1;
+                if (shouldPlayChime) {
+                    setStatus(`เสียงเตือน${roundText}`, "work");
+                    await playOriginalChime(runId);
+                    if (runId !== playbackRunId) throw makePlaybackStoppedError();
+                } else {
+                    setStatus(`เริ่มประกาศ${roundText}`, "work");
+                }
 
                 for (let i = 0; i < audioUrls.length; i++) {
                     if (runId !== playbackRunId) throw makePlaybackStoppedError();
