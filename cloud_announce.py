@@ -213,7 +213,7 @@ OUTBOUND_TRAINS = [
 TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
 
 ANNOUNCEMENT_BUTTONS = [
-    {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศข้อมูลขบวนและเส้นทางต่อเนื่องจนถึงปลายทาง", "group": "ใช้บ่อย", "visible": True},
+    {"idx": 4, "title": "รถจอด / ออก", "hint": "ประกาศพร้อมกันได้ 1–3 ขบวน พร้อมข้อมูลชานชาลาและเส้นทางต่อเนื่อง", "group": "ใช้บ่อย", "visible": True},
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "เลือกประกาศพร้อมกันได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
     {"idx": 12, "title": "ซื้อตั๋วก่อนขึ้นรถ", "hint": "เตือนค่าธรรมเนียมกรณีขึ้นรถโดยไม่มีตั๋ว", "group": "ใช้บ่อย", "visible": True},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "เลือกขบวนและชานชาลาได้ 1–3 ขบวน", "group": "ใช้บ่อย", "visible": True},
@@ -2042,7 +2042,7 @@ def validate_announcement_payload(payload):
     if idx == 4 and not field("next"):
         return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ"
 
-    if idx in {0, 1, 2}:
+    if idx in {0, 1, 2, 4}:
         try:
             train_count = max(1, min(3, int(payload.get("train_count", 1) or 1)))
         except (TypeError, ValueError):
@@ -2060,7 +2060,15 @@ def validate_announcement_payload(payload):
         if len(set(nums)) != len(nums):
             return "กรุณาเลือกขบวนรถไม่ให้ซ้ำกัน"
 
-        if idx == 2:
+        if idx == 4:
+            if train_count >= 2:
+                if not field("next_2"):
+                    return "ขบวนที่ 2 ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ"
+            if train_count >= 3:
+                if not field("next_3"):
+                    return "ขบวนที่ 3 ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ"
+
+        if idx in {2, 4}:
             platforms = [field("platform")]
             if train_count >= 2:
                 platforms.append(field("platform_2"))
@@ -2096,7 +2104,7 @@ def insert_history(payload, user):
         history_idx = int(payload.get("tab_index", -1))
     except (TypeError, ValueError):
         history_idx = -1
-    if history_idx in {0, 1, 2}:
+    if history_idx in {0, 1, 2, 4}:
         nums = [
             str(payload.get("num", "") or "").strip(),
             str(payload.get("num_2", "") or "").strip(),
@@ -2221,7 +2229,11 @@ def backend_health_checks():
         with get_db() as conn:
             conn.execute("SELECT 1").fetchone()
         database_ok = True
-        database_detail = ("Supabase PostgreSQL พร้อมใช้ · เชื่อมต่อแบบ request-scoped" if USE_POSTGRES else f"{DB_PATH.name} พร้อมใช้งาน")
+        database_detail = (
+            "Supabase PostgreSQL พร้อมใช้ · เชื่อมต่อแบบ request-scoped"
+            if USE_POSTGRES
+            else f"กำลังใช้ {DB_PATH.name} ในเครื่อง Render · ควรตั้งค่า DATABASE_URL เป็น Supabase เพื่อป้องกันข้อมูลหายเมื่อ Deploy ใหม่"
+        )
     except Exception as exc:
         logger.warning("database_health_failed request_id=%s error=%s", getattr(g, "request_id", ""), str(exc)[:500])
         database_detail = "เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณาแจ้งผู้ดูแลระบบ"
@@ -3410,6 +3422,7 @@ HTML_PAGE = r"""
 
     function updateWorkflowGuide() {
         const hasTrain = Boolean(value("num"));
+        const selectedCount = selectedTrainPickerCount();
         const hasType = selectedAnnouncement !== null;
         const hasAudio = Boolean(preparedAudioData && preparedAudioKey);
         const isPreparing = Boolean(preparedAudioPromise && preparedAudioKey);
@@ -3427,7 +3440,7 @@ HTML_PAGE = r"""
         });
 
         const checks = [
-            ["reviewTrain", hasTrain, hasTrain ? "✓ เลือกขบวนแล้ว" : "○ เลือกขบวนก่อน"],
+            ["reviewTrain", hasTrain, hasTrain ? `✓ เลือกแล้ว ${selectedCount} ขบวน` : "○ เลือกขบวนก่อน"],
             ["reviewType", hasType, hasType ? "✓ เลือกประเภทแล้ว" : "○ เลือกประเภทก่อน"],
             ["reviewAudio", hasAudio, hasAudio ? "✓ เสียงพร้อม" : (isPreparing ? "◌ กำลังเตรียมเสียง" : "○ รอเตรียมเสียง")]
         ];
@@ -3466,10 +3479,20 @@ HTML_PAGE = r"""
     }
 
     function selectTrainByLabel(label, type = 1, fromQuickTrain = false) {
-        if (type > activeTrainPickerCount) {
-            while (activeTrainPickerCount < type) addTrainPicker();
+        type = Number(type) || 1;
+        if (trainAlreadySelected(label, type)) {
+            setStatus("ขบวนนี้ถูกเลือกไว้แล้ว กรุณาเลือกขบวนอื่น", "error");
+            return;
         }
-        const selectId = type === 1 ? "train_select" : `train_select_${type}`;
+        if (type > activeTrainPickerCount) {
+            while (activeTrainPickerCount < type) {
+                const before = activeTrainPickerCount;
+                addTrainPicker();
+                if (activeTrainPickerCount === before) break;
+            }
+        }
+        if (type > activeTrainPickerCount) return;
+        const selectId = trainSelectId(type);
         const select = byId(selectId);
         if (!select) return;
         ensureTrainOption(select, label);
@@ -3500,11 +3523,13 @@ HTML_PAGE = r"""
             return [label, data.num, data.origin, data.dest, data.time, data.time_hhmm, data.next].join(" ").toLowerCase().includes(q);
         }).slice(0, 8);
         box.innerHTML = matches.map(([label, data]) => `<button type="button" class="train-search-result" data-label="${escapeHtml(label)}"><b>${escapeHtml(data.time_hhmm || "")} · ข.${escapeHtml(data.num || "")}</b> ${escapeHtml(data.origin || "")} → ${escapeHtml(data.dest || "")}</button>`).join("");
-        box.querySelectorAll(".train-search-result").forEach(btn => btn.addEventListener("click", () => selectTrainByLabel(btn.dataset.label, 1)));
+        box.querySelectorAll(".train-search-result").forEach(btn => btn.addEventListener("click", () => {
+            selectTrainByLabel(btn.dataset.label, nextAvailableTrainPicker());
+        }));
     }
 
     function supportsMultipleTrainSelection(index = selectedAnnouncement) {
-        return index === null || index === undefined || [0, 1, 2].includes(Number(index));
+        return index === null || index === undefined || [0, 1, 2, 4].includes(Number(index));
     }
 
     function updateMultiTrainControls(index = selectedAnnouncement) {
@@ -3512,6 +3537,24 @@ HTML_PAGE = r"""
         if (byId("trainAddControls")) byId("trainAddControls").classList.toggle("hidden", !supported);
         if (byId("trainPicker2")) byId("trainPicker2").classList.toggle("hidden", !supported || activeTrainPickerCount < 2);
         if (byId("trainPicker3")) byId("trainPicker3").classList.toggle("hidden", !supported || activeTrainPickerCount < 3);
+    }
+
+    function collapseExtraTrainPickers() {
+        [2, 3].forEach(type => {
+            ["train_select", "num", "time", "origin", "dest", "next_station", "platform"].forEach(base => {
+                const element = byId(`${base}_${type}`);
+                if (element) element.value = "";
+            });
+            const picker = byId(`trainPicker${type}`);
+            if (picker) picker.classList.add("hidden");
+        });
+        activeTrainPickerCount = 1;
+        if (byId("addTrain2Button")) {
+            byId("addTrain2Button").disabled = false;
+            byId("addTrain2Button").textContent = "＋ เพิ่มขบวนที่ 2";
+        }
+        updateMultiTrainControls();
+        invalidatePreparedAudio();
     }
 
     function addTrainPicker() {
@@ -3536,7 +3579,7 @@ HTML_PAGE = r"""
             refreshSummary(2);
         }
         const last = activeTrainPickerCount;
-        ["train_select", "num", "time", "origin", "dest", "next_station"].forEach(base => { const el = byId(base + `_${last}`); if (el) el.value = ""; });
+        ["train_select", "num", "time", "origin", "dest", "next_station", "platform"].forEach(base => { const el = byId(base + `_${last}`); if (el) el.value = ""; });
         byId(`trainPicker${last}`).classList.add("hidden");
         activeTrainPickerCount -= 1;
         byId("addTrain2Button").disabled = false;
@@ -3623,6 +3666,39 @@ HTML_PAGE = r"""
 
     function trainSuffix(type) { return type === 1 ? "" : `_${type}`; }
     function summarySuffix(type) { return type === 1 ? "" : String(type); }
+
+    function trainSelectId(type) {
+        return type === 1 ? "train_select" : `train_select_${type}`;
+    }
+
+    function selectedTrainPickerCount() {
+        let count = 0;
+        for (let type = 1; type <= activeTrainPickerCount; type++) {
+            const suffix = type === 1 ? "" : `_${type}`;
+            if (value(`num${suffix}`)) count += 1;
+        }
+        return count;
+    }
+
+    function nextAvailableTrainPicker() {
+        const max = Math.min(3, activeTrainPickerCount);
+        for (let type = 1; type <= max; type++) {
+            if (!value(trainSelectId(type))) return type;
+        }
+        if (supportsMultipleTrainSelection() && activeTrainPickerCount < 3) {
+            const before = activeTrainPickerCount;
+            addTrainPicker();
+            if (activeTrainPickerCount > before) return activeTrainPickerCount;
+        }
+        return 1;
+    }
+
+    function trainAlreadySelected(label, exceptType = 0) {
+        for (let type = 1; type <= activeTrainPickerCount; type++) {
+            if (type !== Number(exceptType) && value(trainSelectId(type)) === String(label || "")) return true;
+        }
+        return false;
+    }
 
     // ชานชาลาปกติของสถานีคลองบางพระ:
     // เลขขบวนคี่ = ชานชาลา 2, เลขขบวนคู่ = ชานชาลา 3
@@ -3761,6 +3837,10 @@ HTML_PAGE = r"""
 
     function selectAnnouncement(index, button) {
         selectedAnnouncement = index;
+        if (!supportsMultipleTrainSelection(index) && activeTrainPickerCount > 1) {
+            collapseExtraTrainPickers();
+            setStatus("ประเภทนี้รองรับ 1 ขบวน ระบบล้างช่องขบวนที่ 2–3 แล้ว", "work");
+        }
         updateMultiTrainControls(index);
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
@@ -4212,7 +4292,8 @@ HTML_PAGE = r"""
             const live = liveStatusForTrain(item);
             const realtime = realtimeStatusForTrain(item);
             const nextBadge = index === 0 ? '<span class="quick-next-badge">ใกล้สุด</span>' : "";
-            const selectedClass = value("train_select") === String(item.label || "") ? "is-selected" : "";
+            const selectedClass = Array.from({ length: activeTrainPickerCount }, (_, offset) => offset + 1)
+                .some(type => value(trainSelectId(type)) === String(item.label || "")) ? "is-selected" : "";
             return `<button type="button" class="quick-train ${live.cardCls} ${index === 0 ? "is-next" : ""} ${selectedClass}" data-label="${escapeHtml(item.label || "")}">
                 <div class="quick-time">${escapeHtml(item.time_hhmm || "")} · ข.${escapeHtml(item.num || "")}${tomorrow}${nextBadge}</div>
                 <div class="quick-route">→ ${escapeHtml(item.dest || "")}</div>
@@ -4223,7 +4304,9 @@ HTML_PAGE = r"""
         }).join("");
 
         box.querySelectorAll(".quick-train").forEach(button => {
-            button.addEventListener("click", () => selectTrainByLabel(button.dataset.label, 1, true));
+            button.addEventListener("click", () => {
+                selectTrainByLabel(button.dataset.label, nextAvailableTrainPicker(), true);
+            });
         });
     }
 
@@ -4446,11 +4529,18 @@ HTML_PAGE = r"""
         if (index === 4 && !value("next_station"))
             return "ขบวนนี้ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
 
-        if ([0, 1, 2].includes(index)) {
+        if ([0, 1, 2, 4].includes(index)) {
             if (activeTrainPickerCount >= 2 && !value("num_2"))
                 return "กรุณาเลือกขบวนที่ 2 หรือลบช่องขบวนที่ 2";
             if (activeTrainPickerCount >= 3 && !value("num_3"))
                 return "กรุณาเลือกขบวนที่ 3 หรือลบช่องขบวนที่ 3";
+
+            if (index === 4) {
+                if (activeTrainPickerCount >= 2 && !value("next_station_2"))
+                    return "ขบวนที่ 2 ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+                if (activeTrainPickerCount >= 3 && !value("next_station_3"))
+                    return "ขบวนที่ 3 ยังไม่มีข้อมูลสถานีถัดไป กรุณาตรวจสอบในตารางรถ";
+            }
 
             const selectedNums = [];
             if (value("num")) selectedNums.push(value("num"));
@@ -4459,12 +4549,13 @@ HTML_PAGE = r"""
             if (new Set(selectedNums).size !== selectedNums.length) return "กรุณาเลือกขบวนรถไม่ให้ซ้ำกัน";
         }
 
-        if (index === 2) {
+        if ([2, 4].includes(index)) {
             const selected = [];
             if (value("num")) selected.push(value("platform"));
             if (activeTrainPickerCount >= 2 && value("num_2")) selected.push(value("platform_2"));
             if (activeTrainPickerCount >= 3 && value("num_3")) selected.push(value("platform_3"));
-            if (new Set(selected).size !== selected.length) return "กรุณาเลือกชานชาลาของขบวนรถที่เข้าเทียบไม่ให้ซ้ำกัน";
+            if (selected.some(platform => !["1", "2", "3"].includes(platform))) return "กรุณาเลือกชานชาลาให้ถูกต้อง";
+            if (new Set(selected).size !== selected.length) return "กรุณาเลือกชานชาลาของขบวนรถแต่ละขบวนไม่ให้ซ้ำกัน";
         }
 
         if (index === 9) {
@@ -4905,14 +4996,30 @@ HTML_PAGE = r"""
         });
     }
 
+    function selectedTrainReviewLines() {
+        const trains = [];
+        for (let type = 1; type <= activeTrainPickerCount; type++) {
+            const suffix = type === 1 ? "" : `_${type}`;
+            const number = value(`num${suffix}`);
+            if (!number) continue;
+            const route = [value(`origin${suffix}`), value(`dest${suffix}`)].filter(Boolean).join(" → ");
+            const platform = value(`platform${suffix}`);
+            const time = value(`time${suffix}`);
+            trains.push(`ขบวน ${number}${time ? ` (${time})` : ""}${route ? ` · ${route}` : ""}${platform ? ` · ชานชาลา ${platform}` : ""}`);
+        }
+        return trains;
+    }
+
     function confirmationMessage(tabIndex) {
         const index = Number(tabIndex);
-        if (index === 2) {
-            const trains = [];
-            if (value("num")) trains.push(`ขบวน ${value("num")} — ชานชาลา ${value("platform")}`);
-            if (activeTrainPickerCount >= 2 && value("num_2")) trains.push(`ขบวน ${value("num_2")} — ชานชาลา ${value("platform_2")}`);
-            if (activeTrainPickerCount >= 3 && value("num_3")) trains.push(`ขบวน ${value("num_3")} — ชานชาลา ${value("platform_3")}`);
-            if (trains.length > 1) return `ตรวจสอบรถเข้าเทียบพร้อมกัน\n\n${trains.join("\n")}\n\nยืนยันเริ่มประกาศหรือไม่`;
+        if ([0, 1, 2, 4].includes(index) && selectedTrainPickerCount() > 1) {
+            const title = ({
+                0: "ตรวจสอบขบวนที่จะประกาศขอทาง / ขายตั๋ว",
+                1: "ตรวจสอบขบวนที่จะประกาศรอรับโดยสาร",
+                2: "ตรวจสอบรถกำลังเข้าเทียบพร้อมกัน",
+                4: "ตรวจสอบขบวนรถจอด / ออก"
+            })[index] || "ตรวจสอบขบวนที่จะประกาศ";
+            return `${title}\n\n${selectedTrainReviewLines().join("\n")}\n\nยืนยันเริ่มประกาศหรือไม่`;
         }
         if (index === 9) {
             const count = Math.max(1, Math.min(3, parseInt(value("pass_count") || "1", 10)));
@@ -5029,23 +5136,42 @@ HTML_PAGE = r"""
         quickTrainCloseRetryTimers.set(key, timer);
     }
 
-    async function markSelectedQuickTrainAsHandled(tabIndex) {
-        if (Number(tabIndex) !== 4 || !selectedQuickTrain?.label) return true;
-
-        // เก็บ snapshot ไว้ เพราะหลังเสียงจบ เราจะเอาขบวนออกจากหน้าจอทันที
-        // แม้การ sync ฐานข้อมูลจะสะดุดชั่วคราวก็ตาม
-        const item = { ...selectedQuickTrain };
-        removeQuickTrainLocally(item);
-
-        try {
-            await requestQuickTrainClose(item);
-            refreshNextTrainsFromServer(true);
-            return true;
-        } catch (error) {
-            console.warn("Mark quick train handled failed; automatic retry scheduled:", error);
-            scheduleQuickTrainCloseRetry(item, 0);
-            return false;
+    function selectedQuickTrainItems() {
+        const items = [];
+        const seen = new Set();
+        for (let type = 1; type <= activeTrainPickerCount; type++) {
+            const label = value(trainSelectId(type));
+            if (!label || seen.has(label)) continue;
+            const item = quickTrains.find(train => train.label === label)
+                || (selectedQuickTrain?.label === label ? selectedQuickTrain : null);
+            if (item) {
+                items.push({ ...item });
+                seen.add(label);
+            }
         }
+        return items;
+    }
+
+    async function markSelectedQuickTrainAsHandled(tabIndex) {
+        if (Number(tabIndex) !== 4) return true;
+        const items = selectedQuickTrainItems();
+        if (!items.length) return true;
+
+        let allClosed = true;
+        for (const item of items) {
+            // เก็บ snapshot ไว้ เพราะหลังเสียงจบ เราจะเอาขบวนออกจากหน้าจอทันที
+            // แม้การ sync ฐานข้อมูลจะสะดุดชั่วคราวก็ตาม
+            removeQuickTrainLocally(item);
+            try {
+                await requestQuickTrainClose(item);
+            } catch (error) {
+                console.warn(`Mark quick train handled failed for ${item.num || item.label}; automatic retry scheduled:`, error);
+                scheduleQuickTrainCloseRetry(item, 0);
+                allClosed = false;
+            }
+        }
+        refreshNextTrainsFromServer(true);
+        return allClosed;
     }
 
     async function playAnnouncement(tabIndex) {
@@ -5899,11 +6025,24 @@ def build_english_announcement(data):
     elif idx == 3:
         text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
-        base = (
-            f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
-            f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
+        departure_trains = [(platform, t_num, origin, dest, dest_th_raw, next_st)]
+        if t_num_2:
+            departure_trains.append((platform_2, t_num_2, origin_2, dest_2, data.get("dest_2", ""), next_st_2))
+        if t_num_3:
+            departure_trains.append((platform_3, t_num_3, origin_3, dest_3, data.get("dest_3", ""), next_st_3))
+
+        train_details = " ".join(
+            f"The train at platform {p} is train number {n}, from {o} to {d}."
+            for p, n, o, d, _, _ in departure_trains
         )
-        text = base + " " + english_departure_route_text(current, next_st, dest_th_raw, dest)
+        route_details = " ".join(
+            f"For the train at platform {p}: {english_departure_route_text(current, nxt, dest_raw, d)}"
+            for p, _, _, d, dest_raw, nxt in departure_trains
+        )
+        text = (
+            f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
+            f"{train_details} {route_details}"
+        )
     elif idx == 5:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
@@ -6063,14 +6202,25 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
-        base = (
-            f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
-            f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
-            f"นำลงให้ครบถ้วนและถูกต้อง "
-            f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
-            f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)}"
+        departure_trains = [(platform, t_num, origin, dest, next_st)]
+        if t_num_2:
+            departure_trains.append((platform_2, t_num_2, origin_2, dest_2, next_st_2))
+        if t_num_3:
+            departure_trains.append((platform_3, t_num_3, origin_3, dest_3, next_st_3))
+
+        train_details = " ".join(
+            f"ขบวนรถที่จอดเทียบในชานชาลาที่ {p} เป็นขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)}"
+            for p, n, o, d, _ in departure_trains
         )
-        text = base + " " + thai_departure_route_text(current, next_st, dest) + " ขอบคุณครับ"
+        route_details = " ".join(
+            f"สำหรับขบวนรถในชานชาลาที่ {p} {thai_departure_route_text(current, nxt, d)}"
+            for p, _, _, d, nxt in departure_trains
+        )
+        text = (
+            f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
+            f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา นำลงให้ครบถ้วนและถูกต้อง "
+            f"{train_details} {route_details} ขอบคุณครับ"
+        )
     elif idx == 5:
         text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
