@@ -6035,10 +6035,14 @@ def build_english_announcement(data):
             f"The train at platform {p} is train number {n}, from {o} to {d}."
             for p, n, o, d, _, _ in departure_trains
         )
-        route_details = " ".join(
-            f"For the train at platform {p}: {english_departure_route_text(current, nxt, dest_raw, d)}"
-            for p, _, _, d, dest_raw, nxt in departure_trains
-        )
+        if len(departure_trains) == 1:
+            p, _, _, d, dest_raw, nxt = departure_trains[0]
+            route_details = english_departure_route_text(current, nxt, dest_raw, d)
+        else:
+            route_details = " ".join(
+                f"For the train at platform {p}: {english_departure_route_text(current, nxt, dest_raw, d)}"
+                for p, _, _, d, dest_raw, nxt in departure_trains
+            )
         text = (
             f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
             f"{train_details} {route_details}"
@@ -6202,6 +6206,9 @@ def build_announcement(data):
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
+        # รถจอด / ออก รองรับ 1–3 ขบวน
+        # กติกาใหม่: ถ้ามีเพียง 1 ขบวน ห้ามมีคำว่า “สำหรับขบวนรถ...”
+        # เพื่อให้เสียงเป็นธรรมชาติและไม่เหมือนประกาศหลายขบวน
         departure_trains = [(platform, t_num, origin, dest, next_st)]
         if t_num_2:
             departure_trains.append((platform_2, t_num_2, origin_2, dest_2, next_st_2))
@@ -6212,10 +6219,19 @@ def build_announcement(data):
             f"ขบวนรถที่จอดเทียบในชานชาลาที่ {p} เป็นขบวนรถ ขบวนที่ {n} รับส่งผู้โดยสารต้นทาง {station(o)} ปลายทาง {station(d)}"
             for p, n, o, d, _ in departure_trains
         )
-        route_details = " ".join(
-            f"สำหรับขบวนรถในชานชาลาที่ {p} {thai_departure_route_text(current, nxt, d)}"
-            for p, _, _, d, nxt in departure_trains
-        )
+
+        if len(departure_trains) == 1:
+            p, _, _, d, nxt = departure_trains[0]
+            route_details = (
+                f"ขบวนรถเที่ยวนี้ {thai_departure_route_text(current, nxt, d)}"
+            )
+        else:
+            route_parts = [
+                f"สำหรับขบวนรถในชานชาลาที่ {p} {thai_departure_route_text(current, nxt, d)}"
+                for p, _, _, d, nxt in departure_trains
+            ]
+            route_details = " ".join(route_parts)
+
         text = (
             f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
             f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา นำลงให้ครบถ้วนและถูกต้อง "
