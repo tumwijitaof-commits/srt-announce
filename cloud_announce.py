@@ -140,11 +140,11 @@ OUTBOUND_TRAINS = [
 TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
 
 ANNOUNCEMENT_BUTTONS = [
+    {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ก่อนรถเข้า"},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
     {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
-    {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
     {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "เหตุการณ์พิเศษ"},
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
@@ -1242,6 +1242,10 @@ HTML_PAGE = r"""
             border-radius: 14px; background: #f7f1e8; color: var(--muted);
         }
         .selected-type b { color: var(--maroon-dark); }
+        .selected-type.is-preparing { background: #fff3cd; color: #785b00; border: 1px solid #dfbf68; }
+        .selected-type.is-ready { background: #e8f6ed; color: #116735; border: 1px solid #78bd91; }
+        .selected-type.is-ready b { color: #0b5c30; }
+        .selected-type.is-error { background: #fdebea; color: #a31d16; border: 1px solid #df8b85; }
         .preview {
             min-height: 150px; max-height: 390px; overflow: auto;
             padding: 15px; border: 1px solid #eadcc5; border-radius: 16px;
@@ -1330,6 +1334,17 @@ HTML_PAGE = r"""
             display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px;
             color: var(--maroon-dark);
         }
+        .pass-platform-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .pass-platform-btn {
+            min-height: 64px; padding: 8px 5px; border: 2px solid #ddcfba; border-radius: 13px;
+            background: #fffaf2; color: var(--muted); font-weight: 800; cursor: pointer;
+        }
+        .pass-platform-btn strong { display: block; margin-top: 2px; color: var(--maroon-dark); font-size: 24px; line-height: 1; }
+        .pass-platform-btn.active {
+            border-color: var(--maroon); background: var(--maroon); color: #fff;
+            box-shadow: inset 0 0 0 1px var(--maroon), 0 3px 9px rgba(128,0,0,.12);
+        }
+        .pass-platform-btn.active strong { color: #fff; }
         .pass-actions { display: grid; gap: 7px; margin-top: 10px; }
         .pass-add-btn, .pass-remove-btn {
             border: 1px solid #d8c9b7; border-radius: 11px; padding: 9px 12px; font-weight: 850;
@@ -1590,7 +1605,6 @@ HTML_PAGE = r"""
                     </div>
 
                     <div class="conditional" id="passFields">
-                        <p class="conditional-title">ข้อมูลรถวิ่งผ่าน</p>
                         <input type="hidden" id="pass_count" value="1">
 
                         <div class="pass-train-list">
@@ -1609,13 +1623,14 @@ HTML_PAGE = r"""
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label for="pass_platform">ชานชาลาที่รถผ่าน</label>
-                                        <select id="pass_platform">
-                                            <option value="1" selected>ชานชาลาที่ 1</option>
-                                            <option value="2">ชานชาลาที่ 2</option>
-                                            <option value="3">ชานชาลาที่ 3</option>
-                                        </select>
+                                    <div class="full">
+                                        <label>เลือกชานชาลาที่รถผ่าน</label>
+                                        <input type="hidden" id="pass_platform" value="1">
+                                        <div class="pass-platform-grid" data-platform-target="pass_platform">
+                                            <button type="button" class="pass-platform-btn active" data-platform="1" onclick="selectPassPlatform('pass_platform','1')">ชานชาลา<strong>1</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="2" onclick="selectPassPlatform('pass_platform','2')">ชานชาลา<strong>2</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="3" onclick="selectPassPlatform('pass_platform','3')">ชานชาลา<strong>3</strong></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1635,13 +1650,14 @@ HTML_PAGE = r"""
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label for="pass_platform_2">ชานชาลาที่รถผ่าน</label>
-                                        <select id="pass_platform_2">
-                                            <option value="1">ชานชาลาที่ 1</option>
-                                            <option value="2" selected>ชานชาลาที่ 2</option>
-                                            <option value="3">ชานชาลาที่ 3</option>
-                                        </select>
+                                    <div class="full">
+                                        <label>เลือกชานชาลาที่รถผ่าน</label>
+                                        <input type="hidden" id="pass_platform_2" value="2">
+                                        <div class="pass-platform-grid" data-platform-target="pass_platform_2">
+                                            <button type="button" class="pass-platform-btn" data-platform="1" onclick="selectPassPlatform('pass_platform_2','1')">ชานชาลา<strong>1</strong></button>
+                                            <button type="button" class="pass-platform-btn active" data-platform="2" onclick="selectPassPlatform('pass_platform_2','2')">ชานชาลา<strong>2</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="3" onclick="selectPassPlatform('pass_platform_2','3')">ชานชาลา<strong>3</strong></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1661,13 +1677,14 @@ HTML_PAGE = r"""
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label for="pass_platform_3">ชานชาลาที่รถผ่าน</label>
-                                        <select id="pass_platform_3">
-                                            <option value="1">ชานชาลาที่ 1</option>
-                                            <option value="2">ชานชาลาที่ 2</option>
-                                            <option value="3" selected>ชานชาลาที่ 3</option>
-                                        </select>
+                                    <div class="full">
+                                        <label>เลือกชานชาลาที่รถผ่าน</label>
+                                        <input type="hidden" id="pass_platform_3" value="3">
+                                        <div class="pass-platform-grid" data-platform-target="pass_platform_3">
+                                            <button type="button" class="pass-platform-btn" data-platform="1" onclick="selectPassPlatform('pass_platform_3','1')">ชานชาลา<strong>1</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="2" onclick="selectPassPlatform('pass_platform_3','2')">ชานชาลา<strong>2</strong></button>
+                                            <button type="button" class="pass-platform-btn active" data-platform="3" onclick="selectPassPlatform('pass_platform_3','3')">ชานชาลา<strong>3</strong></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1832,7 +1849,10 @@ HTML_PAGE = r"""
         byId("next_station" + suffix).value = data.next || "";
         const platformEl = byId(type === 1 ? "platform" : `platform_${type}`);
         if (platformEl) platformEl.value = defaultPlatformForTrainNumber(data.num);
-        if (type === 1 && byId("pass_platform")) byId("pass_platform").value = platformEl?.value || "1";
+        if (type === 1 && byId("pass_platform")) {
+            byId("pass_platform").value = platformEl?.value || "1";
+            updatePassPlatformButtons("pass_platform");
+        }
         refreshSummary(type);
         invalidatePreparedAudio();
         schedulePrepareAnnouncement();
@@ -1862,6 +1882,7 @@ HTML_PAGE = r"""
     function syncPlatformDefaults(type = 1) {
         if (type === 1 && byId("pass_platform")) {
             byId("pass_platform").value = value("platform") || "1";
+            updatePassPlatformButtons("pass_platform");
         }
         invalidatePreparedAudio();
         schedulePrepareAnnouncement();
@@ -1875,8 +1896,27 @@ HTML_PAGE = r"""
         byId("train_type_3").value = "สินค้า";
         byId("pass_platform_2").value = "2";
         byId("pass_platform_3").value = "3";
+        ["pass_platform", "pass_platform_2", "pass_platform_3"].forEach(updatePassPlatformButtons);
         byId("multiPassControls").classList.toggle("hidden", singleOnly);
         byId("addPassTrainButton").classList.remove("hidden");
+    }
+
+    function updatePassPlatformButtons(targetId) {
+        const picker = document.querySelector(`[data-platform-target="${targetId}"]`);
+        if (!picker) return;
+        const selected = value(targetId);
+        picker.querySelectorAll(".pass-platform-btn").forEach(button => {
+            button.classList.toggle("active", button.dataset.platform === selected);
+        });
+    }
+
+    function selectPassPlatform(targetId, platform) {
+        const field = byId(targetId);
+        if (!field || !["1", "2", "3"].includes(String(platform))) return;
+        field.value = String(platform);
+        updatePassPlatformButtons(targetId);
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(120);
     }
 
     function addPassTrain() {
@@ -1897,6 +1937,7 @@ HTML_PAGE = r"""
         if (index === 2 && count === 3) {
             byId("train_type_2").value = value("train_type_3") || "สินค้า";
             byId("pass_platform_2").value = value("pass_platform_3") || "3";
+            updatePassPlatformButtons("pass_platform_2");
         }
         byId(`passTrain${count}`).classList.add("hidden");
         count -= 1;
@@ -1911,7 +1952,7 @@ HTML_PAGE = r"""
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
         refreshPlaybackControls();
-        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>พร้อมสร้างเสียงตามข้อมูลที่เลือก`;
+        setAudioBuildState("preparing");
 
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         byId("trainTypeWrap").classList.remove("hidden");
@@ -1939,6 +1980,25 @@ HTML_PAGE = r"""
     function renderServerPreview(html) {
         const safe = escapeHtml(html).replace(/&lt;br\s*\/?&gt;/gi, "<br>");
         byId("previewBox").innerHTML = safe;
+    }
+
+    function setAudioBuildState(state) {
+        const box = byId("selectedType");
+        if (!box || selectedAnnouncement === null) return;
+        const title = document.querySelector(".announce-option.active")?.dataset.title || "ประเภทประกาศ";
+        box.classList.remove("is-preparing", "is-ready", "is-error");
+        if (state === "preparing") {
+            box.classList.add("is-preparing");
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>⏳ กำลังสร้างไฟล์เสียง...`;
+        } else if (state === "ready") {
+            box.classList.add("is-ready");
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>✅ เสียงพร้อมแล้ว`;
+        } else if (state === "error") {
+            box.classList.add("is-error");
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>⚠️ สร้างไฟล์เสียงไม่สำเร็จ`;
+        } else {
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>กรุณากรอกข้อมูลให้ครบเพื่อสร้างเสียง`;
+        }
     }
 
     function collectPayload(tabIndex) {
@@ -1972,6 +2032,7 @@ HTML_PAGE = r"""
         preparedAudioKey = "";
         preparedAudioPromise = null;
         preparedAudioData = null;
+        if (selectedAnnouncement !== null) setAudioBuildState("preparing");
         if (prepareTimer) {
             clearTimeout(prepareTimer);
             prepareTimer = null;
@@ -2006,10 +2067,11 @@ HTML_PAGE = r"""
             if (preparedAudioKey === key) {
                 preparedAudioData = data;
                 preparedAudioPromise = null;
-                if (background && !isBusy) {
-                    setStatus("✅ เสียงพร้อมแล้ว", "ok");
+                if (background) {
+                    setAudioBuildState("ready");
                     renderServerPreview(data.text_preview || "-");
                     byId("previewBox").insertAdjacentHTML("afterbegin", "<b>ตัวอย่างข้อความก่อนประกาศ</b><br><br>");
+                    if (!isBusy) setStatus("✅ เสียงพร้อมแล้ว", "ok");
                 }
             }
             return data;
@@ -2017,6 +2079,7 @@ HTML_PAGE = r"""
             if (preparedAudioKey === key) {
                 preparedAudioPromise = null;
                 preparedAudioData = null;
+                if (background) setAudioBuildState("error");
             }
             throw error;
         });
@@ -2031,11 +2094,16 @@ HTML_PAGE = r"""
 
         prepareTimer = setTimeout(() => {
             prepareTimer = null;
-            if (validateSelection()) return;
+            if (validateSelection()) {
+                setAudioBuildState("waiting");
+                return;
+            }
+            setAudioBuildState("preparing");
             if (!isBusy) setStatus("กำลังเตรียมเสียงล่วงหน้า...", "work");
             requestAnnouncementData(selectedAnnouncement, true).catch(error => {
                 console.warn("Background audio preparation failed:", error);
-                if (!isBusy) setStatus("พร้อมใช้งาน");
+                setAudioBuildState("error");
+                if (!isBusy) setStatus("สร้างไฟล์เสียงไม่สำเร็จ", "error");
             });
         }, delay);
     }
@@ -2379,6 +2447,7 @@ HTML_PAGE = r"""
             });
 
             renderServerPreview(data.text_preview || "-");
+            setAudioBuildState("ready");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
             if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
@@ -2437,6 +2506,7 @@ HTML_PAGE = r"""
         ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
         refreshPlaybackControls();
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
+        byId("selectedType").classList.remove("is-preparing", "is-ready", "is-error");
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
     }
