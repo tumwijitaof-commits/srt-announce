@@ -1327,6 +1327,12 @@ HTML_PAGE = r"""
             cursor: not-allowed;
         }
         .pass-train-list { display: grid; gap: 10px; }
+        #passFields { scroll-margin-top: 16px; }
+        #passFields.focus-attention { animation: passPanelAttention .65s ease 2; border-style: solid; }
+        @keyframes passPanelAttention {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(128,0,0,0); }
+            50% { box-shadow: 0 0 0 5px rgba(128,0,0,.18); }
+        }
         .pass-train-item {
             padding: 12px; border: 1px solid #eadcc5; border-radius: 14px; background: #fff;
         }
@@ -1961,6 +1967,17 @@ HTML_PAGE = r"""
             byId("passFields").classList.add("show");
             resetPassTrainUI(index === 3);
             if (index === 3) byId("trainTypeWrap").classList.add("hidden");
+            setTimeout(() => {
+                const panel = byId("passFields");
+                if (!panel) return;
+                panel.classList.add("focus-attention");
+                panel.scrollIntoView({
+                    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+                    block: "start"
+                });
+                panel.querySelector('[data-platform-target="pass_platform"] .pass-platform-btn.active')?.focus({ preventScroll: true });
+                setTimeout(() => panel.classList.remove("focus-attention"), 1500);
+            }, 60);
         }
         if (index === 8) {
             byId("customFields").classList.add("show");
