@@ -141,6 +141,7 @@ TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAIN
 
 ANNOUNCEMENT_BUTTONS = [
     {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
+    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "รองรับรถผ่านพร้อมกัน 1–3 ทาง · ประกาศอัตโนมัติ 3 รอบ", "group": "รถเข้า-ออก"},
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ก่อนรถเข้า"},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
@@ -149,7 +150,6 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
-    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "รองรับรถผ่านพร้อมกัน 1–3 ทาง", "group": "เหตุการณ์พิเศษ"},
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
     {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
     {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
@@ -1753,6 +1753,8 @@ HTML_PAGE = r"""
     let activePlaybackCancel = null;
     let activeHistoryId = null;
     let activeHistoryPromise = null;
+    const PASS_ANNOUNCEMENT_REPEAT_COUNT = 3;
+    const PASS_ANNOUNCEMENT_GAP_MS = 1800;
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -2428,6 +2430,34 @@ HTML_PAGE = r"""
         }
     }
 
+    function waitBetweenAnnouncementRounds(milliseconds, runId = playbackRunId) {
+        return new Promise((resolve, reject) => {
+            let finished = false;
+            const timer = setTimeout(finish, milliseconds);
+
+            function cleanup() {
+                clearTimeout(timer);
+                if (activePlaybackCancel === cancelWait) activePlaybackCancel = null;
+            }
+            function finish() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                if (runId !== playbackRunId) reject(makePlaybackStoppedError());
+                else resolve();
+            }
+            function cancelWait() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                reject(makePlaybackStoppedError());
+            }
+
+            if (runId !== playbackRunId) return cancelWait();
+            activePlaybackCancel = cancelWait;
+        });
+    }
+
     async function playSelectedAnnouncement() {
         const error = validateSelection();
         if (error) {
@@ -2473,16 +2503,25 @@ HTML_PAGE = r"""
                 try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
             });
 
-            for (let i = 0; i < audioUrls.length; i++) {
-                if (runId !== playbackRunId) throw makePlaybackStoppedError();
-                setStatus(`กำลังประกาศ ${audioLabels[i] || ""}`.trim(), "ok");
-                await playUrl(audioUrls[i], {
-                    errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
-                    runId
-                });
+            const repeatCount = [3, 9].includes(Number(tabIndex)) ? PASS_ANNOUNCEMENT_REPEAT_COUNT : 1;
+            for (let round = 1; round <= repeatCount; round++) {
+                for (let i = 0; i < audioUrls.length; i++) {
+                    if (runId !== playbackRunId) throw makePlaybackStoppedError();
+                    const roundText = repeatCount > 1 ? ` · รอบ ${round}/${repeatCount}` : "";
+                    setStatus(`กำลังประกาศ ${audioLabels[i] || ""}${roundText}`.trim(), "ok");
+                    await playUrl(audioUrls[i], {
+                        errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
+                        runId
+                    });
+                }
+                if (round < repeatCount) {
+                    setPlaybackState("loading");
+                    setStatus(`จบรอบ ${round}/${repeatCount} · รอบถัดไปใน 1.8 วินาที`, "work");
+                    await waitBetweenAnnouncementRounds(PASS_ANNOUNCEMENT_GAP_MS, runId);
+                }
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
-            setStatus("ประกาศเสร็จแล้ว", "ok");
+            setStatus(repeatCount > 1 ? `ประกาศครบ ${repeatCount} รอบแล้ว` : "ประกาศเสร็จแล้ว", "ok");
             await logHistoryEvent("success");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
