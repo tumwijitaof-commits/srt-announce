@@ -1246,6 +1246,12 @@ HTML_PAGE = r"""
         .selected-type.is-ready { background: #e8f6ed; color: #116735; border: 1px solid #78bd91; }
         .selected-type.is-ready b { color: #0b5c30; }
         .selected-type.is-error { background: #fdebea; color: #a31d16; border: 1px solid #df8b85; }
+        .repeat-notice {
+            margin: -4px 0 12px; padding: 10px 13px;
+            border: 1px solid #dfbf68; border-radius: 13px;
+            background: #fff3cd; color: #6f5200;
+            font-size: 13px; font-weight: 900; text-align: center;
+        }
         .preview {
             min-height: 150px; max-height: 390px; overflow: auto;
             padding: 15px; border: 1px solid #eadcc5; border-radius: 16px;
@@ -1262,6 +1268,7 @@ HTML_PAGE = r"""
         .danger { background: var(--red); }
         .primary:disabled, .pause-btn:disabled, .danger:disabled { opacity: .45; cursor: not-allowed; }
         .playback-controls { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 9px; }
+        .utility-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
         .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
         .voice-quick-panel {
             margin-top: 14px;
@@ -1732,6 +1739,7 @@ HTML_PAGE = r"""
             <div class="card-head"><h2 class="step-title"><span class="step">4</span> ตรวจสอบและประกาศ</h2></div>
             <div class="card-body">
                 <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
+                <div class="repeat-notice hidden" id="repeatNotice">🔁 ประกาศรถผ่านอัตโนมัติ 3 รอบ · เว้นรอบละ 1.8 วินาที</div>
                 <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก</div>
                 <div class="action-stack">
                     <div class="playback-controls">
@@ -1739,7 +1747,10 @@ HTML_PAGE = r"""
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
-                    <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
+                    <div class="utility-controls">
+                        <button type="button" class="secondary" onclick="testMainSpeaker()">🔊 ทดสอบลำโพง</button>
+                        <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
+                    </div>
                 </div>
                 <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ โดยเสียงภาษาไทยและภาษาอังกฤษจะใช้เพศเดียวกันตามปุ่มที่เลือกด้านบน</p>
             </div>
@@ -1984,6 +1995,7 @@ HTML_PAGE = r"""
         selectedAnnouncement = index;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
+        byId("repeatNotice").classList.toggle("hidden", !(index === 3 || index === 9));
         refreshPlaybackControls();
         setAudioBuildState("preparing");
 
@@ -2581,7 +2593,25 @@ HTML_PAGE = r"""
         }
     }
 
+    async function testMainSpeaker() {
+        if (isBusy) {
+            alert("กรุณาหยุดเสียงประกาศก่อนทดสอบลำโพง");
+            return;
+        }
+        try {
+            const testAudio = new Audio("/audio/chime.mp3");
+            testAudio.volume = 1;
+            await testAudio.play();
+            setStatus("กำลังทดสอบลำโพง", "ok");
+            testAudio.addEventListener("ended", () => setStatus("ทดสอบลำโพงเรียบร้อย", "ok"), { once: true });
+        } catch (error) {
+            setStatus("ทดสอบลำโพงไม่สำเร็จ", "error");
+            alert("เล่นเสียงทดสอบไม่ได้: " + (error.message || error));
+        }
+    }
+
     function clearData() {
+        if (!confirm("ยืนยันล้างข้อมูลประกาศที่กรอกไว้ทั้งหมดหรือไม่?")) return;
         stopAudio();
         invalidatePreparedAudio();
         ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "delay_time_2", "delay_time_3", "custom_text", "custom_text_en",
@@ -2599,6 +2629,7 @@ HTML_PAGE = r"""
         refreshPlaybackControls();
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
         byId("selectedType").classList.remove("is-preparing", "is-ready", "is-error");
+        byId("repeatNotice").classList.add("hidden");
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
     }
@@ -3090,9 +3121,9 @@ def build_english_announcement(data):
                 f"Train number {number}, from {train_origin} to {train_dest}, is scheduled at {train_time}."
                 for number, train_origin, train_dest, train_time in trains
             )
-            text = f"Attention please. {details} Passengers who have not yet purchased a ticket, please contact the ticket office before boarding."
+            text = f"Attention please. {details} Passengers who have not yet purchased a ticket, please contact the ticket office. Please purchase your ticket before boarding for your convenience and to avoid additional fees."
         else:
-            text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
+            text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding for your convenience and to avoid additional fees."
     elif idx == 1:
         if t_num_2 or t_num_3:
             trains = [(t_num, origin, dest, t_time, platform)]
@@ -3244,9 +3275,9 @@ def build_announcement(data):
                 f"ขบวนรถ ขบวนที่ {number} รับส่งผู้โดยสารต้นทาง {station(train_origin)} ปลายทาง {station(train_dest)} เที่ยวกำหนดเวลา {train_time}"
                 for number, train_origin, train_dest, train_time in trains
             )
-            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับ {details} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับ {details} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว กรุณาซื้อตั๋วโดยสารให้เรียบร้อยก่อนขึ้นขบวนรถ เพื่อความสะดวกและหลีกเลี่ยงค่าธรรมเนียมเพิ่มเติม ขอบคุณครับ"
         else:
-            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว กรุณาซื้อตั๋วโดยสารให้เรียบร้อยก่อนขึ้นขบวนรถ เพื่อความสะดวกและหลีกเลี่ยงค่าธรรมเนียมเพิ่มเติม ขอบคุณครับ"
     elif idx == 1:
         if t_num_2 or t_num_3:
             trains = [(t_num, origin, dest, t_time, platform)]
