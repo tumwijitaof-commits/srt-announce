@@ -2803,6 +2803,17 @@ def is_chachoengsao_terminal(name):
     return normalized in {"ชุมทางฉะเชิงเทรา", "chachoengsaojunction"}
 
 
+def format_thai_next_stations(text):
+    """ตัดคำเชื่อมซ้ำระหว่างคลองแขวงกลั่นกับคลองเปรงในข้อความประกาศ"""
+    value = str(text or "")
+    return re.sub(
+        r"(ป้ายหยุดรถคลองแขวงกลั่น)\s+และ\s+(สถานีคลองเปรง)",
+        r"\1 \2",
+        value,
+        count=1,
+    )
+
+
 def clean_space(text):
     return " ".join((text or "").split())
 
@@ -2929,6 +2940,10 @@ def prepare_tts_text(text):
     # แยกข้อความสถานีต่อไปและคำขอโทษให้ฟังเป็นประโยคชัดเจน
     tts_text = tts_text.replace("ที่ ป้ายหยุดรถ", "ที่ป้ายหยุดรถ")
     tts_text = tts_text.replace("ที่ สถานี", "ที่สถานี")
+    tts_text = tts_text.replace(
+        "ป้ายหยุดรถคลองแขวงกลั่น สถานีคลองเปรง",
+        "ป้ายหยุดรถคลองแขวงกลั่น, สถานีคลองเปรง",
+    )
     tts_text = tts_text.replace("สถานีคลองบางพระ แล้ว", "สถานีคลองบางพระแล้ว")
     tts_text = tts_text.replace(" และ สถานี", " และสถานี")
     tts_text = tts_text.replace(" และ ป้ายหยุดรถ", " และป้ายหยุดรถ")
@@ -3272,7 +3287,7 @@ def build_announcement(data):
     platform = data.get("platform", "")
     pass_platform = data.get("pass_platform") or platform
     current = data.get("current", STATION_NAME) or STATION_NAME
-    next_st = data.get("next", "")
+    next_st = format_thai_next_stations(data.get("next", ""))
     delay = data.get("delay", "")
     custom_text = data.get("custom_text", "")
     train_type = data.get("train_type", "สินค้า") or "สินค้า"
@@ -3282,7 +3297,7 @@ def build_announcement(data):
     dest_2 = data.get("dest_2", "")
     t_time_2 = tidy_time(data.get("time_2", ""))
     platform_2 = data.get("platform_2", "")
-    next_st_2 = data.get("next_2", "")
+    next_st_2 = format_thai_next_stations(data.get("next_2", ""))
     delay_2 = data.get("delay_2", "")
 
     t_num_3 = spaced_train_number(data.get("num_3", ""))
@@ -3290,7 +3305,7 @@ def build_announcement(data):
     dest_3 = data.get("dest_3", "")
     t_time_3 = tidy_time(data.get("time_3", ""))
     platform_3 = data.get("platform_3", "")
-    next_st_3 = data.get("next_3", "")
+    next_st_3 = format_thai_next_stations(data.get("next_3", ""))
     delay_3 = data.get("delay_3", "")
 
     if idx == 0:
