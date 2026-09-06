@@ -3172,7 +3172,7 @@ def build_english_announcement(data):
     elif idx == 4:
         if is_chachoengsao_destination:
             departure_text = (
-                f"After departing {current} Station, the train will stop at {dest} Station, "
+                f"After departing {current} Station, the train will stop at {next_st or (dest + ' Station')}, "
                 f"which is the final destination of this train."
             )
         else:
@@ -3260,7 +3260,7 @@ def build_english_announcement(data):
     elif idx == 12:
         if is_chachoengsao_destination:
             text = (
-                f"After departing {current} Station, this train will stop at {dest} Station, "
+                f"After departing {current} Station, this train will stop at {next_st or (dest + ' Station')}, "
                 f"which is the final destination of this train."
             )
         else:
@@ -3342,8 +3342,9 @@ def build_announcement(data):
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
         if is_chachoengsao_destination:
+            terminal_stops = next_st or station(dest)
             departure_text = (
-                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่{station(dest)} "
+                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {terminal_stops} "
                 f"ซึ่งเป็นสถานีปลายทางของขบวนรถ ขอบคุณครับ"
             )
         else:
@@ -3437,8 +3438,9 @@ def build_announcement(data):
         )
     elif idx == 12:
         if is_chachoengsao_destination:
+            terminal_stops = next_st or station(dest)
             text = (
-                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่{station(dest)} "
+                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {terminal_stops} "
                 f"ซึ่งเป็นสถานีปลายทางของขบวนรถ ขอบคุณครับ"
             )
         else:
