@@ -1212,6 +1212,14 @@ HTML_PAGE = r"""
         }
         .train-picker .train-summary { margin-top: 10px; }
         .train-picker .platform-row { grid-template-columns: minmax(0,1fr); }
+        .third-train-toggle { display: grid; gap: 5px; }
+        .third-train-add {
+            width: 100%; padding: 12px 14px;
+            border: 1px dashed rgba(128,0,0,.45); border-radius: 14px;
+            background: #fff7ed; color: var(--maroon-dark);
+            font-weight: 900; cursor: pointer;
+        }
+        .third-train-add:hover { background: #fff0f0; border-style: solid; }
         .station-row { margin-top: 13px; }
 
         .announce-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
@@ -1547,10 +1555,15 @@ HTML_PAGE = r"""
                             </details>
                         </div>
 
-                        <div class="train-picker">
+                        <div class="third-train-toggle" id="train3ToggleWrap">
+                            <button type="button" class="third-train-add" onclick="showThirdTrain()">＋ เพิ่มขบวนที่ 3</button>
+                            <div class="helper">กดเมื่อจำเป็นต้องประกาศพร้อมกัน 3 ขบวน</div>
+                        </div>
+
+                        <div class="train-picker hidden" id="trainPicker3">
                             <div class="train-picker-head">
                                 <div class="train-picker-title"><span class="train-order">3</span> ขบวนที่ 3</div>
-                                <span class="train-role">ไม่บังคับ</span>
+                                <button type="button" class="pass-remove-btn" onclick="hideThirdTrain()">− นำขบวนที่ 3 ออก</button>
                             </div>
                             <label for="train_select_3">เลือกขบวนรถ</label>
                             <select id="train_select_3" onchange="autoFill(3)">
@@ -1888,6 +1901,32 @@ HTML_PAGE = r"""
         refreshSummary(type);
         invalidatePreparedAudio();
         schedulePrepareAnnouncement();
+    }
+
+    function showThirdTrain() {
+        byId("train3ToggleWrap").classList.add("hidden");
+        byId("trainPicker3").classList.remove("hidden");
+        setTimeout(() => {
+            byId("trainPicker3").scrollIntoView({
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+                block: "center"
+            });
+            byId("train_select_3").focus({ preventScroll: true });
+        }, 50);
+    }
+
+    function hideThirdTrain() {
+        ["train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3", "delay_time_3"].forEach(id => {
+            if (byId(id)) byId(id).value = "";
+        });
+        byId("platform_3").value = "3";
+        const details = byId("trainPicker3").querySelector("details");
+        if (details) details.open = false;
+        byId("trainPicker3").classList.add("hidden");
+        byId("train3ToggleWrap").classList.remove("hidden");
+        refreshSummary(3);
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(120);
     }
 
     function refreshSummary(type = 1) {
@@ -2625,6 +2664,8 @@ HTML_PAGE = r"""
         byId("train_type_2").value = "ทั่วไป"; byId("train_type_3").value = "ทั่วไป";
         byId("pass_platform_2").value = "2"; byId("pass_platform_3").value = "3";
         resetPassTrainUI(false);
+        byId("trainPicker3").classList.add("hidden");
+        byId("train3ToggleWrap").classList.remove("hidden");
         setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
         selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
