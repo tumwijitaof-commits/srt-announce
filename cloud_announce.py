@@ -141,11 +141,10 @@ TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAIN
 
 ANNOUNCEMENT_BUTTONS = [
     {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
-    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "รองรับรถผ่านพร้อมกัน 1–3 ทาง · ประกาศอัตโนมัติ 3 รอบ", "group": "รถเข้า-ออก"},
+    {"idx": 9, "title": "รถผ่าน / สินค้า–พิเศษ", "hint": "เลือกประเภทรถและชานชาลาได้ในเมนูเดียว · ประกาศอัตโนมัติ 2 รอบ", "group": "รถเข้า-ออก"},
     {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "รองรับขบวนที่เลือกพร้อมกัน 1–3 ขบวน", "group": "ก่อนรถเข้า"},
     {"idx": 1, "title": "รอรับโดยสาร", "hint": "แจ้งชานชาลาของขบวนที่เลือกทั้งหมด", "group": "ก่อนรถเข้า"},
     {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
-    {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
     {"idx": 5, "title": "รถล่าช้า", "hint": "กำหนดเวลาถึงแยกแต่ละขบวนได้", "group": "เหตุการณ์พิเศษ"},
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
@@ -1640,6 +1639,7 @@ HTML_PAGE = r"""
                                     <div id="trainTypeWrap">
                                         <label for="train_type">ประเภทรถ</label>
                                         <select id="train_type">
+                                            <option value="ทั่วไป">รถผ่านทั่วไป</option>
                                             <option value="สินค้า">สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
@@ -1667,6 +1667,7 @@ HTML_PAGE = r"""
                                     <div>
                                         <label for="train_type_2">ประเภทรถ</label>
                                         <select id="train_type_2">
+                                            <option value="ทั่วไป">รถผ่านทั่วไป</option>
                                             <option value="สินค้า">สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
@@ -1694,6 +1695,7 @@ HTML_PAGE = r"""
                                     <div>
                                         <label for="train_type_3">ประเภทรถ</label>
                                         <select id="train_type_3">
+                                            <option value="ทั่วไป">รถผ่านทั่วไป</option>
                                             <option value="สินค้า">สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
@@ -1739,7 +1741,7 @@ HTML_PAGE = r"""
             <div class="card-head"><h2 class="step-title"><span class="step">4</span> ตรวจสอบและประกาศ</h2></div>
             <div class="card-body">
                 <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
-                <div class="repeat-notice hidden" id="repeatNotice">🔁 ประกาศรถผ่านอัตโนมัติ 3 รอบ · เว้นรอบละ 1.8 วินาที</div>
+                <div class="repeat-notice hidden" id="repeatNotice">🔁 ประกาศรถผ่านอัตโนมัติ 2 รอบ · เว้นรอบละ 1.8 วินาที</div>
                 <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก</div>
                 <div class="action-stack">
                     <div class="playback-controls">
@@ -1774,7 +1776,7 @@ HTML_PAGE = r"""
     let activePlaybackCancel = null;
     let activeHistoryId = null;
     let activeHistoryPromise = null;
-    const PASS_ANNOUNCEMENT_REPEAT_COUNT = 3;
+    const PASS_ANNOUNCEMENT_REPEAT_COUNT = 2;
     const PASS_ANNOUNCEMENT_GAP_MS = 1800;
 
     function byId(id) { return document.getElementById(id); }
@@ -1936,8 +1938,9 @@ HTML_PAGE = r"""
         byId("pass_count").value = "1";
         byId("passTrain2").classList.add("hidden");
         byId("passTrain3").classList.add("hidden");
-        byId("train_type_2").value = "สินค้า";
-        byId("train_type_3").value = "สินค้า";
+        byId("train_type").value = "ทั่วไป";
+        byId("train_type_2").value = "ทั่วไป";
+        byId("train_type_3").value = "ทั่วไป";
         byId("pass_platform_2").value = "2";
         byId("pass_platform_3").value = "3";
         ["pass_platform", "pass_platform_2", "pass_platform_3"].forEach(updatePassPlatformButtons);
@@ -1979,7 +1982,7 @@ HTML_PAGE = r"""
         if (index < 2 || index > count) return;
 
         if (index === 2 && count === 3) {
-            byId("train_type_2").value = value("train_type_3") || "สินค้า";
+            byId("train_type_2").value = value("train_type_3") || "ทั่วไป";
             byId("pass_platform_2").value = value("pass_platform_3") || "3";
             updatePassPlatformButtons("pass_platform_2");
         }
@@ -2068,12 +2071,12 @@ HTML_PAGE = r"""
             next: value("next_station"), delay: value("delay_time"),
             delay_2: value("delay_time_2"), delay_3: value("delay_time_3"),
             custom_text: value("custom_text"), custom_text_en: value("custom_text_en"),
-            train_type: value("train_type") || "สินค้า",
+            train_type: value("train_type") || "ทั่วไป",
             pass_platform: value("pass_platform") || value("platform") || "1",
             pass_count: value("pass_count") || "1",
-            train_type_2: value("train_type_2") || "สินค้า",
+            train_type_2: value("train_type_2") || "ทั่วไป",
             pass_platform_2: value("pass_platform_2") || "2",
-            train_type_3: value("train_type_3") || "สินค้า",
+            train_type_3: value("train_type_3") || "ทั่วไป",
             pass_platform_3: value("pass_platform_3") || "3",
             num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
             time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2"),
@@ -2618,8 +2621,8 @@ HTML_PAGE = r"""
          "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
          "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
         byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2"; byId("platform_3").value = "3";
-        byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
-        byId("train_type_2").value = "สินค้า"; byId("train_type_3").value = "สินค้า";
+        byId("current").value = "คลองบางพระ"; byId("train_type").value = "ทั่วไป";
+        byId("train_type_2").value = "ทั่วไป"; byId("train_type_3").value = "ทั่วไป";
         byId("pass_platform_2").value = "2"; byId("pass_platform_3").value = "3";
         resetPassTrainUI(false);
         setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
@@ -3010,6 +3013,7 @@ EN_STATION_NAMES = {
 }
 
 EN_TRAIN_TYPES = {
+    "ทั่วไป": "train",
     "สินค้า": "freight train",
     "ด่วนพิเศษ": "special express train",
     "พิเศษ": "special train",
@@ -3062,7 +3066,7 @@ def time_en(text):
 
 
 def pass_train_items(data):
-    """อ่านรายการรถสินค้า/รถพิเศษที่ผ่านพร้อมกัน สูงสุด 3 ทาง"""
+    """อ่านรายการรถที่ผ่านพร้อมกัน สูงสุด 3 ทาง"""
     try:
         count = int(data.get("pass_count", 1) or 1)
     except (TypeError, ValueError):
@@ -3073,10 +3077,10 @@ def pass_train_items(data):
     items = []
     for index in range(1, count + 1):
         suffix = "" if index == 1 else f"_{index}"
-        train_type = str(data.get(f"train_type{suffix}", "สินค้า") or "สินค้า").strip()
+        train_type = str(data.get(f"train_type{suffix}", "ทั่วไป") or "ทั่วไป").strip()
         platform = str(data.get(f"pass_platform{suffix}", "") or "").strip()
         if train_type not in allowed_types:
-            train_type = "สินค้า"
+            train_type = "ทั่วไป"
         if platform not in {"1", "2", "3"}:
             raise ValueError(f"ชานชาลาของรถผ่านทางที่ {index} ไม่ถูกต้อง")
         items.append({"train_type": train_type, "platform": platform})
@@ -3094,6 +3098,10 @@ def join_thai_platforms(platforms):
     if len(labels) == 2:
         return " และ".join(labels)
     return ", ".join(labels[:-1]) + " และ" + labels[-1]
+
+
+def thai_pass_train_name(train_type):
+    return "ขบวนรถ" if train_type == "ทั่วไป" else f"ขบวนรถ{train_type}"
 
 
 def join_english_platforms(platforms):
@@ -3387,20 +3395,20 @@ def build_announcement(data):
         if len(pass_items) == 1:
             item = pass_items[0]
             text = (
-                f"โปรดทราบ อีกซักครู่จะมีขบวนรถ{item['train_type']}วิ่งผ่านสถานี "
+                f"โปรดทราบ อีกซักครู่จะมี{thai_pass_train_name(item['train_type'])}วิ่งผ่านสถานี "
                 f"บริเวณ{platforms_text} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา "
                 f"และไม่เดินข้ามผ่านไปมาระหว่าง{platforms_text} ขอบคุณครับ"
             )
         elif len({item["train_type"] for item in pass_items}) == 1:
             train_type_name = pass_items[0]["train_type"]
             text = (
-                f"โปรดทราบ อีกซักครู่จะมีขบวนรถ{train_type_name}วิ่งผ่านสถานีพร้อมกัน "
+                f"โปรดทราบ อีกซักครู่จะมี{thai_pass_train_name(train_type_name)}วิ่งผ่านสถานีพร้อมกัน "
                 f"บริเวณ{platforms_text} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา "
                 f"และไม่เดินข้ามผ่านไปมาระหว่าง{platforms_text} ขอบคุณครับ"
             )
         else:
             details = [
-                f"ขบวนรถ{item['train_type']}บริเวณชานชาลาที่ {item['platform']}"
+                f"{thai_pass_train_name(item['train_type'])}บริเวณชานชาลาที่ {item['platform']}"
                 for item in pass_items
             ]
             if len(details) == 2:
