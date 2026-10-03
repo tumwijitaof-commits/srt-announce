@@ -152,6 +152,8 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
     {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
     {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
+    {"idx": 13, "title": "งดเดินขบวนรถ", "hint": "ประกาศงดให้บริการหลายขบวนได้ พร้อมวันที่และสาเหตุ", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 14, "title": "ปรับต้นทาง–ปลายทาง", "hint": "แจ้งเส้นทางเดิมและเส้นทางที่ให้บริการจริงของแต่ละขบวน", "group": "เหตุการณ์พิเศษ"},
 ]
 
 # ------------------------------------------------------------
@@ -922,12 +924,23 @@ def announcement_title(tab_index):
 
 
 def insert_history(payload, user):
+    history_train_num = payload.get("num", "")
+    try:
+        if int(payload.get("tab_index", -1)) in {13, 14}:
+            selected_numbers = [
+                str(payload.get(key) or "").strip()
+                for key in ("num", "num_2", "num_3")
+                if str(payload.get(key) or "").strip()
+            ]
+            history_train_num = ", ".join(selected_numbers)
+    except (TypeError, ValueError):
+        pass
     with get_db() as conn:
         cursor = conn.execute(
             """INSERT INTO announcement_history(started_at,user_id,username,train_num,announcement_type,
                announce_mode,voice,platform,message,pause_times)
                VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (now_iso(), user["id"], user["display_name"], payload.get("num", ""),
+            (now_iso(), user["id"], user["display_name"], history_train_num,
              announcement_title(payload.get("tab_index")), payload.get("announce_mode", "thai_only"),
              payload.get("thai_voice", VOICE_NAME), payload.get("platform", ""), "", "[]"),
         )
@@ -1468,7 +1481,7 @@ HTML_PAGE = r"""
             <section class="card">
                 <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกขบวนและชานชาลา</h2></div>
                 <div class="card-body">
-                    <p class="helper" style="margin:0 0 12px;">เลือกได้สูงสุด 3 ขบวน เมนูขายตั๋ว รอรับโดยสาร และรถล่าช้า จะประกาศขบวนที่เลือกทั้งหมดร่วมกัน ส่วนเมนูทั่วไปอื่นจะใช้ขบวนที่ 1</p>
+                    <p class="helper" style="margin:0 0 12px;">เลือกได้สูงสุด 3 ขบวน เมนูขายตั๋ว รอรับโดยสาร รถล่าช้า งดเดินขบวน และปรับต้นทาง–ปลายทาง จะประกาศขบวนที่เลือกทั้งหมดร่วมกัน</p>
 
                     <div class="train-pickers">
                         <div class="train-picker primary-train">
@@ -1746,6 +1759,58 @@ HTML_PAGE = r"""
                         </div>
                     </div>
 
+                    <div class="conditional" id="disruptionFields">
+                        <p class="conditional-title" id="disruptionTitle">ข้อมูลการเปลี่ยนแปลงการเดินรถ</p>
+                        <div class="field-grid">
+                            <div>
+                                <label for="effective_from">มีผลตั้งแต่วันที่</label>
+                                <input type="date" id="effective_from">
+                            </div>
+                            <div>
+                                <label for="effective_to">ถึงวันที่ (ถ้ามี)</label>
+                                <input type="date" id="effective_to">
+                            </div>
+                            <div class="full">
+                                <label for="disruption_reason">สาเหตุ (ภาษาไทย — ไม่บังคับ)</label>
+                                <input type="text" id="disruption_reason" placeholder="เช่น สถานการณ์น้ำท่วม">
+                            </div>
+                            <div class="full">
+                                <label for="disruption_reason_en">Reason in English (optional)</label>
+                                <input type="text" id="disruption_reason_en" placeholder="For example: flooding">
+                            </div>
+                        </div>
+                        <div id="routeChangeFields" class="hidden" style="margin-top:14px;">
+                            <p class="helper">แก้สถานีต้นทางหรือปลายทางของแต่ละขบวนตามเส้นทางที่ให้บริการจริง หากเปลี่ยนเพียงด้านเดียว ให้คงอีกด้านเป็นสถานีเดิม และระบุช่วงที่งดให้บริการถ้ามี</p>
+                            <div class="train-picker route-change-train" id="routeChangeTrain1">
+                                <b id="routeChangeLabel1">ขบวนที่ 1</b>
+                                <div class="field-grid">
+                                    <div><label for="route_origin">ต้นทางที่ให้บริการจริง</label><input id="route_origin" type="text"></div>
+                                    <div><label for="route_dest">ปลายทางที่ให้บริการจริง</label><input id="route_dest" type="text"></div>
+                                    <div><label for="suspended_from">งดให้บริการตั้งแต่สถานี</label><input id="suspended_from" type="text" placeholder="ถ้ามี"></div>
+                                    <div><label for="suspended_to">ถึงสถานี</label><input id="suspended_to" type="text" placeholder="ถ้ามี"></div>
+                                </div>
+                            </div>
+                            <div class="train-picker route-change-train hidden" id="routeChangeTrain2" style="margin-top:10px;">
+                                <b id="routeChangeLabel2">ขบวนที่ 2</b>
+                                <div class="field-grid">
+                                    <div><label for="route_origin_2">ต้นทางที่ให้บริการจริง</label><input id="route_origin_2" type="text"></div>
+                                    <div><label for="route_dest_2">ปลายทางที่ให้บริการจริง</label><input id="route_dest_2" type="text"></div>
+                                    <div><label for="suspended_from_2">งดให้บริการตั้งแต่สถานี</label><input id="suspended_from_2" type="text" placeholder="ถ้ามี"></div>
+                                    <div><label for="suspended_to_2">ถึงสถานี</label><input id="suspended_to_2" type="text" placeholder="ถ้ามี"></div>
+                                </div>
+                            </div>
+                            <div class="train-picker route-change-train hidden" id="routeChangeTrain3" style="margin-top:10px;">
+                                <b id="routeChangeLabel3">ขบวนที่ 3</b>
+                                <div class="field-grid">
+                                    <div><label for="route_origin_3">ต้นทางที่ให้บริการจริง</label><input id="route_origin_3" type="text"></div>
+                                    <div><label for="route_dest_3">ปลายทางที่ให้บริการจริง</label><input id="route_dest_3" type="text"></div>
+                                    <div><label for="suspended_from_3">งดให้บริการตั้งแต่สถานี</label><input id="suspended_from_3" type="text" placeholder="ถ้ามี"></div>
+                                    <div><label for="suspended_to_3">ถึงสถานี</label><input id="suspended_to_3" type="text" placeholder="ถ้ามี"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </section>
         </div>
@@ -1883,6 +1948,7 @@ HTML_PAGE = r"""
                 if (el) el.value = "";
             });
             refreshSummary(type);
+            updateDisruptionTrainVisibility(type);
             invalidatePreparedAudio();
             schedulePrepareAnnouncement();
             return;
@@ -1899,6 +1965,7 @@ HTML_PAGE = r"""
             updatePassPlatformButtons("pass_platform");
         }
         refreshSummary(type);
+        updateDisruptionTrainVisibility(type);
         invalidatePreparedAudio();
         schedulePrepareAnnouncement();
     }
@@ -1925,6 +1992,7 @@ HTML_PAGE = r"""
         byId("trainPicker3").classList.add("hidden");
         byId("train3ToggleWrap").classList.remove("hidden");
         refreshSummary(3);
+        updateDisruptionTrainVisibility(3);
         invalidatePreparedAudio();
         schedulePrepareAnnouncement(120);
     }
@@ -1961,6 +2029,35 @@ HTML_PAGE = r"""
             if (label) label.textContent = number
                 ? `ขบวน ${number} — คาดว่าจะถึงเวลา`
                 : `ขบวนที่ ${type} — คาดว่าจะถึงเวลา`;
+        });
+    }
+
+    function updateDisruptionTrainVisibility(resetType = null) {
+        [1, 2, 3].forEach(type => {
+            const suffix = trainSuffix(type);
+            const number = value("num" + suffix);
+            const origin = value("origin" + suffix);
+            const dest = value("dest" + suffix);
+            const row = byId("routeChangeTrain" + type);
+            const label = byId("routeChangeLabel" + type);
+            if (row) row.classList.toggle("hidden", !number);
+            if (label) label.textContent = number
+                ? "ขบวน " + number + " — เดิม " + origin + " ถึง " + dest
+                : "ขบวนที่ " + type;
+
+            const routeOrigin = byId("route_origin" + suffix);
+            const routeDest = byId("route_dest" + suffix);
+            const suspendedFrom = byId("suspended_from" + suffix);
+            const suspendedTo = byId("suspended_to" + suffix);
+            if (resetType === type) {
+                if (routeOrigin) routeOrigin.value = origin;
+                if (routeDest) routeDest.value = dest;
+                if (suspendedFrom) suspendedFrom.value = "";
+                if (suspendedTo) suspendedTo.value = "";
+            } else {
+                if (routeOrigin && !routeOrigin.value) routeOrigin.value = origin;
+                if (routeDest && !routeDest.value) routeDest.value = dest;
+            }
         });
     }
 
@@ -2041,7 +2138,8 @@ HTML_PAGE = r"""
         refreshPlaybackControls();
         setAudioBuildState("preparing");
 
-        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        ["delayFields", "passFields", "customFields", "disruptionFields"].forEach(id => byId(id).classList.remove("show"));
+        byId("routeChangeFields").classList.add("hidden");
         byId("trainTypeWrap").classList.remove("hidden");
         if (index === 5) byId("delayFields").classList.add("show");
         if (index === 5) updateDelayFieldsVisibility();
@@ -2064,6 +2162,14 @@ HTML_PAGE = r"""
         if (index === 8) {
             byId("customFields").classList.add("show");
             updateCustomLanguageFields();
+        }
+        if (index === 13 || index === 14) {
+            byId("disruptionFields").classList.add("show");
+            byId("disruptionTitle").textContent = index === 13
+                ? "ข้อมูลการงดให้บริการ"
+                : "ข้อมูลการปรับต้นทาง–ปลายทาง";
+            byId("routeChangeFields").classList.toggle("hidden", index !== 14);
+            updateDisruptionTrainVisibility();
         }
         byId("previewBox").innerHTML = "<b>กำลังเตรียมเสียงล่วงหน้า</b><br><br>เมื่อเสียงพร้อม ปุ่มประกาศจะทำงานได้แทบจะทันที";
         invalidatePreparedAudio();
@@ -2110,6 +2216,14 @@ HTML_PAGE = r"""
             next: value("next_station"), delay: value("delay_time"),
             delay_2: value("delay_time_2"), delay_3: value("delay_time_3"),
             custom_text: value("custom_text"), custom_text_en: value("custom_text_en"),
+            effective_from: value("effective_from"), effective_to: value("effective_to"),
+            disruption_reason: value("disruption_reason"), disruption_reason_en: value("disruption_reason_en"),
+            route_origin: value("route_origin"), route_dest: value("route_dest"),
+            suspended_from: value("suspended_from"), suspended_to: value("suspended_to"),
+            route_origin_2: value("route_origin_2"), route_dest_2: value("route_dest_2"),
+            suspended_from_2: value("suspended_from_2"), suspended_to_2: value("suspended_to_2"),
+            route_origin_3: value("route_origin_3"), route_dest_3: value("route_dest_3"),
+            suspended_from_3: value("suspended_from_3"), suspended_to_3: value("suspended_to_3"),
             train_type: value("train_type") || "ทั่วไป",
             pass_platform: value("pass_platform") || value("platform") || "1",
             pass_count: value("pass_count") || "1",
@@ -2231,6 +2345,31 @@ HTML_PAGE = r"""
             if (mode !== "thai_only" && !value("custom_text_en")) return "กรุณาพิมพ์ข้อความภาษาอังกฤษ";
         }
         if (selectedAnnouncement === 10 && !value("num_2")) return "กรุณาเลือกอย่างน้อยขบวนที่ 1 และขบวนที่ 2";
+        if (selectedAnnouncement === 13 || selectedAnnouncement === 14) {
+            const start = value("effective_from");
+            const end = value("effective_to");
+            if (!start) return "กรุณาเลือกวันที่เริ่มมีผล";
+            if (end && end < start) return "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล";
+            if (selectedAnnouncement === 14) {
+                for (let type = 1; type <= 3; type++) {
+                    const suffix = trainSuffix(type);
+                    const number = value("num" + suffix);
+                    if (!number) continue;
+                    const oldOrigin = value("origin" + suffix);
+                    const oldDest = value("dest" + suffix);
+                    const newOrigin = value("route_origin" + suffix) || oldOrigin;
+                    const newDest = value("route_dest" + suffix) || oldDest;
+                    if (newOrigin === oldOrigin && newDest === oldDest) {
+                        return "กรุณาแก้ต้นทางหรือปลายทางใหม่ของขบวน " + number;
+                    }
+                    const suspendedFrom = value("suspended_from" + suffix);
+                    const suspendedTo = value("suspended_to" + suffix);
+                    if (Boolean(suspendedFrom) !== Boolean(suspendedTo)) {
+                        return "กรุณากรอกสถานีต้นทางและสถานีปลายทางของช่วงที่งดให้บริการให้ครบ สำหรับขบวน " + number;
+                    }
+                }
+            }
+        }
         return "";
     }
 
@@ -2657,6 +2796,10 @@ HTML_PAGE = r"""
         stopAudio();
         invalidatePreparedAudio();
         ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "delay_time_2", "delay_time_3", "custom_text", "custom_text_en",
+         "effective_from", "effective_to", "disruption_reason", "disruption_reason_en",
+         "route_origin", "route_dest", "suspended_from", "suspended_to",
+         "route_origin_2", "route_dest_2", "suspended_from_2", "suspended_to_2",
+         "route_origin_3", "route_dest_3", "suspended_from_3", "suspended_to_3",
          "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
          "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
         byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2"; byId("platform_3").value = "3";
@@ -2669,7 +2812,8 @@ HTML_PAGE = r"""
         setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
         selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
-        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        ["delayFields", "passFields", "customFields", "disruptionFields"].forEach(id => byId(id).classList.remove("show"));
+        byId("routeChangeFields").classList.add("hidden");
         refreshPlaybackControls();
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
         byId("selectedType").classList.remove("is-preparing", "is-ready", "is-error");
@@ -2681,6 +2825,8 @@ HTML_PAGE = r"""
     // เมื่อแก้ข้อมูลหลังเลือกประเภทประกาศ ให้เตรียมเสียงชุดใหม่อัตโนมัติ
     document.querySelectorAll("input, select, textarea").forEach(element => {
         element.addEventListener("input", () => {
+            const trainDetailMatch = element.id.match(/^(num|origin|dest)(?:_([23]))?$/);
+            if (trainDetailMatch) updateDisruptionTrainVisibility(Number(trainDetailMatch[2] || 1));
             invalidatePreparedAudio();
             schedulePrepareAnnouncement();
         });
@@ -3154,6 +3300,96 @@ def join_english_platforms(platforms):
     return ", ".join(labels[:-1]) + ", and " + labels[-1]
 
 
+THAI_MONTH_NAMES = [
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+]
+ENGLISH_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def format_disruption_date(value, english=False):
+    """แปลงวันที่จาก input type=date ให้อ่านเป็นวันที่ไทยหรืออังกฤษ"""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return raw
+    if english:
+        return f"{ENGLISH_MONTH_NAMES[parsed.month - 1]} {parsed.day}, {parsed.year}"
+    return f"{parsed.day} {THAI_MONTH_NAMES[parsed.month - 1]} {parsed.year + 543}"
+
+
+def disruption_period_text(data, english=False):
+    start = format_disruption_date(data.get("effective_from"), english=english)
+    end = format_disruption_date(data.get("effective_to"), english=english)
+    if end and end != start:
+        if english:
+            return f"from {start} through {end}"
+        return f"ตั้งแต่วันที่ {start} ถึงวันที่ {end}"
+    if english:
+        return f"on {start}"
+    return f"วันที่ {start}"
+
+
+def join_announcement_items(items, english=False):
+    if len(items) <= 1:
+        return items[0] if items else ""
+    conjunction = " and " if english else " และ"
+    return ", ".join(items[:-1]) + conjunction + items[-1]
+
+
+def disruption_announcement_data(data, route_change=False):
+    """ตรวจข้อมูลและรวบรวมขบวนที่เลือกไว้ สูงสุด 3 ขบวน"""
+    start = str(data.get("effective_from") or "").strip()
+    end = str(data.get("effective_to") or "").strip()
+    try:
+        date.fromisoformat(start)
+        if end:
+            date.fromisoformat(end)
+    except ValueError as exc:
+        raise ValueError("กรุณาระบุวันที่เริ่มและวันที่สิ้นสุดให้ถูกต้อง") from exc
+    if end and end < start:
+        raise ValueError("วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล")
+
+    trains = []
+    for suffix in ("", "_2", "_3"):
+        number = str(data.get("num" + suffix) or "").strip()
+        if not number:
+            continue
+        origin = str(data.get("origin" + suffix) or "").strip()
+        dest = str(data.get("dest" + suffix) or "").strip()
+        if not origin or not dest:
+            raise ValueError(f"ข้อมูลต้นทางหรือปลายทางของขบวน {number} ไม่ครบ")
+        route_origin = str(data.get("route_origin" + suffix) or "").strip() or origin
+        route_dest = str(data.get("route_dest" + suffix) or "").strip() or dest
+        suspended_from = str(data.get("suspended_from" + suffix) or "").strip()
+        suspended_to = str(data.get("suspended_to" + suffix) or "").strip()
+        if route_change:
+            if route_origin.casefold() == origin.casefold() and route_dest.casefold() == dest.casefold():
+                raise ValueError(f"กรุณาแก้ต้นทางหรือปลายทางใหม่ของขบวน {number}")
+            if bool(suspended_from) != bool(suspended_to):
+                raise ValueError(f"กรุณาระบุสถานีทั้งสองด้านของช่วงที่งดให้บริการ สำหรับขบวน {number}")
+        trains.append({
+            "number_th": spaced_train_number(number),
+            "number_en": train_number_en(number),
+            "origin": origin,
+            "dest": dest,
+            "time": tidy_time(str(data.get("time" + suffix) or "")),
+            "route_origin": route_origin,
+            "route_dest": route_dest,
+            "suspended_from": suspended_from,
+            "suspended_to": suspended_to,
+        })
+    if not trains:
+        raise ValueError("กรุณาเลือกขบวนรถอย่างน้อย 1 ขบวน")
+    return trains
+
+
 def build_english_announcement(data):
     idx = int(data.get("tab_index", -1))
     is_chachoengsao_destination = is_chachoengsao_terminal(data.get("dest", ""))
@@ -3317,6 +3553,54 @@ def build_english_announcement(data):
                 f"After departing {current} Station, this train will stop at {next_st}, "
                 f"and at all scheduled stops through to {dest} Station."
             )
+    elif idx == 13:
+        trains = disruption_announcement_data(data)
+        period = disruption_period_text(data, english=True)
+        details = []
+        for train in trains:
+            detail = (
+                f"train number {train['number_en']}, from "
+                f"{station_en(train['origin'])} to {station_en(train['dest'])}"
+            )
+            if train["time"]:
+                detail += f", scheduled at {time_en(train['time'])}"
+            details.append(detail)
+        reason = str(data.get("disruption_reason_en") or "").strip()
+        reason_text = f" The stated reason is {reason}." if reason else ""
+        text = (
+            f"Attention please. The following train services are suspended {period}: "
+            f"{join_announcement_items(details, english=True)}.{reason_text} "
+            "Please contact station staff for travel and ticket information. "
+            "The State Railway of Thailand apologizes for the inconvenience."
+        )
+    elif idx == 14:
+        trains = disruption_announcement_data(data, route_change=True)
+        period = disruption_period_text(data, english=True)
+        details = []
+        for train in trains:
+            detail = (
+                f"train number {train['number_en']}, originally from "
+                f"{station_en(train['origin'])} to {station_en(train['dest'])}, "
+                f"will now operate from {station_en(train['route_origin'])} "
+                f"to {station_en(train['route_dest'])}"
+            )
+            if train["time"]:
+                detail += f", scheduled at {time_en(train['time'])}"
+            if train["suspended_from"] and train["suspended_to"]:
+                detail += (
+                    f"; service is suspended between "
+                    f"{station_en(train['suspended_from'])} and "
+                    f"{station_en(train['suspended_to'])}"
+                )
+            details.append(detail)
+        reason = str(data.get("disruption_reason_en") or "").strip()
+        reason_text = f" The stated reason is {reason}." if reason else ""
+        text = (
+            f"Attention please. The following route changes take effect {period}: "
+            f"{join_announcement_items(details, english=True)}.{reason_text} "
+            "Please check with station staff before traveling. "
+            "The State Railway of Thailand apologizes for the inconvenience."
+        )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
@@ -3497,6 +3781,53 @@ def build_announcement(data):
                 f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
                 f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
             )
+    elif idx == 13:
+        trains = disruption_announcement_data(data)
+        period = disruption_period_text(data)
+        details = []
+        for train in trains:
+            detail = (
+                f"ขบวนที่ {train['number_th']} เส้นทางจาก "
+                f"{station(train['origin'])} ถึง {station(train['dest'])}"
+            )
+            if train["time"]:
+                detail += f" เที่ยวเวลา {train['time']}"
+            details.append(detail)
+        reason = str(data.get("disruption_reason") or "").strip()
+        reason_text = f" เนื่องจาก{reason}" if reason else ""
+        text = (
+            f"ผู้โดยสารโปรดทราบ การรถไฟฯ งดให้บริการขบวนรถ{period} ได้แก่ "
+            f"{join_announcement_items(details)}.{reason_text} "
+            "ผู้โดยสารโปรดสอบถามเจ้าหน้าที่สถานีเกี่ยวกับการเดินทางและเงื่อนไขตั๋วโดยสาร "
+            "การรถไฟฯ ขออภัยในความไม่สะดวก ขอบคุณครับ"
+        )
+    elif idx == 14:
+        trains = disruption_announcement_data(data, route_change=True)
+        period = disruption_period_text(data)
+        details = []
+        for train in trains:
+            detail = (
+                f"ขบวนที่ {train['number_th']} เดิมเดินทางจาก "
+                f"{station(train['origin'])} ถึง {station(train['dest'])} "
+                f"ปรับเปลี่ยนเป็นให้บริการจาก {station(train['route_origin'])} "
+                f"ถึง {station(train['route_dest'])}"
+            )
+            if train["time"]:
+                detail += f" เที่ยวเวลา {train['time']}"
+            if train["suspended_from"] and train["suspended_to"]:
+                detail += (
+                    f" และงดให้บริการช่วง {station(train['suspended_from'])} "
+                    f"ถึง {station(train['suspended_to'])}"
+                )
+            details.append(detail)
+        reason = str(data.get("disruption_reason") or "").strip()
+        reason_text = f" เนื่องจาก{reason}" if reason else ""
+        text = (
+            f"ผู้โดยสารโปรดทราบ การปรับเปลี่ยนเส้นทางขบวนรถมีผล{period} ได้แก่ "
+            f"{join_announcement_items(details)}.{reason_text} "
+            "โปรดตรวจสอบข้อมูลกับเจ้าหน้าที่สถานีก่อนเดินทาง "
+            "การรถไฟฯ ขออภัยในความไม่สะดวก ขอบคุณครับ"
+        )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
 
