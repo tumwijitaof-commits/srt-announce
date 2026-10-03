@@ -152,8 +152,8 @@ ANNOUNCEMENT_BUTTONS = [
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
     {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
     {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
-    {"idx": 13, "title": "งดเดินขบวนรถ", "hint": "ประกาศงดให้บริการหลายขบวนได้ พร้อมวันที่และสาเหตุ", "group": "เหตุการณ์พิเศษ"},
-    {"idx": 14, "title": "ปรับต้นทาง–ปลายทาง", "hint": "แจ้งเส้นทางเดิมและเส้นทางที่ให้บริการจริงของแต่ละขบวน", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 13, "title": "งดเดินขบวนรถ", "hint": "ประกาศงดให้บริการหลายขบวนได้ พร้อมระบุวันที่หรือสาเหตุได้ถ้ามี", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 14, "title": "ปรับต้นทาง–ปลายทาง", "hint": "แจ้งเส้นทางเดิมและเส้นทางที่ให้บริการจริงของแต่ละขบวน โดยวันที่มีผลไม่บังคับ", "group": "เหตุการณ์พิเศษ"},
 ]
 
 # ------------------------------------------------------------
@@ -1761,13 +1761,14 @@ HTML_PAGE = r"""
 
                     <div class="conditional" id="disruptionFields">
                         <p class="conditional-title" id="disruptionTitle">ข้อมูลการเปลี่ยนแปลงการเดินรถ</p>
+                        <p class="helper" style="margin:0 0 12px;">วันที่มีผลและวันที่สิ้นสุดไม่บังคับกรอก เว้นว่างได้หากยังไม่ทราบกำหนด</p>
                         <div class="field-grid">
                             <div>
-                                <label for="effective_from">มีผลตั้งแต่วันที่</label>
+                                <label for="effective_from">มีผลตั้งแต่วันที่ (ไม่บังคับ)</label>
                                 <input type="date" id="effective_from">
                             </div>
                             <div>
-                                <label for="effective_to">ถึงวันที่ (ถ้ามี)</label>
+                                <label for="effective_to">ถึงวันที่ (ไม่บังคับ)</label>
                                 <input type="date" id="effective_to">
                             </div>
                             <div class="full">
@@ -2348,8 +2349,7 @@ HTML_PAGE = r"""
         if (selectedAnnouncement === 13 || selectedAnnouncement === 14) {
             const start = value("effective_from");
             const end = value("effective_to");
-            if (!start) return "กรุณาเลือกวันที่เริ่มมีผล";
-            if (end && end < start) return "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล";
+            if (start && end && end < start) return "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล";
             if (selectedAnnouncement === 14) {
                 for (let type = 1; type <= 3; type++) {
                     const suffix = trainSuffix(type);
@@ -3327,13 +3327,19 @@ def format_disruption_date(value, english=False):
 def disruption_period_text(data, english=False):
     start = format_disruption_date(data.get("effective_from"), english=english)
     end = format_disruption_date(data.get("effective_to"), english=english)
-    if end and end != start:
+    if start and end and end != start:
         if english:
             return f"from {start} through {end}"
         return f"ตั้งแต่วันที่ {start} ถึงวันที่ {end}"
-    if english:
-        return f"on {start}"
-    return f"วันที่ {start}"
+    if start:
+        if english:
+            return f"on {start}"
+        return f"วันที่ {start}"
+    if end:
+        if english:
+            return f"through {end}"
+        return f"ถึงวันที่ {end}"
+    return ""
 
 
 def join_announcement_items(items, english=False):
@@ -3348,12 +3354,13 @@ def disruption_announcement_data(data, route_change=False):
     start = str(data.get("effective_from") or "").strip()
     end = str(data.get("effective_to") or "").strip()
     try:
-        date.fromisoformat(start)
+        if start:
+            date.fromisoformat(start)
         if end:
             date.fromisoformat(end)
     except ValueError as exc:
-        raise ValueError("กรุณาระบุวันที่เริ่มและวันที่สิ้นสุดให้ถูกต้อง") from exc
-    if end and end < start:
+        raise ValueError("กรุณาตรวจสอบรูปแบบวันที่ที่ระบุ") from exc
+    if start and end and end < start:
         raise ValueError("วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล")
 
     trains = []
@@ -3556,6 +3563,7 @@ def build_english_announcement(data):
     elif idx == 13:
         trains = disruption_announcement_data(data)
         period = disruption_period_text(data, english=True)
+        period_clause = f" {period}" if period else ""
         details = []
         for train in trains:
             detail = (
@@ -3568,7 +3576,7 @@ def build_english_announcement(data):
         reason = str(data.get("disruption_reason_en") or "").strip()
         reason_text = f" The stated reason is {reason}." if reason else ""
         text = (
-            f"Attention please. The following train services are suspended {period}: "
+            f"Attention please. The following train services are suspended{period_clause}: "
             f"{join_announcement_items(details, english=True)}.{reason_text} "
             "Please contact station staff for travel and ticket information. "
             "The State Railway of Thailand apologizes for the inconvenience."
@@ -3576,6 +3584,7 @@ def build_english_announcement(data):
     elif idx == 14:
         trains = disruption_announcement_data(data, route_change=True)
         period = disruption_period_text(data, english=True)
+        period_clause = f" take effect {period}" if period else ""
         details = []
         for train in trains:
             detail = (
@@ -3596,7 +3605,7 @@ def build_english_announcement(data):
         reason = str(data.get("disruption_reason_en") or "").strip()
         reason_text = f" The stated reason is {reason}." if reason else ""
         text = (
-            f"Attention please. The following route changes take effect {period}: "
+            f"Attention please. The following route changes{period_clause}: "
             f"{join_announcement_items(details, english=True)}.{reason_text} "
             "Please check with station staff before traveling. "
             "The State Railway of Thailand apologizes for the inconvenience."
@@ -3784,6 +3793,7 @@ def build_announcement(data):
     elif idx == 13:
         trains = disruption_announcement_data(data)
         period = disruption_period_text(data)
+        period_clause = f" {period}" if period else ""
         details = []
         for train in trains:
             detail = (
@@ -3796,7 +3806,7 @@ def build_announcement(data):
         reason = str(data.get("disruption_reason") or "").strip()
         reason_text = f" เนื่องจาก{reason}" if reason else ""
         text = (
-            f"ผู้โดยสารโปรดทราบ การรถไฟฯ งดให้บริการขบวนรถ{period} ได้แก่ "
+            f"ผู้โดยสารโปรดทราบ การรถไฟฯ งดให้บริการขบวนรถ{period_clause} ได้แก่ "
             f"{join_announcement_items(details)}.{reason_text} "
             "ผู้โดยสารโปรดสอบถามเจ้าหน้าที่สถานีเกี่ยวกับการเดินทางและเงื่อนไขตั๋วโดยสาร "
             "การรถไฟฯ ขออภัยในความไม่สะดวก ขอบคุณครับ"
@@ -3804,6 +3814,7 @@ def build_announcement(data):
     elif idx == 14:
         trains = disruption_announcement_data(data, route_change=True)
         period = disruption_period_text(data)
+        period_clause = f"มีผล{period}" if period else ""
         details = []
         for train in trains:
             detail = (
@@ -3823,7 +3834,7 @@ def build_announcement(data):
         reason = str(data.get("disruption_reason") or "").strip()
         reason_text = f" เนื่องจาก{reason}" if reason else ""
         text = (
-            f"ผู้โดยสารโปรดทราบ การปรับเปลี่ยนเส้นทางขบวนรถมีผล{period} ได้แก่ "
+            f"ผู้โดยสารโปรดทราบ การปรับเปลี่ยนเส้นทางขบวนรถ{period_clause} ได้แก่ "
             f"{join_announcement_items(details)}.{reason_text} "
             "โปรดตรวจสอบข้อมูลกับเจ้าหน้าที่สถานีก่อนเดินทาง "
             "การรถไฟฯ ขออภัยในความไม่สะดวก ขอบคุณครับ"
