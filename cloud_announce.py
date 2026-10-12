@@ -80,9 +80,9 @@ THAI_VOICE_OPTIONS = {
     "th-TH-PremwadeeNeural": "เสียงหญิง — ชัดเจน เป็นธรรมชาติ",
     "th-TH-NiwatNeural": "เสียงชาย — สุภาพ เป็นทางการ",
 }
-VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-PremwadeeNeural")
+VOICE_NAME = os.environ.get("TTS_VOICE", "th-TH-NiwatNeural")
 if VOICE_NAME not in THAI_VOICE_OPTIONS:
-    VOICE_NAME = "th-TH-PremwadeeNeural"
+    VOICE_NAME = "th-TH-NiwatNeural"
 
 # ไม่เร่งความดังหรือกดระดับเสียงมากเกินไป เพราะจะทำให้เสียงแตกและคำเพี้ยน
 TTS_RATE = os.environ.get("TTS_RATE", "-10%")
@@ -140,19 +140,20 @@ OUTBOUND_TRAINS = [
 TRAIN_DATA = {train["label"]: train for train in INBOUND_TRAINS + OUTBOUND_TRAINS}
 
 ANNOUNCEMENT_BUTTONS = [
-    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "แจ้งผู้โดยสารให้ซื้อตั๋วก่อนเดินทาง", "group": "ก่อนรถเข้า"},
-    {"idx": 1, "title": "รอรับโดยสาร", "hint": "ให้ผู้โดยสารรอที่ชานชาลา", "group": "ก่อนรถเข้า"},
-    {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
-    {"idx": 3, "title": "รถผ่านสถานี", "hint": "ประกาศรถผ่านขบวนปกติ", "group": "รถเข้า-ออก"},
     {"idx": 4, "title": "จอดรับส่งปกติ", "hint": "ประกาศตอนรถจอดและแจ้งสถานีถัดไปจนถึงปลายทางในครั้งเดียว", "group": "รถเข้า-ออก"},
-    {"idx": 5, "title": "รถล่าช้า", "hint": "แจ้งเวลาคาดว่าจะถึง", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 9, "title": "รถผ่าน / สินค้า–พิเศษ", "hint": "เลือกประเภทรถและชานชาลาได้ในเมนูเดียว · ประกาศอัตโนมัติ 2 รอบ", "group": "รถเข้า-ออก"},
+    {"idx": 0, "title": "ขอทาง / ขายตั๋ว", "hint": "รองรับขบวนที่เลือกพร้อมกัน 1–3 ขบวน", "group": "ก่อนรถเข้า"},
+    {"idx": 1, "title": "รอรับโดยสาร", "hint": "แจ้งชานชาลาของขบวนที่เลือกทั้งหมด", "group": "ก่อนรถเข้า"},
+    {"idx": 2, "title": "รถกำลังเข้าเทียบ", "hint": "เตือนยืนหลังเส้นสีเหลือง", "group": "รถเข้า-ออก"},
+    {"idx": 5, "title": "รถล่าช้า", "hint": "กำหนดเวลาถึงแยกแต่ละขบวนได้", "group": "เหตุการณ์พิเศษ"},
     {"idx": 6, "title": "ระวังคนลงรถ", "hint": "เตือนผู้โดยสารขณะรถเข้า", "group": "ความปลอดภัย"},
     {"idx": 7, "title": "ห้ามสูบบุหรี่", "hint": "ประกาศขอความร่วมมือ", "group": "ความปลอดภัย"},
     {"idx": 8, "title": "ประกาศเอง", "hint": "อ่านข้อความที่พิมพ์เอง", "group": "ประกาศทั่วไป"},
-    {"idx": 9, "title": "สินค้า / พิเศษ ผ่าน", "hint": "รองรับรถผ่านพร้อมกัน 1–3 ทาง", "group": "เหตุการณ์พิเศษ"},
     {"idx": 10, "title": "รถเข้าพร้อมกัน 2–3 ขบวน", "hint": "ใช้ข้อมูลขบวนที่ 1, 2 และขบวนที่ 3 ถ้ามี", "group": "เหตุการณ์พิเศษ"},
     {"idx": 11, "title": "จอดรอเวลาออก", "hint": "ประกาศข้อมูลรถตอนจอด แล้วหยุดรอจนกว่าจะถึงเวลาออก", "group": "รถเข้า-ออก"},
     {"idx": 12, "title": "รถออก (หลังรอเวลา)", "hint": "กดเมื่อขบวนที่จอดรอเวลาเริ่มเคลื่อนออกจากสถานี", "group": "รถเข้า-ออก"},
+    {"idx": 13, "title": "งดเดินขบวนรถ", "hint": "ประกาศงดให้บริการหลายขบวนได้ พร้อมระบุวันที่หรือสาเหตุได้ถ้ามี", "group": "เหตุการณ์พิเศษ"},
+    {"idx": 14, "title": "ปรับต้นทาง–ปลายทาง", "hint": "แจ้งเส้นทางเดิมและเส้นทางที่ให้บริการจริงของแต่ละขบวน โดยวันที่มีผลไม่บังคับ", "group": "เหตุการณ์พิเศษ"},
 ]
 
 # ------------------------------------------------------------
@@ -923,12 +924,23 @@ def announcement_title(tab_index):
 
 
 def insert_history(payload, user):
+    history_train_num = payload.get("num", "")
+    try:
+        if int(payload.get("tab_index", -1)) in {13, 14}:
+            selected_numbers = [
+                str(payload.get(key) or "").strip()
+                for key in ("num", "num_2", "num_3")
+                if str(payload.get(key) or "").strip()
+            ]
+            history_train_num = ", ".join(selected_numbers)
+    except (TypeError, ValueError):
+        pass
     with get_db() as conn:
         cursor = conn.execute(
             """INSERT INTO announcement_history(started_at,user_id,username,train_num,announcement_type,
                announce_mode,voice,platform,message,pause_times)
                VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (now_iso(), user["id"], user["display_name"], payload.get("num", ""),
+            (now_iso(), user["id"], user["display_name"], history_train_num,
              announcement_title(payload.get("tab_index")), payload.get("announce_mode", "thai_only"),
              payload.get("thai_voice", VOICE_NAME), payload.get("platform", ""), "", "[]"),
         )
@@ -1213,6 +1225,14 @@ HTML_PAGE = r"""
         }
         .train-picker .train-summary { margin-top: 10px; }
         .train-picker .platform-row { grid-template-columns: minmax(0,1fr); }
+        .third-train-toggle { display: grid; gap: 5px; }
+        .third-train-add {
+            width: 100%; padding: 12px 14px;
+            border: 1px dashed rgba(128,0,0,.45); border-radius: 14px;
+            background: #fff7ed; color: var(--maroon-dark);
+            font-weight: 900; cursor: pointer;
+        }
+        .third-train-add:hover { background: #fff0f0; border-style: solid; }
         .station-row { margin-top: 13px; }
 
         .announce-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
@@ -1242,6 +1262,16 @@ HTML_PAGE = r"""
             border-radius: 14px; background: #f7f1e8; color: var(--muted);
         }
         .selected-type b { color: var(--maroon-dark); }
+        .selected-type.is-preparing { background: #fff3cd; color: #785b00; border: 1px solid #dfbf68; }
+        .selected-type.is-ready { background: #e8f6ed; color: #116735; border: 1px solid #78bd91; }
+        .selected-type.is-ready b { color: #0b5c30; }
+        .selected-type.is-error { background: #fdebea; color: #a31d16; border: 1px solid #df8b85; }
+        .repeat-notice {
+            margin: -4px 0 12px; padding: 10px 13px;
+            border: 1px solid #dfbf68; border-radius: 13px;
+            background: #fff3cd; color: #6f5200;
+            font-size: 13px; font-weight: 900; text-align: center;
+        }
         .preview {
             min-height: 150px; max-height: 390px; overflow: auto;
             padding: 15px; border: 1px solid #eadcc5; border-radius: 16px;
@@ -1258,6 +1288,7 @@ HTML_PAGE = r"""
         .danger { background: var(--red); }
         .primary:disabled, .pause-btn:disabled, .danger:disabled { opacity: .45; cursor: not-allowed; }
         .playback-controls { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 9px; }
+        .utility-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
         .mini-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
         .voice-quick-panel {
             margin-top: 14px;
@@ -1323,6 +1354,12 @@ HTML_PAGE = r"""
             cursor: not-allowed;
         }
         .pass-train-list { display: grid; gap: 10px; }
+        #passFields { scroll-margin-top: 16px; }
+        #passFields.focus-attention { animation: passPanelAttention .65s ease 2; border-style: solid; }
+        @keyframes passPanelAttention {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(128,0,0,0); }
+            50% { box-shadow: 0 0 0 5px rgba(128,0,0,.18); }
+        }
         .pass-train-item {
             padding: 12px; border: 1px solid #eadcc5; border-radius: 14px; background: #fff;
         }
@@ -1330,6 +1367,17 @@ HTML_PAGE = r"""
             display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px;
             color: var(--maroon-dark);
         }
+        .pass-platform-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .pass-platform-btn {
+            min-height: 64px; padding: 8px 5px; border: 2px solid #ddcfba; border-radius: 13px;
+            background: #fffaf2; color: var(--muted); font-weight: 800; cursor: pointer;
+        }
+        .pass-platform-btn strong { display: block; margin-top: 2px; color: var(--maroon-dark); font-size: 24px; line-height: 1; }
+        .pass-platform-btn.active {
+            border-color: var(--maroon); background: var(--maroon); color: #fff;
+            box-shadow: inset 0 0 0 1px var(--maroon), 0 3px 9px rgba(128,0,0,.12);
+        }
+        .pass-platform-btn.active strong { color: #fff; }
         .pass-actions { display: grid; gap: 7px; margin-top: 10px; }
         .pass-add-btn, .pass-remove-btn {
             border: 1px solid #d8c9b7; border-radius: 11px; padding: 9px 12px; font-weight: 850;
@@ -1433,7 +1481,7 @@ HTML_PAGE = r"""
             <section class="card">
                 <div class="card-head"><h2 class="step-title"><span class="step">2</span> เลือกขบวนและชานชาลา</h2></div>
                 <div class="card-body">
-                    <p class="helper" style="margin:0 0 12px;">เลือกได้สูงสุด 3 ขบวน โดยขบวนที่ 1 ใช้กับประกาศทั่วไป ส่วนปุ่ม “รถเข้าพร้อมกัน 2–3 ขบวน” จะนำขบวนที่เลือกทั้งหมดมาประกาศร่วมกัน</p>
+                    <p class="helper" style="margin:0 0 12px;">เลือกได้สูงสุด 3 ขบวน เมนูขายตั๋ว รอรับโดยสาร รถล่าช้า งดเดินขบวน และปรับต้นทาง–ปลายทาง จะประกาศขบวนที่เลือกทั้งหมดร่วมกัน</p>
 
                     <div class="train-pickers">
                         <div class="train-picker primary-train">
@@ -1520,10 +1568,15 @@ HTML_PAGE = r"""
                             </details>
                         </div>
 
-                        <div class="train-picker">
+                        <div class="third-train-toggle" id="train3ToggleWrap">
+                            <button type="button" class="third-train-add" onclick="showThirdTrain()">＋ เพิ่มขบวนที่ 3</button>
+                            <div class="helper">กดเมื่อจำเป็นต้องประกาศพร้อมกัน 3 ขบวน</div>
+                        </div>
+
+                        <div class="train-picker hidden" id="trainPicker3">
                             <div class="train-picker-head">
                                 <div class="train-picker-title"><span class="train-order">3</span> ขบวนที่ 3</div>
-                                <span class="train-role">ไม่บังคับ</span>
+                                <button type="button" class="pass-remove-btn" onclick="hideThirdTrain()">− นำขบวนที่ 3 ออก</button>
                             </div>
                             <label for="train_select_3">เลือกขบวนรถ</label>
                             <select id="train_select_3" onchange="autoFill(3)">
@@ -1585,12 +1638,21 @@ HTML_PAGE = r"""
 
                     <div class="conditional" id="delayFields">
                         <p class="conditional-title">ข้อมูลรถล่าช้า</p>
-                        <label for="delay_time">คาดว่าจะถึงเวลา</label>
-                        <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
+                        <div id="delayTrain1">
+                            <label for="delay_time" id="delayLabel1">ขบวนที่ 1 — คาดว่าจะถึงเวลา</label>
+                            <input type="text" id="delay_time" placeholder="เช่น 19 นาฬิกา 30 นาที">
+                        </div>
+                        <div id="delayTrain2" class="hidden" style="margin-top:10px;">
+                            <label for="delay_time_2" id="delayLabel2">ขบวนที่ 2 — คาดว่าจะถึงเวลา</label>
+                            <input type="text" id="delay_time_2" placeholder="เช่น 20 นาฬิกา 10 นาที">
+                        </div>
+                        <div id="delayTrain3" class="hidden" style="margin-top:10px;">
+                            <label for="delay_time_3" id="delayLabel3">ขบวนที่ 3 — คาดว่าจะถึงเวลา</label>
+                            <input type="text" id="delay_time_3" placeholder="เช่น 20 นาฬิกา 30 นาที">
+                        </div>
                     </div>
 
                     <div class="conditional" id="passFields">
-                        <p class="conditional-title">ข้อมูลรถวิ่งผ่าน</p>
                         <input type="hidden" id="pass_count" value="1">
 
                         <div class="pass-train-list">
@@ -1603,19 +1665,21 @@ HTML_PAGE = r"""
                                     <div id="trainTypeWrap">
                                         <label for="train_type">ประเภทรถ</label>
                                         <select id="train_type">
+                                            <option value="ทั่วไป">รถผ่านทั่วไป</option>
                                             <option value="สินค้า">สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label for="pass_platform">ชานชาลาที่รถผ่าน</label>
-                                        <select id="pass_platform">
-                                            <option value="1" selected>ชานชาลาที่ 1</option>
-                                            <option value="2">ชานชาลาที่ 2</option>
-                                            <option value="3">ชานชาลาที่ 3</option>
-                                        </select>
+                                    <div class="full">
+                                        <label>เลือกชานชาลาที่รถผ่าน</label>
+                                        <input type="hidden" id="pass_platform" value="1">
+                                        <div class="pass-platform-grid" data-platform-target="pass_platform">
+                                            <button type="button" class="pass-platform-btn active" data-platform="1" onclick="selectPassPlatform('pass_platform','1')">ชานชาลา<strong>1</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="2" onclick="selectPassPlatform('pass_platform','2')">ชานชาลา<strong>2</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="3" onclick="selectPassPlatform('pass_platform','3')">ชานชาลา<strong>3</strong></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1629,19 +1693,21 @@ HTML_PAGE = r"""
                                     <div>
                                         <label for="train_type_2">ประเภทรถ</label>
                                         <select id="train_type_2">
+                                            <option value="ทั่วไป">รถผ่านทั่วไป</option>
                                             <option value="สินค้า">สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label for="pass_platform_2">ชานชาลาที่รถผ่าน</label>
-                                        <select id="pass_platform_2">
-                                            <option value="1">ชานชาลาที่ 1</option>
-                                            <option value="2" selected>ชานชาลาที่ 2</option>
-                                            <option value="3">ชานชาลาที่ 3</option>
-                                        </select>
+                                    <div class="full">
+                                        <label>เลือกชานชาลาที่รถผ่าน</label>
+                                        <input type="hidden" id="pass_platform_2" value="2">
+                                        <div class="pass-platform-grid" data-platform-target="pass_platform_2">
+                                            <button type="button" class="pass-platform-btn" data-platform="1" onclick="selectPassPlatform('pass_platform_2','1')">ชานชาลา<strong>1</strong></button>
+                                            <button type="button" class="pass-platform-btn active" data-platform="2" onclick="selectPassPlatform('pass_platform_2','2')">ชานชาลา<strong>2</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="3" onclick="selectPassPlatform('pass_platform_2','3')">ชานชาลา<strong>3</strong></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1655,19 +1721,21 @@ HTML_PAGE = r"""
                                     <div>
                                         <label for="train_type_3">ประเภทรถ</label>
                                         <select id="train_type_3">
+                                            <option value="ทั่วไป">รถผ่านทั่วไป</option>
                                             <option value="สินค้า">สินค้า</option>
                                             <option value="ด่วนพิเศษ">ด่วนพิเศษ</option>
                                             <option value="พิเศษ">พิเศษ</option>
                                             <option value="รถจักรเปล่า">รถจักรเปล่า</option>
                                         </select>
                                     </div>
-                                    <div>
-                                        <label for="pass_platform_3">ชานชาลาที่รถผ่าน</label>
-                                        <select id="pass_platform_3">
-                                            <option value="1">ชานชาลาที่ 1</option>
-                                            <option value="2">ชานชาลาที่ 2</option>
-                                            <option value="3" selected>ชานชาลาที่ 3</option>
-                                        </select>
+                                    <div class="full">
+                                        <label>เลือกชานชาลาที่รถผ่าน</label>
+                                        <input type="hidden" id="pass_platform_3" value="3">
+                                        <div class="pass-platform-grid" data-platform-target="pass_platform_3">
+                                            <button type="button" class="pass-platform-btn" data-platform="1" onclick="selectPassPlatform('pass_platform_3','1')">ชานชาลา<strong>1</strong></button>
+                                            <button type="button" class="pass-platform-btn" data-platform="2" onclick="selectPassPlatform('pass_platform_3','2')">ชานชาลา<strong>2</strong></button>
+                                            <button type="button" class="pass-platform-btn active" data-platform="3" onclick="selectPassPlatform('pass_platform_3','3')">ชานชาลา<strong>3</strong></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1691,6 +1759,59 @@ HTML_PAGE = r"""
                         </div>
                     </div>
 
+                    <div class="conditional" id="disruptionFields">
+                        <p class="conditional-title" id="disruptionTitle">ข้อมูลการเปลี่ยนแปลงการเดินรถ</p>
+                        <p class="helper" style="margin:0 0 12px;">วันที่มีผลและวันที่สิ้นสุดไม่บังคับกรอก เว้นว่างได้หากยังไม่ทราบกำหนด</p>
+                        <div class="field-grid">
+                            <div>
+                                <label for="effective_from">มีผลตั้งแต่วันที่ (ไม่บังคับ)</label>
+                                <input type="date" id="effective_from">
+                            </div>
+                            <div>
+                                <label for="effective_to">ถึงวันที่ (ไม่บังคับ)</label>
+                                <input type="date" id="effective_to">
+                            </div>
+                            <div class="full">
+                                <label for="disruption_reason">สาเหตุ (ภาษาไทย — ไม่บังคับ)</label>
+                                <input type="text" id="disruption_reason" placeholder="เช่น สถานการณ์น้ำท่วม">
+                            </div>
+                            <div class="full">
+                                <label for="disruption_reason_en">Reason in English (optional)</label>
+                                <input type="text" id="disruption_reason_en" placeholder="For example: flooding">
+                            </div>
+                        </div>
+                        <div id="routeChangeFields" class="hidden" style="margin-top:14px;">
+                            <p class="helper">แก้สถานีต้นทางหรือปลายทางของแต่ละขบวนตามเส้นทางที่ให้บริการจริง หากเปลี่ยนเพียงด้านเดียว ให้คงอีกด้านเป็นสถานีเดิม และระบุช่วงที่งดให้บริการถ้ามี</p>
+                            <div class="train-picker route-change-train" id="routeChangeTrain1">
+                                <b id="routeChangeLabel1">ขบวนที่ 1</b>
+                                <div class="field-grid">
+                                    <div><label for="route_origin">ต้นทางที่ให้บริการจริง</label><input id="route_origin" type="text"></div>
+                                    <div><label for="route_dest">ปลายทางที่ให้บริการจริง</label><input id="route_dest" type="text"></div>
+                                    <div><label for="suspended_from">งดให้บริการตั้งแต่สถานี</label><input id="suspended_from" type="text" placeholder="ถ้ามี"></div>
+                                    <div><label for="suspended_to">ถึงสถานี</label><input id="suspended_to" type="text" placeholder="ถ้ามี"></div>
+                                </div>
+                            </div>
+                            <div class="train-picker route-change-train hidden" id="routeChangeTrain2" style="margin-top:10px;">
+                                <b id="routeChangeLabel2">ขบวนที่ 2</b>
+                                <div class="field-grid">
+                                    <div><label for="route_origin_2">ต้นทางที่ให้บริการจริง</label><input id="route_origin_2" type="text"></div>
+                                    <div><label for="route_dest_2">ปลายทางที่ให้บริการจริง</label><input id="route_dest_2" type="text"></div>
+                                    <div><label for="suspended_from_2">งดให้บริการตั้งแต่สถานี</label><input id="suspended_from_2" type="text" placeholder="ถ้ามี"></div>
+                                    <div><label for="suspended_to_2">ถึงสถานี</label><input id="suspended_to_2" type="text" placeholder="ถ้ามี"></div>
+                                </div>
+                            </div>
+                            <div class="train-picker route-change-train hidden" id="routeChangeTrain3" style="margin-top:10px;">
+                                <b id="routeChangeLabel3">ขบวนที่ 3</b>
+                                <div class="field-grid">
+                                    <div><label for="route_origin_3">ต้นทางที่ให้บริการจริง</label><input id="route_origin_3" type="text"></div>
+                                    <div><label for="route_dest_3">ปลายทางที่ให้บริการจริง</label><input id="route_dest_3" type="text"></div>
+                                    <div><label for="suspended_from_3">งดให้บริการตั้งแต่สถานี</label><input id="suspended_from_3" type="text" placeholder="ถ้ามี"></div>
+                                    <div><label for="suspended_to_3">ถึงสถานี</label><input id="suspended_to_3" type="text" placeholder="ถ้ามี"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </section>
         </div>
@@ -1699,6 +1820,7 @@ HTML_PAGE = r"""
             <div class="card-head"><h2 class="step-title"><span class="step">4</span> ตรวจสอบและประกาศ</h2></div>
             <div class="card-body">
                 <div class="selected-type" id="selectedType"><b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน</div>
+                <div class="repeat-notice hidden" id="repeatNotice">🔁 ประกาศรถผ่านอัตโนมัติ 2 รอบ · เว้นรอบละ 1.8 วินาที</div>
                 <div class="preview" id="previewBox"><b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก</div>
                 <div class="action-stack">
                     <div class="playback-controls">
@@ -1706,7 +1828,10 @@ HTML_PAGE = r"""
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
-                    <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
+                    <div class="utility-controls">
+                        <button type="button" class="secondary" onclick="testMainSpeaker()">🔊 ทดสอบลำโพง</button>
+                        <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
+                    </div>
                 </div>
                 <p class="mini-note">เสียงเตือนจะเล่นก่อนเสียงประกาศ โดยเสียงภาษาไทยและภาษาอังกฤษจะใช้เพศเดียวกันตามปุ่มที่เลือกด้านบน</p>
             </div>
@@ -1730,6 +1855,8 @@ HTML_PAGE = r"""
     let activePlaybackCancel = null;
     let activeHistoryId = null;
     let activeHistoryPromise = null;
+    const PASS_ANNOUNCEMENT_REPEAT_COUNT = 2;
+    const PASS_ANNOUNCEMENT_GAP_MS = 1800;
 
     function byId(id) { return document.getElementById(id); }
     function value(id) { return (byId(id)?.value || "").trim(); }
@@ -1788,6 +1915,7 @@ HTML_PAGE = r"""
         byId("thai_voice").value = voice;
         document.querySelectorAll(".voice-choice-btn").forEach(btn => btn.classList.remove("active"));
         if (button) button.classList.add("active");
+        try { localStorage.setItem("kbp_thai_voice", voice); } catch (e) {}
         const voiceName = voice === "th-TH-NiwatNeural" ? "เสียงผู้ชาย" : "เสียงผู้หญิง";
         setStatus("เลือก " + voiceName + " แล้ว", "ok");
         invalidatePreparedAudio();
@@ -1803,6 +1931,14 @@ HTML_PAGE = r"""
     function trainSuffix(type) { return type === 1 ? "" : `_${type}`; }
     function summarySuffix(type) { return type === 1 ? "" : String(type); }
 
+    // ค่าเริ่มต้นของสถานี: ขบวนเลขคี่ใช้ชานชาลา 2 และเลขคู่ใช้ชานชาลา 3
+    // ระบบเลือกให้เมื่อเลือกขบวนเท่านั้น เจ้าหน้าที่ยังแก้ชานชาลาเองได้ตามปกติ
+    function defaultPlatformForTrainNumber(numberText) {
+        const digits = String(numberText || "").replace(/\D/g, "");
+        if (!digits) return "1";
+        return parseInt(digits, 10) % 2 === 0 ? "3" : "2";
+    }
+
     function autoFill(type) {
         const suffix = trainSuffix(type);
         const selectId = type === 1 ? "train_select" : `train_select_${type}`;
@@ -1813,6 +1949,7 @@ HTML_PAGE = r"""
                 if (el) el.value = "";
             });
             refreshSummary(type);
+            updateDisruptionTrainVisibility(type);
             invalidatePreparedAudio();
             schedulePrepareAnnouncement();
             return;
@@ -1822,9 +1959,43 @@ HTML_PAGE = r"""
         byId("dest" + suffix).value = data.dest || "";
         byId("time" + suffix).value = data.time || "";
         byId("next_station" + suffix).value = data.next || "";
+        const platformEl = byId(type === 1 ? "platform" : `platform_${type}`);
+        if (platformEl) platformEl.value = defaultPlatformForTrainNumber(data.num);
+        if (type === 1 && byId("pass_platform")) {
+            byId("pass_platform").value = platformEl?.value || "1";
+            updatePassPlatformButtons("pass_platform");
+        }
         refreshSummary(type);
+        updateDisruptionTrainVisibility(type);
         invalidatePreparedAudio();
         schedulePrepareAnnouncement();
+    }
+
+    function showThirdTrain() {
+        byId("train3ToggleWrap").classList.add("hidden");
+        byId("trainPicker3").classList.remove("hidden");
+        setTimeout(() => {
+            byId("trainPicker3").scrollIntoView({
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+                block: "center"
+            });
+            byId("train_select_3").focus({ preventScroll: true });
+        }, 50);
+    }
+
+    function hideThirdTrain() {
+        ["train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3", "delay_time_3"].forEach(id => {
+            if (byId(id)) byId(id).value = "";
+        });
+        byId("platform_3").value = "3";
+        const details = byId("trainPicker3").querySelector("details");
+        if (details) details.open = false;
+        byId("trainPicker3").classList.add("hidden");
+        byId("train3ToggleWrap").classList.remove("hidden");
+        refreshSummary(3);
+        updateDisruptionTrainVisibility(3);
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(120);
     }
 
     function refreshSummary(type = 1) {
@@ -1846,11 +2017,55 @@ HTML_PAGE = r"""
             ? "เมื่อเลือกขบวน ระบบจะเติมข้อมูลให้อัตโนมัติ"
             : (type === 2 ? "ใช้เมื่อมีขบวนรถเข้าพร้อมกัน" : "ใช้เมื่อมีขบวนรถเข้าพร้อมกัน 3 ขบวน");
         byId("summaryMeta" + summary).textContent = details.length ? details.join(" • ") : emptyText;
+        updateDelayFieldsVisibility();
+    }
+
+    function updateDelayFieldsVisibility() {
+        [1, 2, 3].forEach(type => {
+            const suffix = trainSuffix(type);
+            const number = value("num" + suffix);
+            const wrapper = byId(`delayTrain${type}`);
+            const label = byId(`delayLabel${type}`);
+            if (wrapper) wrapper.classList.toggle("hidden", type > 1 && !number);
+            if (label) label.textContent = number
+                ? `ขบวน ${number} — คาดว่าจะถึงเวลา`
+                : `ขบวนที่ ${type} — คาดว่าจะถึงเวลา`;
+        });
+    }
+
+    function updateDisruptionTrainVisibility(resetType = null) {
+        [1, 2, 3].forEach(type => {
+            const suffix = trainSuffix(type);
+            const number = value("num" + suffix);
+            const origin = value("origin" + suffix);
+            const dest = value("dest" + suffix);
+            const row = byId("routeChangeTrain" + type);
+            const label = byId("routeChangeLabel" + type);
+            if (row) row.classList.toggle("hidden", !number);
+            if (label) label.textContent = number
+                ? "ขบวน " + number + " — เดิม " + origin + " ถึง " + dest
+                : "ขบวนที่ " + type;
+
+            const routeOrigin = byId("route_origin" + suffix);
+            const routeDest = byId("route_dest" + suffix);
+            const suspendedFrom = byId("suspended_from" + suffix);
+            const suspendedTo = byId("suspended_to" + suffix);
+            if (resetType === type) {
+                if (routeOrigin) routeOrigin.value = origin;
+                if (routeDest) routeDest.value = dest;
+                if (suspendedFrom) suspendedFrom.value = "";
+                if (suspendedTo) suspendedTo.value = "";
+            } else {
+                if (routeOrigin && !routeOrigin.value) routeOrigin.value = origin;
+                if (routeDest && !routeDest.value) routeDest.value = dest;
+            }
+        });
     }
 
     function syncPlatformDefaults(type = 1) {
         if (type === 1 && byId("pass_platform")) {
             byId("pass_platform").value = value("platform") || "1";
+            updatePassPlatformButtons("pass_platform");
         }
         invalidatePreparedAudio();
         schedulePrepareAnnouncement();
@@ -1860,12 +2075,32 @@ HTML_PAGE = r"""
         byId("pass_count").value = "1";
         byId("passTrain2").classList.add("hidden");
         byId("passTrain3").classList.add("hidden");
-        byId("train_type_2").value = "สินค้า";
-        byId("train_type_3").value = "สินค้า";
+        byId("train_type").value = "ทั่วไป";
+        byId("train_type_2").value = "ทั่วไป";
+        byId("train_type_3").value = "ทั่วไป";
         byId("pass_platform_2").value = "2";
         byId("pass_platform_3").value = "3";
+        ["pass_platform", "pass_platform_2", "pass_platform_3"].forEach(updatePassPlatformButtons);
         byId("multiPassControls").classList.toggle("hidden", singleOnly);
         byId("addPassTrainButton").classList.remove("hidden");
+    }
+
+    function updatePassPlatformButtons(targetId) {
+        const picker = document.querySelector(`[data-platform-target="${targetId}"]`);
+        if (!picker) return;
+        const selected = value(targetId);
+        picker.querySelectorAll(".pass-platform-btn").forEach(button => {
+            button.classList.toggle("active", button.dataset.platform === selected);
+        });
+    }
+
+    function selectPassPlatform(targetId, platform) {
+        const field = byId(targetId);
+        if (!field || !["1", "2", "3"].includes(String(platform))) return;
+        field.value = String(platform);
+        updatePassPlatformButtons(targetId);
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(120);
     }
 
     function addPassTrain() {
@@ -1884,8 +2119,9 @@ HTML_PAGE = r"""
         if (index < 2 || index > count) return;
 
         if (index === 2 && count === 3) {
-            byId("train_type_2").value = value("train_type_3") || "สินค้า";
+            byId("train_type_2").value = value("train_type_3") || "ทั่วไป";
             byId("pass_platform_2").value = value("pass_platform_3") || "3";
+            updatePassPlatformButtons("pass_platform_2");
         }
         byId(`passTrain${count}`).classList.add("hidden");
         count -= 1;
@@ -1899,20 +2135,42 @@ HTML_PAGE = r"""
         selectedAnnouncement = index;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
         button.classList.add("active");
+        byId("repeatNotice").classList.toggle("hidden", !(index === 3 || index === 9));
         refreshPlaybackControls();
-        byId("selectedType").innerHTML = `<b>${escapeHtml(button.dataset.title || "ประเภทประกาศ")}</b><br>พร้อมสร้างเสียงตามข้อมูลที่เลือก`;
+        setAudioBuildState("preparing");
 
-        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        ["delayFields", "passFields", "customFields", "disruptionFields"].forEach(id => byId(id).classList.remove("show"));
+        byId("routeChangeFields").classList.add("hidden");
         byId("trainTypeWrap").classList.remove("hidden");
         if (index === 5) byId("delayFields").classList.add("show");
+        if (index === 5) updateDelayFieldsVisibility();
         if (index === 3 || index === 9) {
             byId("passFields").classList.add("show");
             resetPassTrainUI(index === 3);
             if (index === 3) byId("trainTypeWrap").classList.add("hidden");
+            setTimeout(() => {
+                const panel = byId("passFields");
+                if (!panel) return;
+                panel.classList.add("focus-attention");
+                panel.scrollIntoView({
+                    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+                    block: "start"
+                });
+                panel.querySelector('[data-platform-target="pass_platform"] .pass-platform-btn.active')?.focus({ preventScroll: true });
+                setTimeout(() => panel.classList.remove("focus-attention"), 1500);
+            }, 60);
         }
         if (index === 8) {
             byId("customFields").classList.add("show");
             updateCustomLanguageFields();
+        }
+        if (index === 13 || index === 14) {
+            byId("disruptionFields").classList.add("show");
+            byId("disruptionTitle").textContent = index === 13
+                ? "ข้อมูลการงดให้บริการ"
+                : "ข้อมูลการปรับต้นทาง–ปลายทาง";
+            byId("routeChangeFields").classList.toggle("hidden", index !== 14);
+            updateDisruptionTrainVisibility();
         }
         byId("previewBox").innerHTML = "<b>กำลังเตรียมเสียงล่วงหน้า</b><br><br>เมื่อเสียงพร้อม ปุ่มประกาศจะทำงานได้แทบจะทันที";
         invalidatePreparedAudio();
@@ -1930,21 +2188,49 @@ HTML_PAGE = r"""
         byId("previewBox").innerHTML = safe;
     }
 
+    function setAudioBuildState(state) {
+        const box = byId("selectedType");
+        if (!box || selectedAnnouncement === null) return;
+        const title = document.querySelector(".announce-option.active")?.dataset.title || "ประเภทประกาศ";
+        box.classList.remove("is-preparing", "is-ready", "is-error");
+        if (state === "preparing") {
+            box.classList.add("is-preparing");
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>⏳ กำลังสร้างไฟล์เสียง...`;
+        } else if (state === "ready") {
+            box.classList.add("is-ready");
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>✅ เสียงพร้อมแล้ว`;
+        } else if (state === "error") {
+            box.classList.add("is-error");
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>⚠️ สร้างไฟล์เสียงไม่สำเร็จ`;
+        } else {
+            box.innerHTML = `<b>${escapeHtml(title)}</b><br>กรุณากรอกข้อมูลให้ครบเพื่อสร้างเสียง`;
+        }
+    }
+
     function collectPayload(tabIndex) {
         return {
             tab_index: tabIndex,
             announce_mode: value("announce_mode") || "thai_only",
-            thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
+            thai_voice: value("thai_voice") || "th-TH-NiwatNeural",
             num: value("num"), origin: value("origin"), dest: value("dest"), time: value("time"),
             platform: value("platform") || "1", current: value("current") || "คลองบางพระ",
             next: value("next_station"), delay: value("delay_time"),
+            delay_2: value("delay_time_2"), delay_3: value("delay_time_3"),
             custom_text: value("custom_text"), custom_text_en: value("custom_text_en"),
-            train_type: value("train_type") || "สินค้า",
+            effective_from: value("effective_from"), effective_to: value("effective_to"),
+            disruption_reason: value("disruption_reason"), disruption_reason_en: value("disruption_reason_en"),
+            route_origin: value("route_origin"), route_dest: value("route_dest"),
+            suspended_from: value("suspended_from"), suspended_to: value("suspended_to"),
+            route_origin_2: value("route_origin_2"), route_dest_2: value("route_dest_2"),
+            suspended_from_2: value("suspended_from_2"), suspended_to_2: value("suspended_to_2"),
+            route_origin_3: value("route_origin_3"), route_dest_3: value("route_dest_3"),
+            suspended_from_3: value("suspended_from_3"), suspended_to_3: value("suspended_to_3"),
+            train_type: value("train_type") || "ทั่วไป",
             pass_platform: value("pass_platform") || value("platform") || "1",
             pass_count: value("pass_count") || "1",
-            train_type_2: value("train_type_2") || "สินค้า",
+            train_type_2: value("train_type_2") || "ทั่วไป",
             pass_platform_2: value("pass_platform_2") || "2",
-            train_type_3: value("train_type_3") || "สินค้า",
+            train_type_3: value("train_type_3") || "ทั่วไป",
             pass_platform_3: value("pass_platform_3") || "3",
             num_2: value("num_2"), origin_2: value("origin_2"), dest_2: value("dest_2"),
             time_2: value("time_2"), platform_2: value("platform_2"), next_2: value("next_station_2"),
@@ -1961,10 +2247,12 @@ HTML_PAGE = r"""
         preparedAudioKey = "";
         preparedAudioPromise = null;
         preparedAudioData = null;
+        if (selectedAnnouncement !== null) setAudioBuildState("preparing");
         if (prepareTimer) {
             clearTimeout(prepareTimer);
             prepareTimer = null;
         }
+        refreshPlaybackControls();
     }
 
     function requestAnnouncementData(tabIndex, background = false) {
@@ -1995,9 +2283,12 @@ HTML_PAGE = r"""
             if (preparedAudioKey === key) {
                 preparedAudioData = data;
                 preparedAudioPromise = null;
-                if (background && !isBusy) {
-                    setStatus("เสียงพร้อมประกาศ", "ok");
-                    byId("previewBox").innerHTML = "<b>เสียงพร้อมแล้ว</b><br><br>กดปุ่มเริ่มประกาศ เสียงเตือนจะดังทันที";
+                refreshPlaybackControls();
+                if (background) {
+                    setAudioBuildState("ready");
+                    renderServerPreview(data.text_preview || "-");
+                    byId("previewBox").insertAdjacentHTML("afterbegin", "<b>ตัวอย่างข้อความก่อนประกาศ</b><br><br>");
+                    if (!isBusy) setStatus("✅ เสียงพร้อมแล้ว", "ok");
                 }
             }
             return data;
@@ -2005,6 +2296,8 @@ HTML_PAGE = r"""
             if (preparedAudioKey === key) {
                 preparedAudioPromise = null;
                 preparedAudioData = null;
+                refreshPlaybackControls();
+                if (background) setAudioBuildState("error");
             }
             throw error;
         });
@@ -2019,11 +2312,16 @@ HTML_PAGE = r"""
 
         prepareTimer = setTimeout(() => {
             prepareTimer = null;
-            if (validateSelection()) return;
+            if (validateSelection()) {
+                setAudioBuildState("waiting");
+                return;
+            }
+            setAudioBuildState("preparing");
             if (!isBusy) setStatus("กำลังเตรียมเสียงล่วงหน้า...", "work");
             requestAnnouncementData(selectedAnnouncement, true).catch(error => {
                 console.warn("Background audio preparation failed:", error);
-                if (!isBusy) setStatus("พร้อมใช้งาน");
+                setAudioBuildState("error");
+                if (!isBusy) setStatus("สร้างไฟล์เสียงไม่สำเร็จ", "error");
             });
         }, delay);
     }
@@ -2039,13 +2337,39 @@ HTML_PAGE = r"""
             if (count >= 3) platforms.push(value("pass_platform_3"));
             if (new Set(platforms).size !== platforms.length) return "กรุณาเลือกชานชาลาของรถที่ผ่านแต่ละทางไม่ให้ซ้ำกัน";
         }
-        if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึง";
+        if (selectedAnnouncement === 5 && !value("delay_time")) return "กรุณาระบุเวลาที่คาดว่าจะถึงของขบวนที่ 1";
+        if (selectedAnnouncement === 5 && value("num_2") && !value("delay_time_2")) return "กรุณาระบุเวลาที่คาดว่าจะถึงของขบวนที่ 2";
+        if (selectedAnnouncement === 5 && value("num_3") && !value("delay_time_3")) return "กรุณาระบุเวลาที่คาดว่าจะถึงของขบวนที่ 3";
         if (selectedAnnouncement === 8) {
             const mode = value("announce_mode");
             if (mode !== "english_only" && !value("custom_text")) return "กรุณาพิมพ์ข้อความภาษาไทย";
             if (mode !== "thai_only" && !value("custom_text_en")) return "กรุณาพิมพ์ข้อความภาษาอังกฤษ";
         }
         if (selectedAnnouncement === 10 && !value("num_2")) return "กรุณาเลือกอย่างน้อยขบวนที่ 1 และขบวนที่ 2";
+        if (selectedAnnouncement === 13 || selectedAnnouncement === 14) {
+            const start = value("effective_from");
+            const end = value("effective_to");
+            if (start && end && end < start) return "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล";
+            if (selectedAnnouncement === 14) {
+                for (let type = 1; type <= 3; type++) {
+                    const suffix = trainSuffix(type);
+                    const number = value("num" + suffix);
+                    if (!number) continue;
+                    const oldOrigin = value("origin" + suffix);
+                    const oldDest = value("dest" + suffix);
+                    const newOrigin = value("route_origin" + suffix) || oldOrigin;
+                    const newDest = value("route_dest" + suffix) || oldDest;
+                    if (newOrigin === oldOrigin && newDest === oldDest) {
+                        return "กรุณาแก้ต้นทางหรือปลายทางใหม่ของขบวน " + number;
+                    }
+                    const suspendedFrom = value("suspended_from" + suffix);
+                    const suspendedTo = value("suspended_to" + suffix);
+                    if (Boolean(suspendedFrom) !== Boolean(suspendedTo)) {
+                        return "กรุณากรอกสถานีต้นทางและสถานีปลายทางของช่วงที่งดให้บริการให้ครบ สำหรับขบวน " + number;
+                    }
+                }
+            }
+        }
         return "";
     }
 
@@ -2064,8 +2388,12 @@ HTML_PAGE = r"""
         const stopButton = byId("stopButton");
         if (!playButton || !pauseButton || !stopButton) return;
 
-        playButton.textContent = playbackState === "paused" ? "▶ เล่นต่อ" : "▶ เริ่มประกาศ";
-        playButton.disabled = playbackState === "loading" || playbackState === "playing" || (playbackState === "idle" && selectedAnnouncement === null);
+        const selectionComplete = selectedAnnouncement !== null && !validateSelection();
+        const audioReady = Boolean(preparedAudioKey && preparedAudioData);
+        playButton.textContent = playbackState === "paused"
+            ? "▶ เล่นต่อ"
+            : (!selectionComplete ? "กรอกข้อมูลให้ครบ" : (!audioReady ? "⏳ กำลังเตรียมเสียง" : "▶ เริ่มประกาศ"));
+        playButton.disabled = playbackState === "loading" || playbackState === "playing" || (playbackState === "idle" && (!selectionComplete || !audioReady));
         pauseButton.disabled = playbackState !== "playing";
         stopButton.disabled = !["loading", "playing", "paused"].includes(playbackState);
     }
@@ -2133,7 +2461,7 @@ HTML_PAGE = r"""
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    thai_voice: value("thai_voice") || "th-TH-PremwadeeNeural",
+                    thai_voice: value("thai_voice") || "th-TH-NiwatNeural",
                     announce_mode: testMode
                 })
             });
@@ -2331,6 +2659,34 @@ HTML_PAGE = r"""
         }
     }
 
+    function waitBetweenAnnouncementRounds(milliseconds, runId = playbackRunId) {
+        return new Promise((resolve, reject) => {
+            let finished = false;
+            const timer = setTimeout(finish, milliseconds);
+
+            function cleanup() {
+                clearTimeout(timer);
+                if (activePlaybackCancel === cancelWait) activePlaybackCancel = null;
+            }
+            function finish() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                if (runId !== playbackRunId) reject(makePlaybackStoppedError());
+                else resolve();
+            }
+            function cancelWait() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                reject(makePlaybackStoppedError());
+            }
+
+            if (runId !== playbackRunId) return cancelWait();
+            activePlaybackCancel = cancelWait;
+        });
+    }
+
     async function playSelectedAnnouncement() {
         const error = validateSelection();
         if (error) {
@@ -2367,6 +2723,7 @@ HTML_PAGE = r"""
             });
 
             renderServerPreview(data.text_preview || "-");
+            setAudioBuildState("ready");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
             if (!audioUrls.length) throw new Error("ไม่พบไฟล์เสียงสำหรับประกาศ");
@@ -2375,16 +2732,25 @@ HTML_PAGE = r"""
                 try { fetch(url, { cache: "force-cache" }).catch(() => {}); } catch (e) {}
             });
 
-            for (let i = 0; i < audioUrls.length; i++) {
-                if (runId !== playbackRunId) throw makePlaybackStoppedError();
-                setStatus(`กำลังประกาศ ${audioLabels[i] || ""}`.trim(), "ok");
-                await playUrl(audioUrls[i], {
-                    errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
-                    runId
-                });
+            const repeatCount = [3, 9].includes(Number(tabIndex)) ? PASS_ANNOUNCEMENT_REPEAT_COUNT : 1;
+            for (let round = 1; round <= repeatCount; round++) {
+                for (let i = 0; i < audioUrls.length; i++) {
+                    if (runId !== playbackRunId) throw makePlaybackStoppedError();
+                    const roundText = repeatCount > 1 ? ` · รอบ ${round}/${repeatCount}` : "";
+                    setStatus(`กำลังประกาศ ${audioLabels[i] || ""}${roundText}`.trim(), "ok");
+                    await playUrl(audioUrls[i], {
+                        errorText: "มือถือบล็อกเสียงประกาศ กรุณากดปุ่มอีกครั้ง",
+                        runId
+                    });
+                }
+                if (round < repeatCount) {
+                    setPlaybackState("loading");
+                    setStatus(`จบรอบ ${round}/${repeatCount} · รอบถัดไปใน 1.8 วินาที`, "work");
+                    await waitBetweenAnnouncementRounds(PASS_ANNOUNCEMENT_GAP_MS, runId);
+                }
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
-            setStatus("ประกาศเสร็จแล้ว", "ok");
+            setStatus(repeatCount > 1 ? `ประกาศครบ ${repeatCount} รอบแล้ว` : "ประกาศเสร็จแล้ว", "ok");
             await logHistoryEvent("success");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -2408,23 +2774,50 @@ HTML_PAGE = r"""
         }
     }
 
+    async function testMainSpeaker() {
+        if (isBusy) {
+            alert("กรุณาหยุดเสียงประกาศก่อนทดสอบลำโพง");
+            return;
+        }
+        try {
+            const testAudio = new Audio("/audio/chime.mp3");
+            testAudio.volume = 1;
+            await testAudio.play();
+            setStatus("กำลังทดสอบลำโพง", "ok");
+            testAudio.addEventListener("ended", () => setStatus("ทดสอบลำโพงเรียบร้อย", "ok"), { once: true });
+        } catch (error) {
+            setStatus("ทดสอบลำโพงไม่สำเร็จ", "error");
+            alert("เล่นเสียงทดสอบไม่ได้: " + (error.message || error));
+        }
+    }
+
     function clearData() {
+        if (!confirm("ยืนยันล้างข้อมูลประกาศที่กรอกไว้ทั้งหมดหรือไม่?")) return;
         stopAudio();
         invalidatePreparedAudio();
-        ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "custom_text", "custom_text_en",
+        ["train_select", "num", "time", "origin", "dest", "next_station", "delay_time", "delay_time_2", "delay_time_3", "custom_text", "custom_text_en",
+         "effective_from", "effective_to", "disruption_reason", "disruption_reason_en",
+         "route_origin", "route_dest", "suspended_from", "suspended_to",
+         "route_origin_2", "route_dest_2", "suspended_from_2", "suspended_to_2",
+         "route_origin_3", "route_dest_3", "suspended_from_3", "suspended_to_3",
          "train_select_2", "num_2", "time_2", "origin_2", "dest_2", "next_station_2",
          "train_select_3", "num_3", "time_3", "origin_3", "dest_3", "next_station_3"].forEach(id => { if (byId(id)) byId(id).value = ""; });
         byId("platform").value = "1"; byId("pass_platform").value = "1"; byId("platform_2").value = "2"; byId("platform_3").value = "3";
-        byId("current").value = "คลองบางพระ"; byId("train_type").value = "สินค้า";
-        byId("train_type_2").value = "สินค้า"; byId("train_type_3").value = "สินค้า";
+        byId("current").value = "คลองบางพระ"; byId("train_type").value = "ทั่วไป";
+        byId("train_type_2").value = "ทั่วไป"; byId("train_type_3").value = "ทั่วไป";
         byId("pass_platform_2").value = "2"; byId("pass_platform_3").value = "3";
         resetPassTrainUI(false);
+        byId("trainPicker3").classList.add("hidden");
+        byId("train3ToggleWrap").classList.remove("hidden");
         setLanguage("thai_only", document.querySelector('[data-mode="thai_only"]'));
         selectedAnnouncement = null;
         document.querySelectorAll(".announce-option").forEach(btn => btn.classList.remove("active"));
-        ["delayFields", "passFields", "customFields"].forEach(id => byId(id).classList.remove("show"));
+        ["delayFields", "passFields", "customFields", "disruptionFields"].forEach(id => byId(id).classList.remove("show"));
+        byId("routeChangeFields").classList.add("hidden");
         refreshPlaybackControls();
         byId("selectedType").innerHTML = "<b>ยังไม่ได้เลือกประเภทประกาศ</b><br>เลือกปุ่มในขั้นตอนที่ 3 ก่อน";
+        byId("selectedType").classList.remove("is-preparing", "is-ready", "is-error");
+        byId("repeatNotice").classList.add("hidden");
         byId("previewBox").innerHTML = "<b>ตัวอย่างข้อความประกาศ</b><br><br>เมื่อกดเริ่มประกาศ ระบบจะสร้างข้อความและไฟล์เสียงตามภาษาที่เลือก";
         [1, 2, 3].forEach(refreshSummary); setStatus("พร้อมใช้งาน");
     }
@@ -2432,6 +2825,8 @@ HTML_PAGE = r"""
     // เมื่อแก้ข้อมูลหลังเลือกประเภทประกาศ ให้เตรียมเสียงชุดใหม่อัตโนมัติ
     document.querySelectorAll("input, select, textarea").forEach(element => {
         element.addEventListener("input", () => {
+            const trainDetailMatch = element.id.match(/^(num|origin|dest)(?:_([23]))?$/);
+            if (trainDetailMatch) updateDisruptionTrainVisibility(Number(trainDetailMatch[2] || 1));
             invalidatePreparedAudio();
             schedulePrepareAnnouncement();
         });
@@ -2440,6 +2835,22 @@ HTML_PAGE = r"""
             schedulePrepareAnnouncement(180);
         });
     });
+
+    // จำเสียงที่เลือกไว้ในเครื่องเดิม และใช้เสียงผู้ชายเมื่อยังไม่เคยตั้งค่า
+    try {
+        const savedVoice = localStorage.getItem("kbp_thai_voice") || "th-TH-NiwatNeural";
+        if (["th-TH-PremwadeeNeural", "th-TH-NiwatNeural"].includes(savedVoice)) {
+            byId("thai_voice").value = savedVoice;
+            document.querySelectorAll(".voice-choice-btn").forEach(button => {
+                button.classList.toggle("active", button.dataset.voice === savedVoice);
+            });
+        }
+    } catch (e) {
+        byId("thai_voice").value = "th-TH-NiwatNeural";
+        document.querySelectorAll(".voice-choice-btn").forEach(button => {
+            button.classList.toggle("active", button.dataset.voice === "th-TH-NiwatNeural");
+        });
+    }
 
     updateCustomLanguageFields();
     [1, 2, 3].forEach(refreshSummary);
@@ -2575,6 +2986,24 @@ def station(name):
     return f"สถานี{name}"
 
 
+def is_chachoengsao_terminal(name):
+    """ตรวจชื่อปลายทางชุมทางฉะเชิงเทรา แม้มีคำนำหน้าหรือเว้นวรรคต่างกัน"""
+    normalized = re.sub(r"\s+", "", str(name or "")).lower()
+    normalized = normalized.replace("สถานี", "").replace("station", "")
+    return normalized in {"ชุมทางฉะเชิงเทรา", "chachoengsaojunction"}
+
+
+def format_thai_next_stations(text):
+    """ตัดคำเชื่อมซ้ำระหว่างคลองแขวงกลั่นกับคลองเปรงในข้อความประกาศ"""
+    value = str(text or "")
+    return re.sub(
+        r"(ป้ายหยุดรถคลองแขวงกลั่น)\s+และ\s+(สถานีคลองเปรง)",
+        r"\1 \2",
+        value,
+        count=1,
+    )
+
+
 def clean_space(text):
     return " ".join((text or "").split())
 
@@ -2701,6 +3130,10 @@ def prepare_tts_text(text):
     # แยกข้อความสถานีต่อไปและคำขอโทษให้ฟังเป็นประโยคชัดเจน
     tts_text = tts_text.replace("ที่ ป้ายหยุดรถ", "ที่ป้ายหยุดรถ")
     tts_text = tts_text.replace("ที่ สถานี", "ที่สถานี")
+    tts_text = tts_text.replace(
+        "ป้ายหยุดรถคลองแขวงกลั่น สถานีคลองเปรง",
+        "ป้ายหยุดรถคลองแขวงกลั่น, สถานีคลองเปรง",
+    )
     tts_text = tts_text.replace("สถานีคลองบางพระ แล้ว", "สถานีคลองบางพระแล้ว")
     tts_text = tts_text.replace(" และ สถานี", " และสถานี")
     tts_text = tts_text.replace(" และ ป้ายหยุดรถ", " และป้ายหยุดรถ")
@@ -2720,6 +3153,10 @@ def prepare_tts_text(text):
     # คำลงท้ายควรมีจังหวะก่อนกล่าวขอบคุณ แต่ไม่เพิ่มถ้ามีเครื่องหมายอยู่แล้ว
     tts_text = re.sub(r"(?<![.!?])\s+(ขอขอบคุณในความร่วมมือ(?:ครับ|ค่ะ))$", r". \1", tts_text)
     tts_text = re.sub(r"(?<![.!?])\s+(ขอบคุณ(?:ครับ|ค่ะ))$", r". \1", tts_text)
+
+    # ปรับเฉพาะข้อความที่ส่งเข้าเสียง: ป้องกัน TTS แยกตัว บ ท้ายคำว่า “ครับ” เป็นเสียง “บอ”
+    # ข้อความตัวอย่างและประวัติยังคงสะกดทางการว่า “ครับ” ตามเดิม
+    tts_text = re.sub(r"ครับ(?=\s*[.!?]?\s*$)", "คับ", tts_text)
 
     return _normalize_punctuation_spacing(tts_text)
 
@@ -2763,6 +3200,7 @@ EN_STATION_NAMES = {
 }
 
 EN_TRAIN_TYPES = {
+    "ทั่วไป": "train",
     "สินค้า": "freight train",
     "ด่วนพิเศษ": "special express train",
     "พิเศษ": "special train",
@@ -2815,7 +3253,7 @@ def time_en(text):
 
 
 def pass_train_items(data):
-    """อ่านรายการรถสินค้า/รถพิเศษที่ผ่านพร้อมกัน สูงสุด 3 ทาง"""
+    """อ่านรายการรถที่ผ่านพร้อมกัน สูงสุด 3 ทาง"""
     try:
         count = int(data.get("pass_count", 1) or 1)
     except (TypeError, ValueError):
@@ -2826,10 +3264,10 @@ def pass_train_items(data):
     items = []
     for index in range(1, count + 1):
         suffix = "" if index == 1 else f"_{index}"
-        train_type = str(data.get(f"train_type{suffix}", "สินค้า") or "สินค้า").strip()
+        train_type = str(data.get(f"train_type{suffix}", "ทั่วไป") or "ทั่วไป").strip()
         platform = str(data.get(f"pass_platform{suffix}", "") or "").strip()
         if train_type not in allowed_types:
-            train_type = "สินค้า"
+            train_type = "ทั่วไป"
         if platform not in {"1", "2", "3"}:
             raise ValueError(f"ชานชาลาของรถผ่านทางที่ {index} ไม่ถูกต้อง")
         items.append({"train_type": train_type, "platform": platform})
@@ -2849,6 +3287,10 @@ def join_thai_platforms(platforms):
     return ", ".join(labels[:-1]) + " และ" + labels[-1]
 
 
+def thai_pass_train_name(train_type):
+    return "ขบวนรถ" if train_type == "ทั่วไป" else f"ขบวนรถ{train_type}"
+
+
 def join_english_platforms(platforms):
     labels = [f"platform {p}" for p in platforms]
     if len(labels) == 1:
@@ -2858,8 +3300,106 @@ def join_english_platforms(platforms):
     return ", ".join(labels[:-1]) + ", and " + labels[-1]
 
 
+THAI_MONTH_NAMES = [
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+]
+ENGLISH_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def format_disruption_date(value, english=False):
+    """แปลงวันที่จาก input type=date ให้อ่านเป็นวันที่ไทยหรืออังกฤษ"""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return raw
+    if english:
+        return f"{ENGLISH_MONTH_NAMES[parsed.month - 1]} {parsed.day}, {parsed.year}"
+    return f"{parsed.day} {THAI_MONTH_NAMES[parsed.month - 1]} {parsed.year + 543}"
+
+
+def disruption_period_text(data, english=False):
+    start = format_disruption_date(data.get("effective_from"), english=english)
+    end = format_disruption_date(data.get("effective_to"), english=english)
+    if start and end and end != start:
+        if english:
+            return f"from {start} through {end}"
+        return f"ตั้งแต่วันที่ {start} ถึงวันที่ {end}"
+    if start:
+        if english:
+            return f"on {start}"
+        return f"วันที่ {start}"
+    if end:
+        if english:
+            return f"through {end}"
+        return f"ถึงวันที่ {end}"
+    return ""
+
+
+def join_announcement_items(items, english=False):
+    if len(items) <= 1:
+        return items[0] if items else ""
+    conjunction = " and " if english else " และ"
+    return ", ".join(items[:-1]) + conjunction + items[-1]
+
+
+def disruption_announcement_data(data, route_change=False):
+    """ตรวจข้อมูลและรวบรวมขบวนที่เลือกไว้ สูงสุด 3 ขบวน"""
+    start = str(data.get("effective_from") or "").strip()
+    end = str(data.get("effective_to") or "").strip()
+    try:
+        if start:
+            date.fromisoformat(start)
+        if end:
+            date.fromisoformat(end)
+    except ValueError as exc:
+        raise ValueError("กรุณาตรวจสอบรูปแบบวันที่ที่ระบุ") from exc
+    if start and end and end < start:
+        raise ValueError("วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มมีผล")
+
+    trains = []
+    for suffix in ("", "_2", "_3"):
+        number = str(data.get("num" + suffix) or "").strip()
+        if not number:
+            continue
+        origin = str(data.get("origin" + suffix) or "").strip()
+        dest = str(data.get("dest" + suffix) or "").strip()
+        if not origin or not dest:
+            raise ValueError(f"ข้อมูลต้นทางหรือปลายทางของขบวน {number} ไม่ครบ")
+        route_origin = str(data.get("route_origin" + suffix) or "").strip() or origin
+        route_dest = str(data.get("route_dest" + suffix) or "").strip() or dest
+        suspended_from = str(data.get("suspended_from" + suffix) or "").strip()
+        suspended_to = str(data.get("suspended_to" + suffix) or "").strip()
+        if route_change:
+            if route_origin.casefold() == origin.casefold() and route_dest.casefold() == dest.casefold():
+                raise ValueError(f"กรุณาแก้ต้นทางหรือปลายทางใหม่ของขบวน {number}")
+            if bool(suspended_from) != bool(suspended_to):
+                raise ValueError(f"กรุณาระบุสถานีทั้งสองด้านของช่วงที่งดให้บริการ สำหรับขบวน {number}")
+        trains.append({
+            "number_th": spaced_train_number(number),
+            "number_en": train_number_en(number),
+            "origin": origin,
+            "dest": dest,
+            "time": tidy_time(str(data.get("time" + suffix) or "")),
+            "route_origin": route_origin,
+            "route_dest": route_dest,
+            "suspended_from": suspended_from,
+            "suspended_to": suspended_to,
+        })
+    if not trains:
+        raise ValueError("กรุณาเลือกขบวนรถอย่างน้อย 1 ขบวน")
+    return trains
+
+
 def build_english_announcement(data):
     idx = int(data.get("tab_index", -1))
+    is_chachoengsao_destination = is_chachoengsao_terminal(data.get("dest", ""))
 
     t_num = train_number_en(data.get("num", ""))
     origin = station_en(data.get("origin", ""))
@@ -2876,31 +3416,81 @@ def build_english_announcement(data):
     t_num_2 = train_number_en(data.get("num_2", ""))
     origin_2 = station_en(data.get("origin_2", ""))
     dest_2 = station_en(data.get("dest_2", ""))
+    t_time_2 = time_en(tidy_time(data.get("time_2", "")))
     platform_2 = data.get("platform_2", "")
     next_st_2 = next_stations_en(data.get("next_2", ""))
+    delay_2 = time_en(data.get("delay_2", ""))
 
     t_num_3 = train_number_en(data.get("num_3", ""))
     origin_3 = station_en(data.get("origin_3", ""))
     dest_3 = station_en(data.get("dest_3", ""))
+    t_time_3 = time_en(tidy_time(data.get("time_3", "")))
     platform_3 = data.get("platform_3", "")
     next_st_3 = next_stations_en(data.get("next_3", ""))
+    delay_3 = time_en(data.get("delay_3", ""))
 
     if idx == 0:
-        text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding."
+        if t_num_2 or t_num_3:
+            trains = [(t_num, origin, dest, t_time)]
+            if t_num_2:
+                trains.append((t_num_2, origin_2, dest_2, t_time_2))
+            if t_num_3:
+                trains.append((t_num_3, origin_3, dest_3, t_time_3))
+            details = " ".join(
+                f"Train number {number}, from {train_origin} to {train_dest}, is scheduled at {train_time}."
+                for number, train_origin, train_dest, train_time in trains
+            )
+            text = f"Attention please. {details} Passengers who have not yet purchased a ticket, please contact the ticket office. Please purchase your ticket before boarding for your convenience and to avoid additional fees."
+        else:
+            text = f"Attention please. Passengers traveling on train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please purchase your ticket at the ticket office before boarding for your convenience and to avoid additional fees."
     elif idx == 1:
-        text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
+        if t_num_2 or t_num_3:
+            trains = [(t_num, origin, dest, t_time, platform)]
+            if t_num_2:
+                trains.append((t_num_2, origin_2, dest_2, t_time_2, platform_2))
+            if t_num_3:
+                trains.append((t_num_3, origin_3, dest_3, t_time_3, platform_3))
+            details = " ".join(
+                f"Passengers holding tickets for train number {number}, from {train_origin} to {train_dest}, scheduled at {train_time}, please wait with your belongings on platform {train_platform}."
+                for number, train_origin, train_dest, train_time, train_platform in trains
+            )
+            text = f"Attention please. {details}"
+        else:
+            text = f"Attention please. Passengers holding tickets for train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, please wait with your belongings on platform {platform}."
     elif idx == 2:
         text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, will shortly arrive at platform {platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 3:
         text = f"Attention please. A train will shortly pass through platform {pass_platform}. For your safety, please stand behind the yellow line and do not cross the tracks."
     elif idx == 4:
+        if is_chachoengsao_destination:
+            departure_text = (
+                f"After departing {current} Station, the train will stop at {next_st or (dest + ' Station')}, "
+                f"which is the final destination of this train."
+            )
+        else:
+            departure_text = (
+                f"After departing {current} Station, the train will stop at {next_st}, "
+                f"and at all scheduled stops through to {dest} Station."
+            )
         text = (
             f"Attention please. This is {current} Station. Before leaving the train, please check all belongings you brought with you and make sure nothing is left behind. "
             f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}. "
-            f"After departing {current} Station, the train will stop at {next_st}, and at all scheduled stops through to {dest} Station."
+            f"{departure_text}"
         )
     elif idx == 5:
-        text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
+        if t_num_2 or t_num_3:
+            trains = [(t_num, origin, dest, t_time, delay)]
+            if t_num_2:
+                trains.append((t_num_2, origin_2, dest_2, t_time_2, delay_2))
+            if t_num_3:
+                trains.append((t_num_3, origin_3, dest_3, t_time_3, delay_3))
+            details = " ".join(
+                f"Train number {number}, from {train_origin} to {train_dest}, scheduled at {train_time}, is delayed and is expected to arrive at {current} Station at approximately {arrival_time}."
+                for number, train_origin, train_dest, train_time, arrival_time in trains
+            )
+            text = f"Attention please. {details} The State Railway of Thailand apologizes for the inconvenience."
+        else:
+            text = f"Attention please. Train number {t_num}, from {origin} to {dest}, scheduled at {t_time}, is delayed. The train is expected to arrive at {current} Station at approximately {delay}. The State Railway of Thailand apologizes for the inconvenience."
     elif idx == 6:
         text = f"Attention please. Train number {t_num} will shortly arrive at platform {platform}. Passengers leaving the train, please be careful."
     elif idx == 7:
@@ -2960,9 +3550,65 @@ def build_english_announcement(data):
             f"The train at platform {platform} is train number {t_num}, from {origin} to {dest}."
         )
     elif idx == 12:
+        if is_chachoengsao_destination:
+            text = (
+                f"After departing {current} Station, this train will stop at {next_st or (dest + ' Station')}, "
+                f"which is the final destination of this train."
+            )
+        else:
+            text = (
+                f"After departing {current} Station, this train will stop at {next_st}, "
+                f"and at all scheduled stops through to {dest} Station."
+            )
+    elif idx == 13:
+        trains = disruption_announcement_data(data)
+        period = disruption_period_text(data, english=True)
+        period_clause = f" {period}" if period else ""
+        details = []
+        for train in trains:
+            detail = (
+                f"train number {train['number_en']}, from "
+                f"{station_en(train['origin'])} to {station_en(train['dest'])}"
+            )
+            if train["time"]:
+                detail += f", scheduled at {time_en(train['time'])}"
+            details.append(detail)
+        reason = str(data.get("disruption_reason_en") or "").strip()
+        reason_text = f" The stated reason is {reason}." if reason else ""
         text = (
-            f"After departing {current} Station, this train will stop at {next_st}, "
-            f"and at all scheduled stops through to {dest} Station."
+            f"Attention please. The following train services are suspended{period_clause}: "
+            f"{join_announcement_items(details, english=True)}.{reason_text} "
+            "Please contact station staff for travel and ticket information. "
+            "The State Railway of Thailand apologizes for the inconvenience."
+        )
+    elif idx == 14:
+        trains = disruption_announcement_data(data, route_change=True)
+        period = disruption_period_text(data, english=True)
+        period_clause = f" take effect {period}" if period else ""
+        details = []
+        for train in trains:
+            detail = (
+                f"train number {train['number_en']}, originally from "
+                f"{station_en(train['origin'])} to {station_en(train['dest'])}, "
+                f"will now operate from {station_en(train['route_origin'])} "
+                f"to {station_en(train['route_dest'])}"
+            )
+            if train["time"]:
+                detail += f", scheduled at {time_en(train['time'])}"
+            if train["suspended_from"] and train["suspended_to"]:
+                detail += (
+                    f"; service is suspended between "
+                    f"{station_en(train['suspended_from'])} and "
+                    f"{station_en(train['suspended_to'])}"
+                )
+            details.append(detail)
+        reason = str(data.get("disruption_reason_en") or "").strip()
+        reason_text = f" The stated reason is {reason}." if reason else ""
+        text = (
+            f"Attention please. The following route changes{period_clause}: "
+            f"{join_announcement_items(details, english=True)}.{reason_text} "
+            "Please check with station staff before traveling. "
+            "The State Railway of Thailand apologizes for the inconvenience."
         )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
@@ -2974,6 +3620,7 @@ def build_english_announcement(data):
 
 def build_announcement(data):
     idx = int(data.get("tab_index", -1))
+    is_chachoengsao_destination = is_chachoengsao_terminal(data.get("dest", ""))
 
     t_num = spaced_train_number(data.get("num", ""))
     origin = data.get("origin", "")
@@ -2982,7 +3629,7 @@ def build_announcement(data):
     platform = data.get("platform", "")
     pass_platform = data.get("pass_platform") or platform
     current = data.get("current", STATION_NAME) or STATION_NAME
-    next_st = data.get("next", "")
+    next_st = format_thai_next_stations(data.get("next", ""))
     delay = data.get("delay", "")
     custom_text = data.get("custom_text", "")
     train_type = data.get("train_type", "สินค้า") or "สินค้า"
@@ -2990,35 +3637,85 @@ def build_announcement(data):
     t_num_2 = spaced_train_number(data.get("num_2", ""))
     origin_2 = data.get("origin_2", "")
     dest_2 = data.get("dest_2", "")
+    t_time_2 = tidy_time(data.get("time_2", ""))
     platform_2 = data.get("platform_2", "")
-    next_st_2 = data.get("next_2", "")
+    next_st_2 = format_thai_next_stations(data.get("next_2", ""))
+    delay_2 = data.get("delay_2", "")
 
     t_num_3 = spaced_train_number(data.get("num_3", ""))
     origin_3 = data.get("origin_3", "")
     dest_3 = data.get("dest_3", "")
+    t_time_3 = tidy_time(data.get("time_3", ""))
     platform_3 = data.get("platform_3", "")
-    next_st_3 = data.get("next_3", "")
+    next_st_3 = format_thai_next_stations(data.get("next_3", ""))
+    delay_3 = data.get("delay_3", "")
 
     if idx == 0:
-        text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว ขอบคุณครับ"
+        if t_num_2 or t_num_3:
+            trains = [(t_num, origin, dest, t_time)]
+            if t_num_2:
+                trains.append((t_num_2, origin_2, dest_2, t_time_2))
+            if t_num_3:
+                trains.append((t_num_3, origin_3, dest_3, t_time_3))
+            details = " และ".join(
+                f"ขบวนรถ ขบวนที่ {number} รับส่งผู้โดยสารต้นทาง {station(train_origin)} ปลายทาง {station(train_dest)} เที่ยวกำหนดเวลา {train_time}"
+                for number, train_origin, train_dest, train_time in trains
+            )
+            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับ {details} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว กรุณาซื้อตั๋วโดยสารให้เรียบร้อยก่อนขึ้นขบวนรถ เพื่อความสะดวกและหลีกเลี่ยงค่าธรรมเนียมเพิ่มเติม ขอบคุณครับ"
+        else:
+            text = f"โปรดทราบ ผู้โดยสารที่มีความประสงค์จะเดินทางกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ผู้โดยสารท่านใดยังไม่มีตั๋วใช้ในการโดยสาร สามารถติดต่อซื้อตั๋วโดยสารได้ที่ช่องจำหน่ายตั๋ว กรุณาซื้อตั๋วโดยสารให้เรียบร้อยก่อนขึ้นขบวนรถ เพื่อความสะดวกและหลีกเลี่ยงค่าธรรมเนียมเพิ่มเติม ขอบคุณครับ"
     elif idx == 1:
-        text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
+        if t_num_2 or t_num_3:
+            trains = [(t_num, origin, dest, t_time, platform)]
+            if t_num_2:
+                trains.append((t_num_2, origin_2, dest_2, t_time_2, platform_2))
+            if t_num_3:
+                trains.append((t_num_3, origin_3, dest_3, t_time_3, platform_3))
+            details = " และ".join(
+                f"ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {number} รับส่งผู้โดยสารต้นทาง {station(train_origin)} ปลายทาง {station(train_dest)} เที่ยวกำหนดเวลา {train_time} ขอให้นำสิ่งของและสัมภาระไปรอรับการโดยสารในชานชาลาที่ {train_platform}"
+                for number, train_origin, train_dest, train_time, train_platform in trains
+            )
+            text = f"โปรดทราบ {details} ขอบคุณครับ"
+        else:
+            text = f"โปรดทราบ ผู้โดยสารที่มีตั๋วใช้ในการโดยสารกับขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ขอให้ผู้โดยสารนำสิ่งของและสัมภาระของท่าน ไปรอรับการโดยสารในชานชาลาที่ {platform} ขอบคุณครับ"
     elif idx == 2:
         text = f"โปรดทราบ อีกสักครู่ ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} กำลังจะเข้าเทียบสถานีในชานชาลาที่ {platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {platform} ขอบคุณครับ"
     elif idx == 3:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถวิ่งผ่านสถานี บริเวณชานชาลาที่ {pass_platform} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา และไม่เดินข้ามไปมา ระหว่างชานชาลาที่ {pass_platform} ขอบคุณครับ"
     elif idx == 4:
+        if is_chachoengsao_destination:
+            terminal_stops = next_st or station(dest)
+            departure_text = (
+                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {terminal_stops} "
+                f"ซึ่งเป็นสถานีปลายทางของขบวนรถ ขอบคุณครับ"
+            )
+        else:
+            departure_text = (
+                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+                f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+            )
         text = (
             f"โปรดทราบ ที่นี่{station(current)} ที่นี่{station(current)} "
             f"ผู้โดยสารก่อนลงจากขบวนรถ โปรดตรวจสอบสิ่งของและสัมภาระที่นำติดตัวมา "
             f"นำลงให้ครบถ้วนและถูกต้อง "
             f"ขบวนรถที่จอดเทียบในชานชาลาที่ {platform} เป็นขบวนรถ ขบวนที่ {t_num} "
             f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} "
-            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
-            f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+            f"{departure_text}"
         )
     elif idx == 5:
-        text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
+        if t_num_2 or t_num_3:
+            trains = [(t_num, origin, dest, t_time, delay)]
+            if t_num_2:
+                trains.append((t_num_2, origin_2, dest_2, t_time_2, delay_2))
+            if t_num_3:
+                trains.append((t_num_3, origin_3, dest_3, t_time_3, delay_3))
+            details = " และ".join(
+                f"ขบวนรถ ขบวนที่ {number} รับส่งผู้โดยสารต้นทาง {station(train_origin)} ปลายทาง {station(train_dest)} เที่ยวกำหนดเวลา {train_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {arrival_time}"
+                for number, train_origin, train_dest, train_time, arrival_time in trains
+            )
+            text = f"โปรดทราบ วันนี้ {details} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
+        else:
+            text = f"โปรดทราบ วันนี้ขบวนรถ ขบวนที่ {t_num} รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} เที่ยวกำหนดเวลา {t_time} ล่าช้ากว่ากำหนดเวลาเดิม คาดว่าจะถึง{station(current)} ได้ในเวลาโดยประมาณ {delay} ในนามของการรถไฟแห่งประเทศไทย ต้องขออภัยในความไม่สะดวกในครั้งนี้ ขอบคุณครับ"
     elif idx == 6:
         text = f"โปรดทราบ อีกสักครู่จะมีขบวนรถ ขบวนที่ {t_num} เข้าเทียบในชานชาลาที่ {platform} ผู้โดยสารที่ลงจากขบวนรถ โปรดระมัดระวังด้วยครับ ขอบคุณครับ"
     elif idx == 7:
@@ -3032,20 +3729,20 @@ def build_announcement(data):
         if len(pass_items) == 1:
             item = pass_items[0]
             text = (
-                f"โปรดทราบ อีกซักครู่จะมีขบวนรถ{item['train_type']}วิ่งผ่านสถานี "
+                f"โปรดทราบ อีกซักครู่จะมี{thai_pass_train_name(item['train_type'])}วิ่งผ่านสถานี "
                 f"บริเวณ{platforms_text} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา "
                 f"และไม่เดินข้ามผ่านไปมาระหว่าง{platforms_text} ขอบคุณครับ"
             )
         elif len({item["train_type"] for item in pass_items}) == 1:
             train_type_name = pass_items[0]["train_type"]
             text = (
-                f"โปรดทราบ อีกซักครู่จะมีขบวนรถ{train_type_name}วิ่งผ่านสถานีพร้อมกัน "
+                f"โปรดทราบ อีกซักครู่จะมี{thai_pass_train_name(train_type_name)}วิ่งผ่านสถานีพร้อมกัน "
                 f"บริเวณ{platforms_text} เพื่อความปลอดภัย กรุณายืนหลังเส้นสีเหลืองขอบชานชาลา "
                 f"และไม่เดินข้ามผ่านไปมาระหว่าง{platforms_text} ขอบคุณครับ"
             )
         else:
             details = [
-                f"ขบวนรถ{item['train_type']}บริเวณชานชาลาที่ {item['platform']}"
+                f"{thai_pass_train_name(item['train_type'])}บริเวณชานชาลาที่ {item['platform']}"
                 for item in pass_items
             ]
             if len(details) == 2:
@@ -3082,9 +3779,65 @@ def build_announcement(data):
             f"รับส่งผู้โดยสารต้นทาง {station(origin)} ปลายทาง {station(dest)} ครับ"
         )
     elif idx == 12:
+        if is_chachoengsao_destination:
+            terminal_stops = next_st or station(dest)
+            text = (
+                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {terminal_stops} "
+                f"ซึ่งเป็นสถานีปลายทางของขบวนรถ ขอบคุณครับ"
+            )
+        else:
+            text = (
+                f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
+                f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+            )
+    elif idx == 13:
+        trains = disruption_announcement_data(data)
+        period = disruption_period_text(data)
+        period_clause = f" {period}" if period else ""
+        details = []
+        for train in trains:
+            detail = (
+                f"ขบวนที่ {train['number_th']} เส้นทางจาก "
+                f"{station(train['origin'])} ถึง {station(train['dest'])}"
+            )
+            if train["time"]:
+                detail += f" เที่ยวเวลา {train['time']}"
+            details.append(detail)
+        reason = str(data.get("disruption_reason") or "").strip()
+        reason_text = f" เนื่องจาก{reason}" if reason else ""
         text = (
-            f"ขบวนรถเที่ยวนี้ เมื่อออกจาก{station(current)}แล้ว จะหยุดรับส่งผู้โดยสารที่ {next_st} "
-            f"และทุกสถานีตลอดปลายทาง{station(dest)} ขอบคุณครับ"
+            f"ผู้โดยสารโปรดทราบ การรถไฟฯ งดให้บริการขบวนรถ{period_clause} ได้แก่ "
+            f"{join_announcement_items(details)}.{reason_text} "
+            "ผู้โดยสารโปรดสอบถามเจ้าหน้าที่สถานีเกี่ยวกับการเดินทางและเงื่อนไขตั๋วโดยสาร "
+            "การรถไฟฯ ขออภัยในความไม่สะดวก ขอบคุณครับ"
+        )
+    elif idx == 14:
+        trains = disruption_announcement_data(data, route_change=True)
+        period = disruption_period_text(data)
+        period_clause = f"มีผล{period}" if period else ""
+        details = []
+        for train in trains:
+            detail = (
+                f"ขบวนที่ {train['number_th']} เดิมเดินทางจาก "
+                f"{station(train['origin'])} ถึง {station(train['dest'])} "
+                f"ปรับเปลี่ยนเป็นให้บริการจาก {station(train['route_origin'])} "
+                f"ถึง {station(train['route_dest'])}"
+            )
+            if train["time"]:
+                detail += f" เที่ยวเวลา {train['time']}"
+            if train["suspended_from"] and train["suspended_to"]:
+                detail += (
+                    f" และงดให้บริการช่วง {station(train['suspended_from'])} "
+                    f"ถึง {station(train['suspended_to'])}"
+                )
+            details.append(detail)
+        reason = str(data.get("disruption_reason") or "").strip()
+        reason_text = f" เนื่องจาก{reason}" if reason else ""
+        text = (
+            f"ผู้โดยสารโปรดทราบ การปรับเปลี่ยนเส้นทางขบวนรถ{period_clause} ได้แก่ "
+            f"{join_announcement_items(details)}.{reason_text} "
+            "โปรดตรวจสอบข้อมูลกับเจ้าหน้าที่สถานีก่อนเดินทาง "
+            "การรถไฟฯ ขออภัยในความไม่สะดวก ขอบคุณครับ"
         )
     else:
         raise ValueError("ไม่พบประเภทประกาศที่เลือก")
