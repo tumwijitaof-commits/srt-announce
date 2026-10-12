@@ -3274,6 +3274,7 @@ def generate_cloudflare_cached_audio(segment):
         }, ensure_ascii=False).encode("utf-8")
         req = UrlRequest(CLOUDFLARE_TTS_URL, data=data, method="POST", headers={
             "Content-Type": "application/json", "Authorization": "Bearer " + TTS_SHARED_SECRET,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
         })
         try:
             with urlopen(req, timeout=43) as reply:
