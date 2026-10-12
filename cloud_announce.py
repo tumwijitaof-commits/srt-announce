@@ -17,6 +17,8 @@ except ImportError:
 import csv
 import io
 import shutil
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import HTTPError, URLError
 from datetime import datetime, date, time as dt_time, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -108,6 +110,13 @@ AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60
 # Windows Edge TTS bridge: does not alter voices, text or speed.
 STATION_AGENT_TOKEN = os.environ.get("STATION_AGENT_TOKEN", "").strip()
 WINDOWS_TTS_MODE = bool(STATION_AGENT_TOKEN)
+
+# Optional Cloudflare voice generator, enabled only when both variables are set on Render.
+# All pronunciation, politeness, numbers, voice and cadence preparation still happen here.
+CLOUDFLARE_TTS_URL = os.environ.get("CLOUDFLARE_TTS_URL", "").strip()
+TTS_SHARED_SECRET = os.environ.get("TTS_SHARED_SECRET", "").strip()
+CLOUDFLARE_TTS_MODE = bool(CLOUDFLARE_TTS_URL and TTS_SHARED_SECRET)
+
 
 
 # ------------------------------------------------------------
@@ -1002,11 +1011,25 @@ def backend_health_checks():
     disk = shutil.disk_usage(BASE_DIR)
     used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0
     audio_writable = os.access(AUDIO_DIR, os.W_OK)
-    tts_available = bool(WINDOWS_TTS_MODE) or shutil.which("edge-tts") is not None
+    tts_available = bool(WINDOWS_TTS_MODE or CLOUDFLARE_TTS_MODE) or shutil.which("edge-tts") is not None
     tts_connected = False
     tts_detail = "ไม่พบโปรแกรม edge-tts"
     now_ts = time.time()
-    if WINDOWS_TTS_MODE:
+    if CLOUDFLARE_TTS_MODE:
+        # This tests that the worker responds; only an MP3 test proves synthesis works.
+        if now_ts - _HEALTH_CACHE["at"] > 60 or _HEALTH_CACHE["tts"] is None:
+            try:
+                health_url = CLOUDFLARE_TTS_URL.removesuffix("/api/tts") + "/health"
+                with urlopen(UrlRequest(health_url, method="GET"), timeout=5) as reply:
+                    ok = reply.status == 200 and json.loads(reply.read(512).decode("utf-8")).get("status") == "ok"
+                _HEALTH_CACHE["tts"] = (ok, "" if ok else "Cloudflare health ไม่พร้อม")
+            except Exception as exc:
+                _HEALTH_CACHE["tts"] = (False, type(exc).__name__)
+            _HEALTH_CACHE["at"] = now_ts
+        tts_connected, issue = _HEALTH_CACHE["tts"]
+        tts_detail = ("Cloudflare Worker ตอบสนอง · ต้องลองสร้าง MP3 เพื่อยืนยันเสียง" if tts_connected
+                      else "Cloudflare Worker ไม่ตอบสนอง: " + issue)
+    elif WINDOWS_TTS_MODE:
         tts_connected = _station_agent_online()
         tts_detail = "คอมสถานีเชื่อมต่อแล้ว" if tts_connected else "คอมสถานียังไม่เชื่อมต่อ - เปิด Windows Agent"
     elif tts_available:
@@ -1289,7 +1312,7 @@ def _initialize_database_at_startup():
     for attempt in range(POSTGRES_CONNECT_RETRIES if USE_POSTGRES else 1):
         try:
             init_database()
-            if WINDOWS_TTS_MODE:
+            if WINDOWS_TTS_MODE or CLOUDFLARE_TTS_MODE:
                 init_station_tts_database()
             print("Database initialization completed.", flush=True)
             return True
@@ -3229,8 +3252,72 @@ def generate_cached_audio(segment):
     return filename
 
 
+def generate_cloudflare_cached_audio(segment):
+    """Keep original text-preparation and cache key; only outsource MP3 synthesis."""
+    from urllib.parse import urlparse
+    address = urlparse(CLOUDFLARE_TTS_URL)
+    if address.scheme != "https" or not address.hostname or address.path != "/api/tts":
+        raise RuntimeError("CLOUDFLARE_TTS_URL ต้องเป็น HTTPS และลงท้าย /api/tts")
+    speech_text, cache_key, filename = _station_segment_details(segment)
+    if not speech_text.strip():
+        raise ValueError("ไม่มีข้อความสำหรับสร้างเสียง")
+    with _cache_lock(cache_key):
+        # Audio already made (including previous Windows Agent recordings): reuse it.
+        with get_db() as conn:
+            row = conn.execute("SELECT mp3 FROM station_tts_jobs WHERE cache_key=? AND state='complete'",(cache_key,)).fetchone()
+        if row is not None and row["mp3"] is not None:
+            return filename
+
+        data = json.dumps({
+            "text": speech_text, "voice": segment["voice"],
+            "rate": segment["rate"], "volume": segment["volume"], "pitch": segment["pitch"],
+        }, ensure_ascii=False).encode("utf-8")
+        req = UrlRequest(CLOUDFLARE_TTS_URL, data=data, method="POST", headers={
+            "Content-Type": "application/json", "Authorization": "Bearer " + TTS_SHARED_SECRET,
+        })
+        try:
+            with urlopen(req, timeout=43) as reply:
+                if reply.status != 200 or not reply.headers.get("Content-Type", "").lower().startswith("audio/mpeg"):
+                    raise RuntimeError("Cloudflare ส่งผลลัพธ์ที่ไม่ใช่ MP3")
+                sound = reply.read(5*1024*1024+1)
+        except HTTPError as exc:
+            error_info = exc.read(300).decode("utf-8", "replace")
+            raise RuntimeError(f"Cloudflare TTS HTTP {exc.code}: {error_info}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise RuntimeError(f"ติดต่อ Cloudflare TTS ไม่สำเร็จ: {exc}") from exc
+
+        if (len(sound)<200 or len(sound)>5*1024*1024 or
+                not (sound[:3] == b"ID3" or (sound[0] == 0xff and (sound[1] & 0xe0) == 0xe0))):
+            raise RuntimeError("Cloudflare ไม่ได้ส่งไฟล์ MP3 ที่สมบูรณ์")
+
+        now = _station_utc()
+        with get_db() as conn:
+            conn.execute("""INSERT INTO station_tts_jobs
+                (id,cache_key,filename,speech_text,voice,rate,volume,pitch,state,mp3,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(cache_key) DO UPDATE SET state='complete',mp3=excluded.mp3,
+                    error=NULL,worker_id=NULL,lease_until=NULL,updated_at=excluded.updated_at""",
+                (uuid.uuid4().hex,cache_key,filename,speech_text,segment["voice"],
+                 segment["rate"],segment["volume"],segment["pitch"],"complete",sound,now,now))
+        # Optional local copy for serving; database remains authoritative across Render workers.
+        try:
+            temp_path = AUDIO_DIR / ("cf_tmp_" + uuid.uuid4().hex + ".mp3")
+            temp_path.write_bytes(sound)
+            os.replace(temp_path,AUDIO_DIR / filename)
+        except OSError:
+            pass
+    return filename
+
+
 def generate_audio_segments(segments):
-    """Use exact original TTS settings; synthesize via paired Windows when enabled."""
+    """Use original prepared speech data; Cloudflare mode has priority when configured."""
+    if CLOUDFLARE_TTS_MODE:
+        if not segments:
+            return []
+        if len(segments) == 1:
+            return [generate_cloudflare_cached_audio(segments[0])]
+        with ThreadPoolExecutor(max_workers=min(2, len(segments))) as executor:
+            return list(executor.map(generate_cloudflare_cached_audio, segments))
     if WINDOWS_TTS_MODE:
         return _station_generate_segments(segments)
     """สร้างไทยและอังกฤษพร้อมกัน ลดเวลาของโหมดสองภาษาเกือบครึ่งหนึ่ง"""
@@ -4550,7 +4637,7 @@ def serve_audio(filename):
         return send_from_directory(BASE_DIR, CHIME_FILENAME, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
     # In station agent mode, read MP3 from Supabase so any Render worker can serve it.
-    if WINDOWS_TTS_MODE and re.fullmatch(r"announce_cache_(?:th|en|th_test|en_test)_[a-f0-9]{28}\.mp3", filename):
+    if (WINDOWS_TTS_MODE or CLOUDFLARE_TTS_MODE) and re.fullmatch(r"announce_cache_(?:th|en|th_test|en_test)_[a-f0-9]{28}\.mp3", filename):
         with get_db() as conn:
             row = conn.execute("""SELECT mp3 FROM station_tts_jobs
                  WHERE filename=? AND state='complete'""",(filename,)).fetchone()
