@@ -4,6 +4,9 @@ from pathlib import Path
 import os
 import subprocess
 import logging
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from xml.sax.saxutils import escape, quoteattr
 import json
 import time
 import uuid
@@ -999,11 +1002,17 @@ def backend_health_checks():
     disk = shutil.disk_usage(BASE_DIR)
     used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0
     audio_writable = os.access(AUDIO_DIR, os.W_OK)
-    tts_available = shutil.which("edge-tts") is not None
+    edge_available = shutil.which("edge-tts") is not None
+    gtts_available = shutil.which("gtts-cli") is not None
+    azure_ready = _azure_configured()
+    tts_available = (edge_available if TTS_PROVIDER == "edge" else
+                     gtts_available if TTS_PROVIDER == "gtts" else
+                     azure_ready if TTS_PROVIDER == "azure" else
+                     edge_available or gtts_available or azure_ready)
     tts_connected = False
-    tts_detail = "ไม่พบโปรแกรม edge-tts"
+    tts_detail = "ยังไม่ได้ตั้งค่าหรือติดตั้งผู้ให้บริการสร้างเสียง"
     now_ts = time.time()
-    if tts_available:
+    if edge_available and TTS_PROVIDER in {"edge", "auto"}:
         if now_ts - _HEALTH_CACHE["at"] > 60 or _HEALTH_CACHE["tts"] is None:
             try:
                 result = subprocess.run(
@@ -1015,7 +1024,17 @@ def backend_health_checks():
                 _HEALTH_CACHE["tts"] = (False, str(exc))
             _HEALTH_CACHE["at"] = now_ts
         tts_connected, error = _HEALTH_CACHE["tts"]
-        tts_detail = "เชื่อมต่อและเรียกรายการเสียงได้" if tts_connected else (error or "เชื่อมต่อ TTS ไม่สำเร็จ")
+        tts_detail = "เรียกรายการเสียง Edge ได้ (ยังไม่ได้ทดสอบสร้างเสียงจริง)" if tts_connected else (error or "Edge TTS เชื่อมต่อไม่สำเร็จ")
+    if TTS_PROVIDER == "gtts":
+        tts_connected = gtts_available
+        tts_detail = "gTTS สำรองติดตั้งแล้ว · ยังไม่ได้ยืนยันการเชื่อมต่อภายนอก" if tts_connected else "ยังไม่ได้ติดตั้ง gTTS"
+    elif TTS_PROVIDER == "azure":
+        tts_connected = azure_ready
+        tts_detail = "ตั้งค่า Azure Speech แล้ว · ยังไม่ได้ยืนยัน key และการสร้างเสียง" if tts_connected else "ยังไม่ตั้งค่า AZURE_SPEECH_KEY / AZURE_SPEECH_REGION"
+    elif TTS_PROVIDER == "auto" and (azure_ready or gtts_available):
+        tts_connected = tts_connected or azure_ready or gtts_available
+        fallback_names = ("Azure Speech, " if azure_ready else "") + ("gTTS" if gtts_available else "")
+        tts_detail += f" · มีผู้ให้บริการสำรอง: {fallback_names} (ยังไม่ได้ทดสอบสร้างเสียงจริง)"
 
     database_ok = False
     database_detail = ""
@@ -2189,6 +2208,14 @@ HTML_PAGE = r"""
         byId("previewBox").innerHTML = safe;
     }
 
+    function appendProviderWarning(data) {
+        const providers = data?.tts_providers || [];
+        if (providers.includes("gtts")) {
+            byId("previewBox").insertAdjacentHTML("afterbegin",
+                '<div style="padding:10px; margin-bottom:10px; border:1px solid #d49e4a; border-radius:10px; background:#fff1cb; color:#704f00">⚠️ กำลังใช้เสียงสำรอง gTTS: เพศเสียง ความเร็ว และจังหวะอาจไม่ตรงกับที่เลือก กรุณาทดลองฟังก่อนประกาศจริง</div>');
+        }
+    }
+
     function setAudioBuildState(state) {
         const box = byId("selectedType");
         if (!box || selectedAnnouncement === null) return;
@@ -2288,6 +2315,7 @@ HTML_PAGE = r"""
                 if (background) {
                     setAudioBuildState("ready");
                     renderServerPreview(data.text_preview || "-");
+                    appendProviderWarning(data);
                     byId("previewBox").insertAdjacentHTML("afterbegin", "<b>ตัวอย่างข้อความก่อนประกาศ</b><br><br>");
                     if (!isBusy) setStatus("✅ เสียงพร้อมแล้ว", "ok");
                 }
@@ -2482,6 +2510,7 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             renderServerPreview(data.text_preview || "-");
+            appendProviderWarning(data);
             setStatus("ทดสอบเสียงเสร็จแล้ว", "ok");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -2725,6 +2754,7 @@ HTML_PAGE = r"""
             });
 
             renderServerPreview(data.text_preview || "-");
+            appendProviderWarning(data);
             setAudioBuildState("ready");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
@@ -2897,86 +2927,184 @@ def _cache_lock(cache_key):
         return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
 
 
+# เสียงหลัก/เสียงสำรอง (ตัวเลือก: auto, edge, azure, gtts)
+# auto: ใช้ Azure เป็นหลักถ้าตั้งค่าไว้ มิฉะนั้นลอง Edge แล้วเปลี่ยนเป็น gTTS เมื่อมีปัญหา
+# gTTS ใช้บริการ Google Translate แบบไม่เป็นทางการ เสียงชาย/หญิงปรับไม่ได้
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "auto").strip().lower()
+if TTS_PROVIDER not in {"auto", "edge", "azure", "gtts"}:
+    TTS_PROVIDER = "auto"
+_EDGE_BLOCKED_LOCK = threading.Lock()
+_EDGE_BLOCKED_UNTIL = 0.0
+
+
+def _azure_configured():
+    return bool(os.environ.get("AZURE_SPEECH_KEY") and os.environ.get("AZURE_SPEECH_REGION"))
+
+
+def _audio_provider_order():
+    if TTS_PROVIDER == "edge":
+        return ["edge"]
+    if TTS_PROVIDER == "gtts":
+        return ["gtts"]
+    if TTS_PROVIDER == "azure":
+        return ["azure"]
+    if _azure_configured():
+        return ["azure", "edge", "gtts"]
+    return ["edge", "gtts"]
+
+
+def _audio_provider_for_filename(filename):
+    if filename.endswith("_gtts.mp3"):
+        return "gtts"
+    if filename.endswith("_azure.mp3"):
+        return "azure"
+    return "edge"
+
+
+def _edge_is_blocked():
+    with _EDGE_BLOCKED_LOCK:
+        return time.monotonic() < _EDGE_BLOCKED_UNTIL
+
+
+def _synthesize_edge(segment, text, path):
+    global _EDGE_BLOCKED_UNTIL
+    command = [
+        "edge-tts", f"--voice={segment['voice']}",
+        f"--rate={segment['rate']}", f"--volume={segment['volume']}",
+        f"--pitch={segment['pitch']}", "--text", text,
+        "--write-media", str(path),
+    ]
+    for attempt in range(2):
+        try:
+            subprocess.run(
+                command, check=True, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=25,
+            )
+            return
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            app.logger.warning("Edge TTS error: %s", detail[-1500:])
+            if "403" in detail or "Forbidden" in detail:
+                with _EDGE_BLOCKED_LOCK:
+                    _EDGE_BLOCKED_UNTIL = time.monotonic() + 600
+                raise RuntimeError("Edge TTS 403 Forbidden") from exc
+            if attempt == 1:
+                raise RuntimeError("Edge TTS ไม่สำเร็จ: " + detail[-250:]) from exc
+        except subprocess.TimeoutExpired as exc:
+            app.logger.warning("Edge TTS timed out (attempt %s)", attempt + 1)
+            if attempt == 1:
+                raise RuntimeError("Edge TTS ใช้เวลานานเกินไป") from exc
+        if attempt == 0:
+            time.sleep(0.5)
+
+
+def _synthesize_azure(segment, text, path):
+    key = os.environ.get("AZURE_SPEECH_KEY", "").strip()
+    region = os.environ.get("AZURE_SPEECH_REGION", "").strip().lower()
+    if not key or not region:
+        raise RuntimeError("ยังไม่ได้กำหนด AZURE_SPEECH_KEY และ AZURE_SPEECH_REGION ใน Render")
+    if not re.fullmatch(r"[a-z0-9-]{2,40}", region):
+        raise RuntimeError("AZURE_SPEECH_REGION ไม่ถูกต้อง")
+    language = "th-TH" if segment["voice"].startswith("th-") else "en-US"
+    ssml = (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        f'xml:lang="{language}">'
+        f'<voice name={quoteattr(segment["voice"])}>'
+        f'<prosody rate={quoteattr(segment["rate"])} '
+        f'volume={quoteattr(segment["volume"])} '
+        f'pitch={quoteattr(segment["pitch"])}>'
+        f'{escape(text)}</prosody></voice></speak>'
+    )
+    req = Request(
+        f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
+        data=ssml.encode("utf-8"), method="POST",
+        headers={
+            "Ocp-Apim-Subscription-Key": key,
+            "Content-Type": "application/ssml+xml; charset=utf-8",
+            "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
+            "User-Agent": "BangphraStationPA/1.0",
+        },
+    )
+    try:
+        with urlopen(req, timeout=25) as response:
+            audio = response.read()
+    except HTTPError as exc:
+        # ไม่บันทึก URL พร้อม key และไม่แสดงข้อมูลลับต่อผู้ใช้
+        raise RuntimeError(f"Azure Speech ส่ง HTTP {exc.code} กรุณาตรวจสอบ key/region/quota") from exc
+    except (URLError, TimeoutError) as exc:
+        raise RuntimeError("เชื่อมต่อ Azure Speech ไม่สำเร็จหรือหมดเวลา") from exc
+    if len(audio) < 100:
+        raise RuntimeError("Azure Speech ส่งไฟล์เสียงว่างหรือสั้นผิดปกติ")
+    path.write_bytes(audio)
+
+
+def _synthesize_gtts(segment, text, path):
+    """ทางเลือกฉุกเฉิน ไม่ต้องใช้ API Key แต่ไม่รับประกันเพศเสียงหรือความเสถียร"""
+    if not shutil.which("gtts-cli"):
+        raise RuntimeError("ยังไม่ได้ติดตั้ง gTTS โปรดเพิ่ม gTTS ใน requirements.txt")
+    lang = "th" if segment["voice"].startswith("th-") else "en"
+    try:
+        subprocess.run(
+            ["gtts-cli", "--lang", lang, "--output", str(path), text],
+            check=True, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=35,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError("gTTS สำรองไม่สำเร็จ: " + detail[-250:]) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("gTTS สำรองใช้เวลานานเกินไป") from exc
+
+
 def generate_cached_audio(segment):
-    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
+    """Cache แยกตามผู้ให้บริการ ป้องกันเสียงสำรองค้างทับเสียงต้นฉบับ"""
     prepare_func = segment.get("prepare") or (lambda value: value)
     tts_text = prepare_func(segment.get("text", ""))
     cache_payload = json.dumps(
-        {
-            "voice": segment["voice"],
-            "rate": segment["rate"],
-            "volume": segment["volume"],
-            "pitch": segment["pitch"],
-            "text": tts_text,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
+        {"voice": segment["voice"], "rate": segment["rate"],
+         "volume": segment["volume"], "pitch": segment["pitch"], "text": tts_text},
+        ensure_ascii=False, sort_keys=True,
     )
     cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:28]
-    filename = f"announce_cache_{segment['code']}_{cache_key}.mp3"
-    output_path = AUDIO_DIR / filename
-
-    if output_path.exists() and output_path.stat().st_size > 0:
-        try:
-            os.utime(output_path, None)
-        except OSError:
-            pass
-        return filename
-
+    base = f"announce_cache_{segment['code']}_{cache_key}"
     lock = _cache_lock(cache_key)
     with lock:
-        if output_path.exists() and output_path.stat().st_size > 0:
-            try:
-                os.utime(output_path, None)
-            except OSError:
-                pass
-            return filename
-
-        temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
-        try:
-            command = [
-                "edge-tts",
-                f"--voice={segment['voice']}",
-                f"--rate={segment['rate']}",
-                f"--volume={segment['volume']}",
-                f"--pitch={segment['pitch']}",
-                "--text", tts_text,
-                "--write-media", str(temp_path),
-            ]
-            # Retry only transient failures; permanent 403 responses need a provider fix.
-            for attempt in range(2):
+        errors = []
+        for provider in _audio_provider_order():
+            if provider == "edge" and _edge_is_blocked():
+                errors.append("Edge: ปิดการลองชั่วคราวหลังถูกปฏิเสธ 403")
+                continue
+            suffix = "" if provider == "edge" else f"_{provider}"
+            filename = f"{base}{suffix}.mp3"
+            output_path = AUDIO_DIR / filename
+            if output_path.exists() and output_path.stat().st_size > 0:
                 try:
-                    subprocess.run(
-                        command, check=True, capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=55,
-                    )
-                    break
-                except subprocess.CalledProcessError as exc:
-                    detail = (exc.stderr or exc.stdout or str(exc)).strip()
-                    app.logger.error(
-                        "TTS failure: voice=%s attempt=%s error=%s",
-                        segment["voice"], attempt + 1, detail[-2500:],
-                    )
-                    if "403" in detail or "Forbidden" in detail:
-                        raise RuntimeError(
-                            "Microsoft Edge TTS ปฏิเสธการเชื่อมต่อ (403). "
-                            "กรุณาตรวจสอบผู้ให้บริการเสียงหรือใช้ TTS สำรอง"
-                        ) from exc
-                    if attempt == 1:
-                        raise RuntimeError("สร้างเสียงไม่สำเร็จ: " + detail[-450:]) from exc
-                    time.sleep(1.5)
-                except subprocess.TimeoutExpired as exc:
-                    app.logger.error("TTS timeout: voice=%s attempt=%s", segment["voice"], attempt + 1)
-                    if attempt == 1:
-                        raise RuntimeError("เชื่อมต่อบริการสร้างเสียงนานเกิน 55 วินาที") from exc
-                    time.sleep(1.5)
-            if not temp_path.exists() or temp_path.stat().st_size == 0:
-                raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
-            os.replace(temp_path, output_path)
-        finally:
-            temp_path.unlink(missing_ok=True)
+                    os.utime(output_path, None)
+                except OSError:
+                    pass
+                return filename
 
-    return filename
+            temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
+            try:
+                if provider == "edge":
+                    _synthesize_edge(segment, tts_text, temp_path)
+                elif provider == "azure":
+                    _synthesize_azure(segment, tts_text, temp_path)
+                else:
+                    _synthesize_gtts(segment, tts_text, temp_path)
+
+                if not temp_path.exists() or temp_path.stat().st_size < 100:
+                    raise RuntimeError("ไฟล์ MP3 ไม่ถูกสร้างหรือมีขนาดเล็กผิดปกติ")
+                os.replace(temp_path, output_path)
+                app.logger.info("TTS generated with provider=%s voice=%s", provider, segment["voice"])
+                return filename
+            except Exception as exc:
+                errors.append(f"{provider}: {str(exc)[:220]}")
+                app.logger.warning("TTS provider failed: provider=%s error=%s", provider, str(exc)[:300])
+            finally:
+                temp_path.unlink(missing_ok=True)
+
+    raise RuntimeError("บริการสร้างเสียงทุกช่องทางไม่สำเร็จ: " + " | ".join(errors)[-850:])
 
 
 def generate_audio_segments(segments):
@@ -4370,6 +4498,7 @@ def test_station_voice():
         "audio_url": audio_urls[0] if audio_urls else "",
         "audio_urls": audio_urls,
         "audio_labels": audio_labels,
+        "tts_providers": [_audio_provider_for_filename(f) for f in filenames],
         "text_preview": preview,
         "thai_voice": thai_voice,
         "english_voice": english_voice,
@@ -4484,6 +4613,7 @@ def announce():
         "audio_url": audio_urls[0],
         "audio_urls": audio_urls,
         "audio_labels": audio_labels,
+        "tts_providers": [_audio_provider_for_filename(f) for f in filenames],
         "announce_mode": mode,
         "text_preview": preview,
         "generation_ms": int((time.perf_counter() - generation_started) * 1000),
