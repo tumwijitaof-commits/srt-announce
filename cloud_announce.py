@@ -105,6 +105,10 @@ _AUDIO_CLEANUP_LOCK = threading.Lock()
 _LAST_AUDIO_CLEANUP = 0.0
 AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60))
 
+# Windows Edge TTS bridge: does not alter voices, text or speed.
+STATION_AGENT_TOKEN = os.environ.get("STATION_AGENT_TOKEN", "").strip()
+WINDOWS_TTS_MODE = bool(STATION_AGENT_TOKEN)
+
 
 # ------------------------------------------------------------
 # ฐานข้อมูลตารางเดินรถ สถานีคลองบางพระ
@@ -998,11 +1002,14 @@ def backend_health_checks():
     disk = shutil.disk_usage(BASE_DIR)
     used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0
     audio_writable = os.access(AUDIO_DIR, os.W_OK)
-    tts_available = shutil.which("edge-tts") is not None
+    tts_available = bool(WINDOWS_TTS_MODE) or shutil.which("edge-tts") is not None
     tts_connected = False
     tts_detail = "ไม่พบโปรแกรม edge-tts"
     now_ts = time.time()
-    if tts_available:
+    if WINDOWS_TTS_MODE:
+        tts_connected = _station_agent_online()
+        tts_detail = "คอมสถานีเชื่อมต่อแล้ว" if tts_connected else "คอมสถานียังไม่เชื่อมต่อ - เปิด Windows Agent"
+    elif tts_available:
         if now_ts - _HEALTH_CACHE["at"] > 60 or _HEALTH_CACHE["tts"] is None:
             try:
                 result = subprocess.run(
@@ -1041,11 +1048,249 @@ def backend_health_checks():
     return checks
 
 
+# ============ Station Windows TTS broker (outbound HTTPS polling) ============
+# The Windows PC synthesizes speech; Render only stores jobs and audio data.
+# Jobs are stored in the existing Supabase/Postgres DB so all web workers can see them.
+import secrets
+from datetime import timezone
+
+class RemoteAudioPending(Exception):
+    def __init__(self, job_ids, filenames):
+        super().__init__("รอคอมพิวเตอร์สถานีสร้างเสียง")
+        self.job_ids = job_ids
+        self.filenames = filenames
+
+
+def _station_utc():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def init_station_tts_database():
+    blob = "BYTEA" if USE_POSTGRES else "BLOB"
+    with get_db() as conn:
+        conn.executescript(f"""
+        CREATE TABLE IF NOT EXISTS station_tts_jobs (
+          id TEXT PRIMARY KEY,
+          cache_key TEXT NOT NULL UNIQUE,
+          filename TEXT NOT NULL,
+          speech_text TEXT NOT NULL,
+          voice TEXT NOT NULL,
+          rate TEXT NOT NULL,
+          volume TEXT NOT NULL,
+          pitch TEXT NOT NULL,
+          state TEXT NOT NULL,
+          worker_id TEXT,
+          lease_until TEXT,
+          error TEXT,
+          mp3 {blob},
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_station_tts_jobs_state ON station_tts_jobs(state,created_at);
+        CREATE INDEX IF NOT EXISTS idx_station_tts_jobs_filename ON station_tts_jobs(filename);
+        CREATE TABLE IF NOT EXISTS station_tts_agents (
+          worker_id TEXT PRIMARY KEY,
+          last_seen TEXT NOT NULL
+        );
+        """)
+        older_than = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM station_tts_jobs WHERE updated_at<?", (older_than,))
+
+
+_STATION_TTS_LAST_PRUNE = 0.0
+_STATION_TTS_PRUNE_LOCK = threading.Lock()
+
+
+def _station_prune_old_jobs():
+    global _STATION_TTS_LAST_PRUNE
+    if time.monotonic() - _STATION_TTS_LAST_PRUNE < 3600:
+        return
+    with _STATION_TTS_PRUNE_LOCK:
+        if time.monotonic() - _STATION_TTS_LAST_PRUNE < 3600:
+            return
+        with get_db() as conn:
+            old = (datetime.now(timezone.utc)-timedelta(days=5)).isoformat(timespec="seconds")
+            conn.execute("DELETE FROM station_tts_jobs WHERE updated_at<?", (old,))
+        _STATION_TTS_LAST_PRUNE = time.monotonic()
+
+
+def _station_agent_online():
+    if not WINDOWS_TTS_MODE:
+        return False
+    try:
+        with get_db() as conn:
+            row = conn.execute("SELECT last_seen FROM station_tts_agents ORDER BY last_seen DESC LIMIT 1").fetchone()
+        return bool(row and (datetime.now(timezone.utc) - datetime.fromisoformat(row["last_seen"])).total_seconds() < 20)
+    except Exception:
+        return False
+
+
+def _station_segment_details(segment):
+    prepare_func = segment.get("prepare") or (lambda value: value)
+    speech_text = prepare_func(segment.get("text", ""))
+    payload = json.dumps({
+        "voice": segment["voice"], "rate": segment["rate"],
+        "volume": segment["volume"], "pitch": segment["pitch"], "text": speech_text
+    }, ensure_ascii=False, sort_keys=True)
+    key = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:28]
+    return speech_text, key, f"announce_cache_{segment['code']}_{key}.mp3"
+
+
+def _station_enqueue(segment):
+    speech_text, cache_key, filename = _station_segment_details(segment)
+    if not speech_text.strip():
+        raise ValueError("ไม่มีข้อความสำหรับสร้างเสียง")
+    # The completed audio is also stored in Supabase so URLs work after web worker switches.
+    with get_db() as conn:
+        row = conn.execute("SELECT id,state,filename,mp3 FROM station_tts_jobs WHERE cache_key=?", (cache_key,)).fetchone()
+        if row is None:
+            job_id = uuid.uuid4().hex
+            now = _station_utc()
+            conn.execute("""INSERT INTO station_tts_jobs
+                (id,cache_key,filename,speech_text,voice,rate,volume,pitch,state,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(cache_key) DO NOTHING""",
+                (job_id,cache_key,filename,speech_text,segment["voice"],segment["rate"],
+                 segment["volume"],segment["pitch"],"queued",now,now))
+            row = conn.execute("SELECT id,state,filename,mp3 FROM station_tts_jobs WHERE cache_key=?", (cache_key,)).fetchone()
+        elif row["state"] == "failed":
+            # Retry is deliberate, initiated by a new browser request.
+            conn.execute("""UPDATE station_tts_jobs SET state='queued',error=NULL,
+                           worker_id=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
+                         (_station_utc(),row["id"]))
+            row = conn.execute("SELECT id,state,filename,mp3 FROM station_tts_jobs WHERE cache_key=?", (cache_key,)).fetchone()
+        is_ready = row["state"] == "complete" and row["mp3"] is not None
+        if row["state"] == "complete" and row["mp3"] is None:
+            conn.execute("UPDATE station_tts_jobs SET state='queued',updated_at=? WHERE id=?", (_station_utc(),row["id"]))
+            is_ready = False
+    return str(row["id"]), str(row["filename"]), is_ready
+
+
+def _station_generate_segments(segments):
+    pending = []
+    filenames = []
+    for segment in segments:
+        job_id, filename, ready = _station_enqueue(segment)
+        filenames.append(filename)
+        pending.append(job_id)
+    # Important: do not block Gunicorn while a Windows agent is offline.
+    if pending:
+        with get_db() as conn:
+            placeholders = ",".join("?" for _ in pending)
+            rows = conn.execute(f"SELECT id,state,mp3 FROM station_tts_jobs WHERE id IN ({placeholders})",tuple(pending)).fetchall()
+        if not all(row["state"] == "complete" and row["mp3"] is not None for row in rows) or len(rows)!=len(pending):
+            raise RemoteAudioPending(pending, filenames)
+    return filenames
+
+
+def _station_authorized():
+    given = request.headers.get("Authorization", "")
+    expected = "Bearer " + STATION_AGENT_TOKEN
+    return WINDOWS_TTS_MODE and secrets.compare_digest(given,expected)
+
+
+@app.route("/api/station-agent/next", methods=["GET"])
+def station_agent_next_job():
+    if not _station_authorized():
+        return jsonify(status="error",message="Unauthorized"),401
+    worker = request.args.get("worker", "")[:100]
+    if not worker or not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}",worker):
+        return jsonify(status="error",message="Invalid worker id"),400
+    now = _station_utc()
+    lease_until = (datetime.now(timezone.utc)+timedelta(seconds=240)).isoformat(timespec="seconds")
+    _station_prune_old_jobs()
+    heartbeat_threshold = (datetime.now(timezone.utc)-timedelta(seconds=8)).isoformat(timespec="seconds")
+    with get_db() as conn:
+        conn.execute("""INSERT INTO station_tts_agents(worker_id,last_seen) VALUES(?,?)
+            ON CONFLICT(worker_id) DO UPDATE SET last_seen=excluded.last_seen
+            WHERE station_tts_agents.last_seen<?""",(worker,now,heartbeat_threshold))
+        rows = conn.execute("""SELECT id FROM station_tts_jobs
+            WHERE state='queued' OR (state='claimed' AND lease_until<?)
+            ORDER BY created_at ASC LIMIT 5""",(now,)).fetchall()
+        selected = None
+        for row in rows:
+            conn.execute("""UPDATE station_tts_jobs
+                 SET state='claimed',worker_id=?,lease_until=?,updated_at=?
+                 WHERE id=? AND (state='queued' OR (state='claimed' AND lease_until<?))""",
+                 (worker,lease_until,now,row["id"],now))
+            match = conn.execute("""SELECT id,speech_text,voice,rate,volume,pitch
+                 FROM station_tts_jobs WHERE id=? AND state='claimed' AND worker_id=?
+                 AND lease_until=?""", (row["id"],worker,lease_until)).fetchone()
+            if match:
+                selected = dict(match)
+                break
+    if selected:
+        return jsonify(status="job",job=selected)
+    return jsonify(status="idle")
+
+
+@app.route("/api/station-agent/result/<job_id>", methods=["POST"])
+def station_agent_submit_result(job_id):
+    if not _station_authorized():
+        return jsonify(status="error",message="Unauthorized"),401
+    if request.content_length is not None and request.content_length > 6*1024*1024:
+        return jsonify(status="error",message="MP3 upload too large"),413
+    worker = (request.form.get("worker") or "")[:100]
+    with get_db() as conn:
+        row = conn.execute("SELECT id,state,worker_id,filename FROM station_tts_jobs WHERE id=?",(job_id,)).fetchone()
+        if not row or row["state"] != "claimed" or row["worker_id"] != worker:
+            return jsonify(status="error",message="Job is not owned by this worker"),409
+        if request.form.get("status") == "failed":
+            message = (request.form.get("error") or "สร้างเสียงไม่สำเร็จ")[:600]
+            conn.execute("""UPDATE station_tts_jobs SET state='failed',error=?,
+                          worker_id=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
+                         (message,_station_utc(),job_id))
+            return jsonify(status="ok")
+        upload = request.files.get("audio")
+        if upload is None:
+            return jsonify(status="error",message="Missing MP3"),400
+        # Limit MP3 size; never accept arbitrary filenames from Windows.
+        sound = upload.stream.read(5*1024*1024+1)
+        if len(sound)>5*1024*1024 or len(sound)<200 or not (sound[:3]==b"ID3" or (sound[0]==0xff and (sound[1]&0xe0)==0xe0)):
+            return jsonify(status="error",message="MP3 file invalid or too large"),400
+        filename = row["filename"]
+        conn.execute("""UPDATE station_tts_jobs SET state='complete',mp3=?,error=NULL,
+                      worker_id=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
+                     (sound,_station_utc(),job_id))
+    # Opportunistic local copy; the database is authoritative across web workers.
+    try:
+        target = AUDIO_DIR / filename
+        temp = AUDIO_DIR / ("upload_"+uuid.uuid4().hex+".mp3")
+        temp.write_bytes(sound)
+        os.replace(temp,target)
+    except OSError:
+        pass
+    return jsonify(status="ok",filename=filename)
+
+
+@app.route("/api/station-tts/status", methods=["POST"])
+@roles_required("announcer","admin")
+def station_tts_check_status():
+    items = (request.get_json(silent=True) or {}).get("job_ids",[])
+    if not isinstance(items,list) or not (1<=len(items)<=3) or any(not isinstance(x,str) or not re.fullmatch(r"[a-f0-9]{32}",x) for x in items):
+        return jsonify(status="error",message="Invalid job IDs"),400
+    with get_db() as conn:
+        placeholders = ",".join("?" for _ in items)
+        rows = conn.execute(f"SELECT id,state,filename,error FROM station_tts_jobs WHERE id IN ({placeholders})",tuple(items)).fetchall()
+    found={row["id"]:dict(row) for row in rows}
+    if len(found)!=len(items):
+        return jsonify(status="error",message="ไม่พบงานสร้างเสียง กรุณาลองใหม่"),404
+    for item in items:
+        row=found[item]
+        if row["state"]=="failed":
+            return jsonify(status="error",message="คอมพิวเตอร์สถานีสร้างเสียงไม่สำเร็จ: "+(row["error"] or "Unknown error"))
+    if all(found[item]["state"]=="complete" for item in items):
+        return jsonify(status="ready",audio_urls=["/audio/"+found[item]["filename"] for item in items])
+    return jsonify(status="pending",agent_online=_station_agent_online())
+
+# ===================== End station Windows TTS broker =====================
+
 def _initialize_database_at_startup():
     last_error = None
     for attempt in range(POSTGRES_CONNECT_RETRIES if USE_POSTGRES else 1):
         try:
             init_database()
+            if WINDOWS_TTS_MODE:
+                init_station_tts_database()
             print("Database initialization completed.", flush=True)
             return True
         except Exception as exc:
@@ -2255,6 +2500,28 @@ HTML_PAGE = r"""
         refreshPlaybackControls();
     }
 
+    async function waitForStationAudio(data, key = null) {
+        // The website never exposes the station agent secret to the browser.
+        for (let i = 0; i < 90; i++) {
+            if (key !== null && preparedAudioKey !== key) return null;
+            const r = await fetch("/api/station-tts/status", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ job_ids: data.job_ids }), cache: "no-store"
+            });
+            const state = await r.json();
+            if (!r.ok || state.status === "error") throw new Error(state.message || "สร้างเสียงไม่สำเร็จ");
+            if (state.status === "ready") {
+                return { ...data, status: "success", audio_urls: state.audio_urls,
+                         audio_url: state.audio_urls[0] || "" };
+            }
+            if (i === 15 && !state.agent_online) {
+                throw new Error("คอมพิวเตอร์สถานียังไม่ได้เปิดโปรแกรมสร้างเสียง กรุณาเปิด 'เริ่มระบบเสียงสถานี.bat' บนคอมพิวเตอร์สถานี");
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        throw new Error("รอสร้างเสียงนานเกินไป กรุณาตรวจสอบโปรแกรมบนคอมพิวเตอร์สถานี");
+    }
+
     function requestAnnouncementData(tabIndex, background = false) {
         const payload = collectPayload(tabIndex);
         const key = payloadKey(payload);
@@ -2274,7 +2541,11 @@ HTML_PAGE = r"""
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         }).then(async response => {
-            const data = await response.json();
+            let data = await response.json();
+            if (data.status === "pending" && response.ok) {
+                data = await waitForStationAudio(data, key);
+            }
+            if (!data) return null;
             if (!response.ok || data.status !== "success") {
                 throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
             }
@@ -2306,7 +2577,7 @@ HTML_PAGE = r"""
         return requestPromise;
     }
 
-    function schedulePrepareAnnouncement(delay = 320) {
+    function schedulePrepareAnnouncement(delay = 850) {
         if (prepareTimer) clearTimeout(prepareTimer);
         if (selectedAnnouncement === null) return;
 
@@ -2323,7 +2594,7 @@ HTML_PAGE = r"""
                 setAudioBuildState("error");
                 if (!isBusy) setStatus("สร้างไฟล์เสียงไม่สำเร็จ", "error");
             });
-        }, delay);
+        }, Math.max(850, delay));
     }
 
     function validateSelection() {
@@ -2466,7 +2737,8 @@ HTML_PAGE = r"""
                 })
             });
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
-            const data = await response.json();
+            let data = await response.json();
+            if (response.ok && data.status === "pending") data = await waitForStationAudio(data);
             if (!response.ok || data.status !== "success") {
                 throw new Error(data.message || "สร้างเสียงทดสอบไม่สำเร็จ");
             }
@@ -2896,12 +3168,7 @@ def _cache_lock(cache_key):
 
 
 def generate_cached_audio(segment):
-    """สร้างเสียงแบบเดิม และกู้กรณี Edge TTS ไม่ส่งเสียงให้ข้อความยาวเท่านั้น.
-
-    การสร้างเสียงปกติใช้คำสั่ง/พารามิเตอร์เดิมทุกตัว; หากไม่สำเร็จเพราะ
-    NoAudioReceived จึงค่อยแบ่งข้อความเป็นช่วงสั้นเพื่อสร้าง MP3 อีกครั้ง.
-    ไม่พยายามเลี่ยงการปฏิเสธ 403/429 ของบริการ Microsoft.
-    """
+    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
     prepare_func = segment.get("prepare") or (lambda value: value)
     tts_text = prepare_func(segment.get("text", ""))
     cache_payload = json.dumps(
@@ -2937,80 +3204,22 @@ def generate_cached_audio(segment):
 
         temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
         try:
-            # ลองสร้างแบบเดิมก่อน เพื่อคงคุณภาพ/จังหวะเสียงเดิมทุกประการ
-            try:
-                subprocess.run(
-                    [
-                        "edge-tts",
-                        f"--voice={segment['voice']}",
-                        f"--rate={segment['rate']}",
-                        f"--volume={segment['volume']}",
-                        f"--pitch={segment['pitch']}",
-                        "--text", tts_text,
-                        "--write-media", str(temp_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            except subprocess.CalledProcessError as exc:
-                detail = (exc.stderr or exc.stdout or str(exc)).strip()
-                # 403/429 ไม่ใช่ปัญหาข้อความยาว การแบ่งข้อความไม่ช่วย
-                if "403" in detail or "429" in detail:
-                    raise
-                if "NoAudioReceived" not in detail and "No audio was received" not in detail:
-                    raise
-
-                # แบ่งเฉพาะเมื่อบริการรับข้อความเดิม แต่ไม่ส่ง Audio กลับมา
-                import asyncio
-                import edge_tts
-
-                def split_at_pause(text, limit=200):
-                    chunks = []
-                    remainder = (text or "").strip()
-                    while len(remainder) > limit:
-                        # พยายามแยกที่เว้นวรรค/จบประโยค ไม่ตัดคำกลางคันถ้าเลี่ยงได้
-                        candidates = [remainder.rfind(char, 0, limit + 1) for char in (" ", ".", ",", "!", "?", "。", "！", "？")]
-                        cut = max(candidates)
-                        if cut < max(40, limit // 2):
-                            cut = limit
-                        elif remainder[cut] in ".,!??。！？":
-                            cut += 1
-                        piece = remainder[:cut].strip()
-                        if piece:
-                            chunks.append(piece)
-                        remainder = remainder[cut:].strip()
-                    if remainder:
-                        chunks.append(remainder)
-                    return chunks
-
-                chunks = split_at_pause(tts_text)
-                if not chunks:
-                    raise RuntimeError("ไม่มีข้อความสำหรับสร้างไฟล์เสียง") from exc
-
-                async def create_chunks():
-                    with temp_path.open("wb") as audio_file:
-                        for part in chunks:
-                            speech = edge_tts.Communicate(
-                                part,
-                                segment["voice"],
-                                rate=segment["rate"],
-                                volume=segment["volume"],
-                                pitch=segment["pitch"],
-                            )
-                            bytes_received = 0
-                            async for event in speech.stream():
-                                if event.get("type") == "audio":
-                                    audio_file.write(event["data"])
-                                    bytes_received += len(event["data"])
-                            if not bytes_received:
-                                raise RuntimeError("Edge TTS ไม่ส่งไฟล์เสียงสำหรับข้อความที่แบ่งแล้ว")
-
-                temp_path.unlink(missing_ok=True)
-                asyncio.run(create_chunks())
-
+            subprocess.run(
+                [
+                    "edge-tts",
+                    f"--voice={segment['voice']}",
+                    f"--rate={segment['rate']}",
+                    f"--volume={segment['volume']}",
+                    f"--pitch={segment['pitch']}",
+                    "--text", tts_text,
+                    "--write-media", str(temp_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
             os.replace(temp_path, output_path)
@@ -3021,6 +3230,9 @@ def generate_cached_audio(segment):
 
 
 def generate_audio_segments(segments):
+    """Use exact original TTS settings; synthesize via paired Windows when enabled."""
+    if WINDOWS_TTS_MODE:
+        return _station_generate_segments(segments)
     """สร้างไทยและอังกฤษพร้อมกัน ลดเวลาของโหมดสองภาษาเกือบครึ่งหนึ่ง"""
     if not segments:
         return []
@@ -4337,7 +4549,14 @@ def serve_audio(filename):
     if filename == CHIME_FILENAME:
         return send_from_directory(BASE_DIR, CHIME_FILENAME, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
-    # ไฟล์เสียงประกาศที่ระบบสร้างใหม่ จะอยู่ในโฟลเดอร์ audio_generated
+    # In station agent mode, read MP3 from Supabase so any Render worker can serve it.
+    if WINDOWS_TTS_MODE and re.fullmatch(r"announce_cache_(?:th|en|th_test|en_test)_[a-f0-9]{28}\.mp3", filename):
+        with get_db() as conn:
+            row = conn.execute("""SELECT mp3 FROM station_tts_jobs
+                 WHERE filename=? AND state='complete'""",(filename,)).fetchone()
+        if row and row["mp3"] is not None:
+            return send_file(io.BytesIO(bytes(row["mp3"])),mimetype="audio/mpeg",
+                             download_name=filename,as_attachment=False,max_age=86400)
     return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
 
@@ -4391,6 +4610,11 @@ def test_station_voice():
         for segment, filename in zip(segments, filenames):
             audio_urls.append(f"/audio/{filename}")
             audio_labels.append(segment["label"])
+    except RemoteAudioPending as exc:
+        preview = (f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}" if mode == "bilingual" else
+                   f"🇬🇧 {english_text}" if mode == "english_only" else f"🇹🇭 {thai_text}")
+        return jsonify(status="pending",job_ids=exc.job_ids,audio_labels=[x["label"] for x in segments],
+                       text_preview=preview,thai_voice=thai_voice,english_voice=english_voice),202
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts"}), 500
     except subprocess.CalledProcessError as exc:
@@ -4484,6 +4708,11 @@ def announce():
         for segment, filename in zip(segments, filenames):
             audio_urls.append(f"/audio/{filename}")
             audio_labels.append(segment["display_label"])
+    except RemoteAudioPending as exc:
+        preview = (f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}" if mode == "bilingual" else
+                   f"🇬🇧 {english_text}" if mode == "english_only" else f"🇹🇭 {thai_text}")
+        return jsonify(status="pending",job_ids=exc.job_ids,audio_labels=[x["label"] for x in segments],
+                       text_preview=preview,thai_voice=thai_voice,english_voice=english_voice),202
 
     except FileNotFoundError:
         return jsonify({
