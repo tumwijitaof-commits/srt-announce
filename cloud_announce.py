@@ -3,6 +3,7 @@ from flask import (Flask, request, render_template_string, send_from_directory, 
 from pathlib import Path
 import os
 import subprocess
+import logging
 import json
 import time
 import uuid
@@ -2321,6 +2322,7 @@ HTML_PAGE = r"""
             requestAnnouncementData(selectedAnnouncement, true).catch(error => {
                 console.warn("Background audio preparation failed:", error);
                 setAudioBuildState("error");
+                byId("previewBox").innerHTML = "<b>สร้างไฟล์เสียงไม่สำเร็จ</b><br><br>" + escapeHtml(error.message || String(error));
                 if (!isBusy) setStatus("สร้างไฟล์เสียงไม่สำเร็จ", "error");
             });
         }, delay);
@@ -2932,22 +2934,42 @@ def generate_cached_audio(segment):
 
         temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
         try:
-            subprocess.run(
-                [
-                    "edge-tts",
-                    f"--voice={segment['voice']}",
-                    f"--rate={segment['rate']}",
-                    f"--volume={segment['volume']}",
-                    f"--pitch={segment['pitch']}",
-                    "--text", tts_text,
-                    "--write-media", str(temp_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            command = [
+                "edge-tts",
+                f"--voice={segment['voice']}",
+                f"--rate={segment['rate']}",
+                f"--volume={segment['volume']}",
+                f"--pitch={segment['pitch']}",
+                "--text", tts_text,
+                "--write-media", str(temp_path),
+            ]
+            # Retry only transient failures; permanent 403 responses need a provider fix.
+            for attempt in range(2):
+                try:
+                    subprocess.run(
+                        command, check=True, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=55,
+                    )
+                    break
+                except subprocess.CalledProcessError as exc:
+                    detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                    app.logger.error(
+                        "TTS failure: voice=%s attempt=%s error=%s",
+                        segment["voice"], attempt + 1, detail[-2500:],
+                    )
+                    if "403" in detail or "Forbidden" in detail:
+                        raise RuntimeError(
+                            "Microsoft Edge TTS ปฏิเสธการเชื่อมต่อ (403). "
+                            "กรุณาตรวจสอบผู้ให้บริการเสียงหรือใช้ TTS สำรอง"
+                        ) from exc
+                    if attempt == 1:
+                        raise RuntimeError("สร้างเสียงไม่สำเร็จ: " + detail[-450:]) from exc
+                    time.sleep(1.5)
+                except subprocess.TimeoutExpired as exc:
+                    app.logger.error("TTS timeout: voice=%s attempt=%s", segment["voice"], attempt + 1)
+                    if attempt == 1:
+                        raise RuntimeError("เชื่อมต่อบริการสร้างเสียงนานเกิน 55 วินาที") from exc
+                    time.sleep(1.5)
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
             os.replace(temp_path, output_path)
@@ -4436,11 +4458,12 @@ def announce():
             "text_preview": thai_text or english_text,
         }), 500
     except Exception as exc:
+        app.logger.exception("Announcement audio generation failed")
         return jsonify({
             "status": "error",
             "message": str(exc),
             "text_preview": thai_text or english_text,
-        }), 500
+        }), 503
 
     if not audio_urls:
         return jsonify({
