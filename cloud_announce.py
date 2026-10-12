@@ -1730,6 +1730,7 @@ HTML_PAGE = r"""
         {% if current_user.role == 'admin' %}
         <a href="{{ url_for('admin_schedules') }}">🚆 จัดการตารางรถ</a>
         <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
+        <a href="{{ url_for('audio_library_page') }}">🎵 คลังเสียงสำรอง</a>
         {% endif %}
         {% if current_user.role in ['admin', 'auditor'] %}
         <a href="{{ url_for('history_page') }}">🕘 ประวัติการประกาศ</a>
@@ -4267,7 +4268,7 @@ MANAGEMENT_CSS = r"""
 """
 
 ADMIN_SCHEDULE_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>จัดการตารางรถ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🚆 จัดการตารางรถ</h1><p>แก้ไขข้อมูลได้โดยไม่ต้องเปิดโค้ด · ตารางเก่ายังคงเก็บย้อนหลัง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a class="active" href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>จัดการตารางรถ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🚆 จัดการตารางรถ</h1><p>แก้ไขข้อมูลได้โดยไม่ต้องเปิดโค้ด · ตารางเก่ายังคงเก็บย้อนหลัง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a class="active" href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('audio_library_page') }}">🎵 คลังเสียงสำรอง</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}
 <div class="grid"><section>
 <div class="card"><h2>สร้างตารางใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_schedule_version') }}"><div class="fields"><div class="full"><label>ชื่อตาราง</label><input name="name" placeholder="เช่น ตารางเดินรถเดือนตุลาคม 2569" required></div><div><label>วันที่เริ่มใช้</label><input type="date" name="effective_date" value="{{ today }}" required></div><div><label>สถานะ</label><select name="status"><option value="draft">ฉบับร่าง</option><option value="published">ประกาศใช้</option></select></div><div class="full"><label>คัดลอกจากตารางเดิม</label><select name="copy_from"><option value="">เริ่มตารางว่าง</option>{% for v in versions %}<option value="{{ v.id }}">{{ v.name }} ({{ v.effective_date }})</option>{% endfor %}</select></div></div><div class="actions"><button class="btn">＋ สร้างตาราง</button></div></form></div></div>
 <div class="card"><h2>ตารางย้อนหลัง</h2><div class="body"><form method="get"><label>เลือกตาราง</label><select name="version" onchange="this.form.submit()">{% for v in versions %}<option value="{{ v.id }}" {% if selected_version and v.id==selected_version.id %}selected{% endif %}>{{ v.effective_date }} · {{ v.name }} · {{ 'ใช้งาน' if v.status=='published' else 'ร่าง' }}</option>{% endfor %}</select></form>{% if selected_version %}<form method="post" action="{{ url_for('update_schedule_version', version_id=selected_version.id) }}" style="margin-top:12px"><div class="fields"><div class="full"><label>ชื่อ</label><input name="name" value="{{ selected_version.name }}" required></div><div><label>วันที่เริ่มใช้</label><input type="date" name="effective_date" value="{{ selected_version.effective_date }}" required></div><div><label>สถานะ</label><select name="status"><option value="draft" {% if selected_version.status=='draft' %}selected{% endif %}>ฉบับร่าง</option><option value="published" {% if selected_version.status=='published' %}selected{% endif %}>ประกาศใช้</option></select></div></div><div class="actions"><button class="btn gold">บันทึกข้อมูลตาราง</button></div></form>{% endif %}</div></div>
@@ -4279,11 +4280,11 @@ ADMIN_SCHEDULE_HTML = r"""
 """
 
 USERS_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บัญชีผู้ใช้</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>👥 บัญชีผู้ใช้และสิทธิ์</h1><p>แยกผู้ประกาศ ผู้ดูแลระบบ และผู้ตรวจสอบประวัติ</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a class="active" href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}<div class="grid"><section><div class="card"><h2>เพิ่มบัญชีใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_user') }}"><label>ชื่อผู้ใช้</label><input name="username" required><label style="margin-top:10px">ชื่อที่แสดง</label><input name="display_name" required><label style="margin-top:10px">สิทธิ์</label><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select><label style="margin-top:10px">รหัสผ่านเริ่มต้น</label><input type="password" name="password" minlength="6" required><div class="actions"><button class="btn">เพิ่มบัญชี</button></div></form></div></div></section><section><div class="card"><h2>บัญชีทั้งหมด</h2><div class="table-wrap"><table><thead><tr><th>ผู้ใช้</th><th>สิทธิ์</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th>แก้ไข</th></tr></thead><tbody>{% for u in users %}<tr><td><b>{{ u.display_name }}</b><div class="muted">{{ u.username }}</div></td><td>{{ role_labels[u.role] }}</td><td><span class="badge {{ 'ok' if u.active else 'off' }}">{{ 'ใช้งาน' if u.active else 'ปิด' }}</span></td><td>{{ u.last_login or '-' }}</td><td><form method="post" action="{{ url_for('update_user',user_id=u.id) }}"><div class="fields" style="min-width:460px"><div><input name="display_name" value="{{ u.display_name }}" required></div><div><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}" {% if u.role==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><input type="password" name="password" placeholder="รหัสใหม่ (เว้นว่างได้)" minlength="6"></div><div><label><input style="width:auto" type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}> เปิดใช้งาน</label></div></div><button class="btn gold" style="margin-top:7px">บันทึก</button></form></td></tr>{% endfor %}</tbody></table></div></div></section></div></main></body></html>
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>บัญชีผู้ใช้</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>👥 บัญชีผู้ใช้และสิทธิ์</h1><p>แยกผู้ประกาศ ผู้ดูแลระบบ และผู้ตรวจสอบประวัติ</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a><a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a class="active" href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('audio_library_page') }}">🎵 คลังเสียงสำรอง</a><a href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav>{% for message in get_flashed_messages() %}<div class="flash">{{ message }}</div>{% endfor %}<div class="grid"><section><div class="card"><h2>เพิ่มบัญชีใหม่</h2><div class="body"><form method="post" action="{{ url_for('create_user') }}"><label>ชื่อผู้ใช้</label><input name="username" required><label style="margin-top:10px">ชื่อที่แสดง</label><input name="display_name" required><label style="margin-top:10px">สิทธิ์</label><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select><label style="margin-top:10px">รหัสผ่านเริ่มต้น</label><input type="password" name="password" minlength="6" required><div class="actions"><button class="btn">เพิ่มบัญชี</button></div></form></div></div></section><section><div class="card"><h2>บัญชีทั้งหมด</h2><div class="table-wrap"><table><thead><tr><th>ผู้ใช้</th><th>สิทธิ์</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th>แก้ไข</th></tr></thead><tbody>{% for u in users %}<tr><td><b>{{ u.display_name }}</b><div class="muted">{{ u.username }}</div></td><td>{{ role_labels[u.role] }}</td><td><span class="badge {{ 'ok' if u.active else 'off' }}">{{ 'ใช้งาน' if u.active else 'ปิด' }}</span></td><td>{{ u.last_login or '-' }}</td><td><form method="post" action="{{ url_for('update_user',user_id=u.id) }}"><div class="fields" style="min-width:460px"><div><input name="display_name" value="{{ u.display_name }}" required></div><div><select name="role">{% for key,label in role_labels.items() %}<option value="{{ key }}" {% if u.role==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div><input type="password" name="password" placeholder="รหัสใหม่ (เว้นว่างได้)" minlength="6"></div><div><label><input style="width:auto" type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}> เปิดใช้งาน</label></div></div><button class="btn gold" style="margin-top:7px">บันทึก</button></form></td></tr>{% endfor %}</tbody></table></div></div></section></div></main></body></html>
 """
 
 HISTORY_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ประวัติการประกาศ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🕘 ประวัติการประกาศ</h1><p>ใช้ตรวจหาสาเหตุเมื่อระบบมีปัญหา ไม่ใช่เพื่อจับผิดผู้ใช้งาน</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}<a class="active" href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ตัวกรอง</h2><div class="body"><form method="get"><div class="fields"><div><label>ตั้งแต่วันที่</label><input type="date" name="date_from" value="{{ filters.date_from }}"></div><div><label>ถึงวันที่</label><input type="date" name="date_to" value="{{ filters.date_to }}"></div><div><label>เลขขบวน</label><input name="train_num" value="{{ filters.train_num }}"></div><div><label>ผู้ประกาศ</label><input name="username" value="{{ filters.username }}"></div></div><div class="actions"><button class="btn">ค้นหา</button><a class="btn gray" href="{{ url_for('history_page') }}">ล้างตัวกรอง</a></div></form></div></div><div class="card"><h2>พบ {{ histories|length }} รายการล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>วันเวลา</th><th>ผู้ประกาศ</th><th>ขบวน/ประเภท</th><th>ภาษา/เสียง</th><th>ชานชาลา</th><th>สร้างเสียง</th><th>ผลการเล่น</th><th>Pause / Stop</th><th>ข้อความ</th></tr></thead><tbody>{% for h in histories %}<tr><td>{{ h.started_at }}</td><td>{{ h.username }}</td><td><b>{{ h.train_num or '-' }}</b><div class="muted">{{ h.announcement_type }}</div></td><td>{{ h.announce_mode }}<div class="muted">{{ h.voice }}</div></td><td>{{ h.platform or '-' }}</td><td>{{ h.generation_ms if h.generation_ms is not none else '-' }} ms</td><td>{% if h.playback_success==1 %}<span class="badge ok">สำเร็จ</span>{% elif h.playback_success==0 %}<span class="badge off">ไม่สำเร็จ/หยุด</span>{% else %}<span class="badge warn">ยังไม่จบ</span>{% endif %}{% if h.failure_reason %}<div class="muted">{{ h.failure_reason }}</div>{% endif %}</td><td>พัก {{ h.pause_count }} ครั้ง<div class="muted">Stop: {{ h.stop_time or '-' }}</div></td><td class="message"><details><summary>ดูข้อความและเหตุการณ์</summary><div style="margin:8px 0">{{ h.message|safe if h.message else '-' }}</div><a href="{{ url_for('history_detail',history_id=h.id) }}">ดูเหตุการณ์ทั้งหมด</a></details></td></tr>{% else %}<tr><td colspan="9">ยังไม่มีประวัติ</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ประวัติการประกาศ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🕘 ประวัติการประกาศ</h1><p>ใช้ตรวจหาสาเหตุเมื่อระบบมีปัญหา ไม่ใช่เพื่อจับผิดผู้ใช้งาน</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('audio_library_page') }}">🎵 คลังเสียงสำรอง</a>{% endif %}<a class="active" href="{{ url_for('history_page') }}">🕘 ประวัติ</a><a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ตัวกรอง</h2><div class="body"><form method="get"><div class="fields"><div><label>ตั้งแต่วันที่</label><input type="date" name="date_from" value="{{ filters.date_from }}"></div><div><label>ถึงวันที่</label><input type="date" name="date_to" value="{{ filters.date_to }}"></div><div><label>เลขขบวน</label><input name="train_num" value="{{ filters.train_num }}"></div><div><label>ผู้ประกาศ</label><input name="username" value="{{ filters.username }}"></div></div><div class="actions"><button class="btn">ค้นหา</button><a class="btn gray" href="{{ url_for('history_page') }}">ล้างตัวกรอง</a></div></form></div></div><div class="card"><h2>พบ {{ histories|length }} รายการล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>วันเวลา</th><th>ผู้ประกาศ</th><th>ขบวน/ประเภท</th><th>ภาษา/เสียง</th><th>ชานชาลา</th><th>สร้างเสียง</th><th>ผลการเล่น</th><th>Pause / Stop</th><th>ข้อความ</th></tr></thead><tbody>{% for h in histories %}<tr><td>{{ h.started_at }}</td><td>{{ h.username }}</td><td><b>{{ h.train_num or '-' }}</b><div class="muted">{{ h.announcement_type }}</div></td><td>{{ h.announce_mode }}<div class="muted">{{ h.voice }}</div></td><td>{{ h.platform or '-' }}</td><td>{{ h.generation_ms if h.generation_ms is not none else '-' }} ms</td><td>{% if h.playback_success==1 %}<span class="badge ok">สำเร็จ</span>{% elif h.playback_success==0 %}<span class="badge off">ไม่สำเร็จ/หยุด</span>{% else %}<span class="badge warn">ยังไม่จบ</span>{% endif %}{% if h.failure_reason %}<div class="muted">{{ h.failure_reason }}</div>{% endif %}</td><td>พัก {{ h.pause_count }} ครั้ง<div class="muted">Stop: {{ h.stop_time or '-' }}</div></td><td class="message"><details><summary>ดูข้อความและเหตุการณ์</summary><div style="margin:8px 0">{{ h.message|safe if h.message else '-' }}</div><a href="{{ url_for('history_detail',history_id=h.id) }}">ดูเหตุการณ์ทั้งหมด</a></details></td></tr>{% else %}<tr><td colspan="9">ยังไม่มีประวัติ</td></tr>{% endfor %}</tbody></table></div></div></main></body></html>
 """
 
 HISTORY_DETAIL_HTML = r"""
@@ -4291,7 +4292,7 @@ HISTORY_DETAIL_HTML = r"""
 """
 
 HEALTH_HTML = r"""
-<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ตรวจสุขภาพระบบ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🩺 ตรวจสุขภาพระบบ</h1><p>ตรวจ Backend, TTS, ไฟล์เสียง, พื้นที่จัดเก็บ, เวลาเครื่อง และอุปกรณ์เสียง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>{% endif %}{% if current_user.role in ['admin','auditor'] %}<a href="{{ url_for('history_page') }}">🕘 ประวัติ</a>{% endif %}<a class="active" href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ผลตรวจอัตโนมัติ</h2><div class="body"><div id="healthList" class="health-list"><div class="health-item"><div class="health-icon">⏳</div><div><b>กำลังตรวจสอบ...</b></div></div></div><div class="actions"><button class="btn" onclick="runHealth()">ตรวจใหม่</button><button class="btn gold" onclick="testSpeaker()">▶ ทดลองลำโพงด้วยเสียงเตือน</button></div><p class="muted">เบราว์เซอร์ไม่สามารถรับรองว่าลำโพงภายนอกเปิดอยู่จริงได้ จึงมีปุ่มทดลองเสียงสำหรับยืนยันด้วยการฟัง</p></div></div></main><script>
+<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ตรวจสุขภาพระบบ</title><style>{{ management_css }}</style></head><body><main class="wrap"><header class="head"><h1>🩺 ตรวจสุขภาพระบบ</h1><p>ตรวจ Backend, TTS, ไฟล์เสียง, พื้นที่จัดเก็บ, เวลาเครื่อง และอุปกรณ์เสียง</p></header><nav class="nav"><a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>{% if current_user.role=='admin' %}<a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a><a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a><a href="{{ url_for('audio_library_page') }}">🎵 คลังเสียงสำรอง</a>{% endif %}{% if current_user.role in ['admin','auditor'] %}<a href="{{ url_for('history_page') }}">🕘 ประวัติ</a>{% endif %}<a class="active" href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a><a href="{{ url_for('logout') }}">ออกจากระบบ</a></nav><div class="card"><h2>ผลตรวจอัตโนมัติ</h2><div class="body"><div id="healthList" class="health-list"><div class="health-item"><div class="health-icon">⏳</div><div><b>กำลังตรวจสอบ...</b></div></div></div><div class="actions"><button class="btn" onclick="runHealth()">ตรวจใหม่</button><button class="btn gold" onclick="testSpeaker()">▶ ทดลองลำโพงด้วยเสียงเตือน</button></div><p class="muted">เบราว์เซอร์ไม่สามารถรับรองว่าลำโพงภายนอกเปิดอยู่จริงได้ จึงมีปุ่มทดลองเสียงสำหรับยืนยันด้วยการฟัง</p></div></div></main><script>
 function esc(v){const d=document.createElement('div');d.textContent=v??'';return d.innerHTML}function item(label,ok,detail){return `<div class="health-item"><div class="health-icon" style="background:${ok?'#e8f6ed':'#fdebea'}">${ok?'✓':'!'}</div><div><b>${esc(label)}</b><div class="muted">${esc(detail)}</div></div></div>`}async function runHealth(){const list=document.getElementById('healthList');list.innerHTML=item('กำลังตรวจสอบ',true,'กรุณารอสักครู่');try{const started=Date.now();const r=await fetch('/api/health',{cache:'no-store'});const data=await r.json();let html=data.checks.map(c=>item(c.label,c.ok,c.detail)).join('');const delta=Math.abs(Date.now()-data.server_epoch_ms);html+=item('เวลาเครื่อง',delta<120000,`เวลาต่างจาก Backend ${Math.round(delta/1000)} วินาที`);let audioOk=!!(window.Audio&&document.createElement('audio').canPlayType('audio/mpeg'));let detail=audioOk?'เบราว์เซอร์รองรับ MP3 และระบบเสียง':'เบราว์เซอร์ไม่รองรับการเล่น MP3';try{if(navigator.mediaDevices?.enumerateDevices){const devices=await navigator.mediaDevices.enumerateDevices();const outputs=devices.filter(d=>d.kind==='audiooutput');if(outputs.length)detail+=` · พบช่องเสียงออก ${outputs.length} รายการ`;}}catch(e){}html+=item('ลำโพง / อุปกรณ์เสียง',audioOk,detail);list.innerHTML=html}catch(e){list.innerHTML=item('Backend',false,e.message)}}async function testSpeaker(){try{const a=new Audio('/audio/chime.mp3');await a.play()}catch(e){alert('เล่นเสียงไม่ได้: '+e.message)}}runHealth();
 </script></body></html>
 """
@@ -4694,6 +4695,257 @@ def serve_audio(filename):
                              download_name=filename,as_attachment=False,max_age=86400)
     return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
+
+
+AUDIO_LIBRARY_HTML = r"""
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>คลังเสียงสำรอง | สถานีคลองบางพระ</title>
+  <style>
+    :root{--maroon:#800000;--dark:#580d19;--gold:#dbb34f;--muted:#756a6a;--line:#eee3dd;--green:#147b51;--bg:#f8f4f0}
+    *{box-sizing:border-box}
+    body{margin:0;background:linear-gradient(145deg,#fffaf3,var(--bg));color:#30282a;font-family:"Sarabun","Noto Sans Thai","Segoe UI",sans-serif;font-size:15px}
+    a{color:inherit}
+    button,input,select{font:inherit}
+    button{cursor:pointer}
+    .wrap{max-width:1180px;padding:22px 16px 50px;margin:auto}
+    .hero{background:linear-gradient(115deg,var(--dark),var(--maroon));color:white;border-radius:20px;padding:25px 26px;box-shadow:0 14px 30px #6515151c}
+    .hero h1{font-size:clamp(24px,3.5vw,33px);margin:0 0 6px}
+    .hero p{margin:0;color:#fff3ee;font-size:14px;line-height:1.65}
+    .nav{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0 20px;background:#fff;border:1px solid var(--line);padding:10px;border-radius:15px}
+    .nav a{text-decoration:none;background:#fff7f1;padding:9px 12px;border-radius:10px;color:var(--dark);font-weight:700;font-size:13px}
+    .nav .active{background:var(--maroon);color:white}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+    .card{background:white;border:1px solid var(--line);border-radius:17px;box-shadow:0 5px 19px #5b00000b;padding:19px}
+    .label{font-size:13px;color:var(--muted);font-weight:700}
+    .big{display:block;font-size:clamp(27px,4vw,38px);font-weight:900;margin-top:9px;font-variant-numeric:tabular-nums;color:var(--dark)}
+    .sub{color:var(--muted);font-size:12px;margin-top:3px}
+    .quota{margin-top:14px}
+    .quota-line{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-weight:750;font-size:13px}
+    .bar{height:12px;background:#f3ebe7;border-radius:999px;overflow:hidden;margin:10px 0}
+    .bar>div{height:100%;width:0;background:linear-gradient(90deg,#1f8a68,#d2a93b);border-radius:999px;transition:width .35s}
+    .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:13px}
+    .control{flex:1 1 190px;min-width:0}
+    .control label{display:block;font-weight:800;margin-bottom:6px;font-size:13px}
+    .control input,.control select{width:100%;border:1px solid #dacec7;border-radius:10px;padding:10px 11px;background:white;color:#38292c;min-height:45px}
+    .btn{border:0;color:white;background:var(--maroon);border-radius:10px;padding:11px 17px;font-weight:800;min-height:45px}
+    .btn:hover{filter:brightness(.95)}
+    .btn-light{background:#f2e7df;color:var(--dark)}
+    .pill{display:inline-block;border-radius:99px;padding:5px 9px;background:#e8f7ee;color:#136a41;font-weight:800;font-size:12px}
+    .status{margin:10px 0 13px;color:var(--muted);font-size:13px;min-height:20px}
+    .item{border:1px solid var(--line);border-radius:13px;background:#fff;margin-bottom:10px;padding:15px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}
+    .file-name{font-weight:850;overflow-wrap:anywhere;color:var(--dark);margin:5px 0}
+    .meta{color:var(--muted);font-size:12px;line-height:1.85}
+    .sample{font-size:13px;color:#514347;margin-top:8px;line-height:1.7;overflow-wrap:anywhere;white-space:pre-wrap}
+    .play{background:#fff6e8;border:1px solid #ead1aa;color:var(--dark);border-radius:10px;padding:8px 11px;font-weight:800;white-space:nowrap;align-self:start}
+    audio{width:100%;margin-top:10px;max-width:660px}
+    details{margin-top:10px;font-size:13px;color:#554c4c}
+    summary{cursor:pointer;font-weight:700}
+    .empty{text-align:center;padding:30px 12px;color:var(--muted);background:#fff;border:1px dashed #d6c8be;border-radius:13px}
+    .footer-nav{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+    .note{font-size:12px;line-height:1.7;color:var(--muted);margin-top:13px}
+    .page-text{color:var(--muted);font-size:13px}
+    @media(max-width:700px){.grid{grid-template-columns:1fr}.item{grid-template-columns:1fr}.play{justify-self:start}.wrap{padding:12px 10px 30px}.hero{padding:22px 16px}.card{padding:15px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <h1>🎵 คลังเสียงสำรอง</h1>
+      <p>สถานีรถไฟคลองบางพระ · เก็บไฟล์ MP3 ที่สร้างแล้วไว้ใช้ซ้ำ เพื่อลดการสร้างเสียงใหม่</p>
+    </header>
+    <nav class="nav" aria-label="เมนูผู้ดูแล">
+      <a href="{{ url_for('index') }}">📢 หน้าประกาศ</a>
+      <a href="{{ url_for('admin_schedules') }}">🚆 ตารางรถ</a>
+      <a href="{{ url_for('admin_users') }}">👥 บัญชีผู้ใช้</a>
+      <a href="{{ url_for('history_page') }}">🕘 ประวัติ</a>
+      <a class="active" href="{{ url_for('audio_library_page') }}" aria-current="page">🎵 คลังเสียงสำรอง</a>
+      <a href="{{ url_for('health_page') }}">🩺 ตรวจสุขภาพ</a>
+      <a href="{{ url_for('logout') }}">ออกจากระบบ</a>
+    </nav>
+
+    <section class="grid" aria-label="ภาพรวมคลังเสียง">
+      <div class="card"><span class="label">ไฟล์เสียงที่จัดเก็บ</span><strong class="big" id="fileCount">—</strong><div class="sub">รายการที่พร้อมเล่นซ้ำ</div></div>
+      <div class="card"><span class="label">พื้นที่ใช้งาน</span><strong class="big" id="usedSpace">—</strong><div class="sub">รวมไฟล์ MP3 ใน Supabase</div></div>
+      <div class="card"><span class="label">พื้นที่คลังเสียงคงเหลือ</span><strong class="big" id="freeSpace">—</strong><div class="sub" id="storageText">เพดานตามการตั้งค่าระบบ</div></div>
+    </section>
+    <section class="card quota" aria-label="การใช้งานพื้นที่">
+      <div class="quota-line"><span>พื้นที่เก็บเสียง</span><span id="quotaLabel">กำลังโหลด...</span></div>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="quotaTrack"><div id="quotaFill"></div></div>
+      <span class="pill" id="quotaStatus">กำลังตรวจสอบ</span>
+      <p class="note">ไฟล์ที่มีอยู่จะถูกนำกลับมาใช้เมื่อข้อความ เสียง และการตั้งค่าตรงกัน หากพื้นที่เกินเพดาน ระบบจะทยอยลบไฟล์ที่ไม่ได้ใช้นานที่สุดโดยอัตโนมัติ เพดานนี้ไม่ใช่พื้นที่ว่างทั้งหมดของ Supabase</p>
+    </section>
+
+    <section class="card" style="margin-top:15px">
+      <div class="toolbar">
+        <div class="control" style="flex:2 1 260px"><label for="search">ค้นหาประกาศหรือเลขขบวน</label><input id="search" placeholder="เช่น 279, งดเดินรถ, คลองบางพระ" autocomplete="off"></div>
+        <div class="control"><label for="voice">เลือกเสียง</label><select id="voice"><option value="all">ทุกเสียง</option><option value="th_male">ไทย · Niwat ผู้ชาย</option><option value="th_female">ไทย · Premwadee ผู้หญิง</option><option value="en_male">อังกฤษ · Guy ผู้ชาย</option><option value="en_female">อังกฤษ · Jenny ผู้หญิง</option></select></div>
+        <button class="btn" type="button" id="findButton">🔎 ค้นหา</button>
+        <button class="btn btn-light" type="button" id="refreshButton">↻ รีเฟรช</button>
+      </div>
+      <div class="status" id="status" role="status" aria-live="polite">กำลังโหลดรายการเสียง...</div>
+      <div id="items"></div>
+      <div class="footer-nav">
+        <button class="btn btn-light" type="button" id="prevButton">← ก่อนหน้า</button>
+        <span class="page-text" id="pageInfo">หน้า 1</span>
+        <button class="btn btn-light" type="button" id="nextButton">ถัดไป →</button>
+      </div>
+      <p class="note">ปุ่มทดลองฟังจะเล่นเสียงบนอุปกรณ์ที่เปิดหน้านี้เท่านั้น ไม่ส่งเสียงออกลำโพงสถานีจากระยะไกล · หน้านี้แสดงข้อมูลสำหรับผู้ดูแลระบบ ไม่มีปุ่มลบไฟล์เสียง</p>
+    </section>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    let page = 1;
+    let pages = 1;
+    let requestSequence = 0;
+    const voiceNames = {
+      'th-TH-NiwatNeural':'🇹🇭 Niwat · ผู้ชาย',
+      'th-TH-PremwadeeNeural':'🇹🇭 Premwadee · ผู้หญิง',
+      'en-US-GuyNeural':'🇬🇧 Guy · ผู้ชาย',
+      'en-US-JennyNeural':'🇬🇧 Jenny · ผู้หญิง'
+    };
+    const fmt = n => Number(n || 0).toLocaleString('th-TH');
+    function humanSize(bytes){const n=Number(bytes)||0;return n>=1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(1)+' KB';}
+    function showDate(raw){if(!raw)return 'ไม่ทราบวันเวลา';const d=new Date(raw);return Number.isNaN(d.getTime())?raw:d.toLocaleString('th-TH',{timeZone:'Asia/Bangkok',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
+    function el(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=text;return e;}
+    function renderItem(item){
+      const row=el('article','item');
+      const info=el('div');
+      const tag=el('span','pill',voiceNames[item.voice]||item.voice||'ไม่ทราบเสียง');info.appendChild(tag);
+      info.appendChild(el('div','file-name',item.filename));
+      info.appendChild(el('div','meta','ขนาด '+humanSize(item.bytes)+'  ·  สร้างเมื่อ '+showDate(item.created_at)+'  ·  ใช้ล่าสุด '+showDate(item.updated_at)));
+      info.appendChild(el('div','sample',item.preview||'—'));
+      const detail=el('details');const summary=el('summary',null,'อ่านข้อความที่ใช้สร้างเสียง');detail.appendChild(summary);
+      detail.appendChild(el('div','sample',item.speech_text||'—'));info.appendChild(detail);
+      const controls=el('div');
+      const play=el('button','play','▶ ทดลองฟัง');play.type='button';
+      const player=el('audio');player.controls=true;player.preload='none';player.hidden=true;
+      play.addEventListener('click',()=>{
+        if(player.hidden){player.src='/audio/'+encodeURIComponent(item.filename);player.hidden=false;play.textContent='🔊 เสียงพร้อมฟัง';}
+        player.play().catch(()=>{play.textContent='กดเล่นจากแถบเสียงด้านล่าง';});
+      });
+      controls.appendChild(play);controls.appendChild(player);
+      row.appendChild(info);row.appendChild(controls);return row;
+    }
+    async function loadSummary(){
+      try{
+        const r=await fetch('/api/audio-library/status',{cache:'no-store'});
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        const data=await r.json();
+        if(data.status!=='ok')throw new Error('โหลดข้อมูลไม่สำเร็จ');
+        const used=Number(data.stored_mb)||0,limit=Number(data.limit_mb)||80;
+        const percent=Math.min(100,Math.max(0,used/limit*100));
+        $('fileCount').textContent=fmt(data.files);
+        $('usedSpace').textContent=used.toFixed(2)+' MB';
+        $('freeSpace').textContent=Math.max(0,limit-used).toFixed(2)+' MB';
+        $('storageText').textContent='เพดานคลังเสียง '+limit+' MB';
+        $('quotaLabel').textContent=used.toFixed(2)+' / '+limit+' MB ('+percent.toFixed(1)+'%)';
+        $('quotaFill').style.width=percent+'%';$('quotaTrack').setAttribute('aria-valuenow',percent.toFixed(1));
+        $('quotaStatus').textContent=percent<80?'✓ พื้นที่ยังเพียงพอ':(percent<95?'⚠ พื้นที่เริ่มใกล้เต็ม':'⚠ พื้นที่เกือบเต็ม');
+      }catch(err){$('quotaLabel').textContent='ตรวจสอบสถานะไม่ได้';$('quotaStatus').textContent='กรุณาลองรีเฟรช';}
+    }
+    async function loadFiles(){
+      const sequence=++requestSequence;
+      $('status').textContent='กำลังโหลดรายการไฟล์เสียง...';
+      const query=new URLSearchParams({page:String(page),voice:$('voice').value,q:$('search').value.trim()});
+      try{
+        const r=await fetch('/api/audio-library/files?'+query.toString(),{cache:'no-store'});
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        const data=await r.json();if(sequence!==requestSequence)return;
+        if(data.status!=='ok')throw new Error(data.message||'โหลดรายการไม่สำเร็จ');
+        pages=data.pages;page=data.page;
+        const list=$('items');list.replaceChildren();
+        if(!data.items.length)list.appendChild(el('div','empty','ไม่พบไฟล์เสียงที่ตรงกับคำค้นหา'));
+        else data.items.forEach(item=>list.appendChild(renderItem(item)));
+        $('status').textContent='พบ '+fmt(data.total)+' ไฟล์เสียง · แสดงครั้งละ '+data.page_size+' ไฟล์';
+        $('pageInfo').textContent='หน้า '+fmt(page)+' / '+fmt(pages);
+        $('prevButton').disabled=page<=1;$('nextButton').disabled=page>=pages;
+      }catch(err){if(sequence!==requestSequence)return;$('status').textContent='โหลดรายการเสียงไม่สำเร็จ: '+err.message;}
+    }
+    function searchNow(){page=1;loadFiles();}
+    $('findButton').addEventListener('click',searchNow);
+    $('voice').addEventListener('change',searchNow);
+    $('search').addEventListener('keydown',e=>{if(e.key==='Enter')searchNow();});
+    $('refreshButton').addEventListener('click',()=>{loadSummary();loadFiles();});
+    $('prevButton').addEventListener('click',()=>{if(page>1){page--;loadFiles();}});
+    $('nextButton').addEventListener('click',()=>{if(page<pages){page++;loadFiles();}});
+    loadSummary();loadFiles();
+  </script>
+</body></html>
+"""
+
+
+@app.route("/audio-library", methods=["GET"])
+@roles_required("admin")
+def audio_library_page():
+    """Admin dashboard only. Never expose secrets or modify cached audio."""
+    return render_template_string(AUDIO_LIBRARY_HTML)
+
+
+@app.route("/api/audio-library/files", methods=["GET"])
+@roles_required("admin")
+def audio_library_files():
+    """Paginated MP3 metadata, not MP3 blobs; safe for free-tier Postgres."""
+    try:
+        page = min(100000, max(1, int(request.args.get("page", "1"))))
+    except (ValueError, TypeError):
+        page = 1
+    page_size = 20
+    q = (request.args.get("q") or "").strip()[:90]
+    filter_name = request.args.get("voice", "all")
+    voice_filter = {
+        "all": None,
+        "th_male": "th-TH-NiwatNeural",
+        "th_female": "th-TH-PremwadeeNeural",
+        "en_male": "en-US-GuyNeural",
+        "en_female": "en-US-JennyNeural",
+    }.get(filter_name)
+    if filter_name not in {"all", "th_male", "th_female", "en_male", "en_female"}:
+        return jsonify(status="error", message="ตัวกรองเสียงไม่ถูกต้อง"), 400
+
+    where = ["state='complete'", "mp3 IS NOT NULL"]
+    args = []
+    if voice_filter:
+        where.append("voice=?")
+        args.append(voice_filter)
+    if q:
+        # User-friendly numeric lookups: 279 also matches existing "2 7 9".
+        variants = [q]
+        if q.isascii() and q.isdigit() and 1 < len(q) <= 8:
+            variants.append(" ".join(q))
+            thai_digits = {"0":"ศูนย์","1":"หนึ่ง","2":"สอง","3":"สาม","4":"สี่","5":"ห้า","6":"หก","7":"เจ็ด","8":"แปด","9":"เก้า"}
+            variants.append(" ".join(thai_digits[ch] for ch in q))
+        conditions = []
+        for pattern in dict.fromkeys(variants):
+            conditions.append("LOWER(speech_text) LIKE LOWER(?)")
+            args.append("%" + pattern + "%")
+        conditions.append("LOWER(filename) LIKE LOWER(?)")
+        args.append("%" + q + "%")
+        where.append("(" + " OR ".join(conditions) + ")")
+    clause = " AND ".join(where)
+    with get_db() as conn:
+        count_row = conn.execute("SELECT COUNT(*) AS total FROM station_tts_jobs WHERE " + clause, tuple(args)).fetchone()
+        total = int(count_row["total"] or 0)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, pages)
+        rows = conn.execute("""SELECT filename,voice,speech_text,created_at,updated_at,LENGTH(mp3) AS file_size
+                                FROM station_tts_jobs WHERE """ + clause + " ORDER BY updated_at DESC, filename ASC LIMIT ? OFFSET ?",
+                            tuple(args) + (page_size, (page - 1) * page_size)).fetchall()
+    items = []
+    for row in rows:
+        speech = str(row["speech_text"] or "")
+        items.append({
+            "filename": row["filename"], "voice": row["voice"],
+            "preview": speech[:155] + ("…" if len(speech) > 155 else ""),
+            "speech_text": speech[:3000],
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "bytes": int(row["file_size"] or 0),
+        })
+    return jsonify(status="ok", items=items, total=total, page=page,
+                   pages=pages, page_size=page_size)
 
 
 @app.route("/api/audio-library/status", methods=["GET"])
