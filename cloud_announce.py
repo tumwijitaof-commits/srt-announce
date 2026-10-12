@@ -2896,7 +2896,12 @@ def _cache_lock(cache_key):
 
 
 def generate_cached_audio(segment):
-    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
+    """สร้างเสียงแบบเดิม และกู้กรณี Edge TTS ไม่ส่งเสียงให้ข้อความยาวเท่านั้น.
+
+    การสร้างเสียงปกติใช้คำสั่ง/พารามิเตอร์เดิมทุกตัว; หากไม่สำเร็จเพราะ
+    NoAudioReceived จึงค่อยแบ่งข้อความเป็นช่วงสั้นเพื่อสร้าง MP3 อีกครั้ง.
+    ไม่พยายามเลี่ยงการปฏิเสธ 403/429 ของบริการ Microsoft.
+    """
     prepare_func = segment.get("prepare") or (lambda value: value)
     tts_text = prepare_func(segment.get("text", ""))
     cache_payload = json.dumps(
@@ -2932,22 +2937,80 @@ def generate_cached_audio(segment):
 
         temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
         try:
-            subprocess.run(
-                [
-                    "edge-tts",
-                    f"--voice={segment['voice']}",
-                    f"--rate={segment['rate']}",
-                    f"--volume={segment['volume']}",
-                    f"--pitch={segment['pitch']}",
-                    "--text", tts_text,
-                    "--write-media", str(temp_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            # ลองสร้างแบบเดิมก่อน เพื่อคงคุณภาพ/จังหวะเสียงเดิมทุกประการ
+            try:
+                subprocess.run(
+                    [
+                        "edge-tts",
+                        f"--voice={segment['voice']}",
+                        f"--rate={segment['rate']}",
+                        f"--volume={segment['volume']}",
+                        f"--pitch={segment['pitch']}",
+                        "--text", tts_text,
+                        "--write-media", str(temp_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                # 403/429 ไม่ใช่ปัญหาข้อความยาว การแบ่งข้อความไม่ช่วย
+                if "403" in detail or "429" in detail:
+                    raise
+                if "NoAudioReceived" not in detail and "No audio was received" not in detail:
+                    raise
+
+                # แบ่งเฉพาะเมื่อบริการรับข้อความเดิม แต่ไม่ส่ง Audio กลับมา
+                import asyncio
+                import edge_tts
+
+                def split_at_pause(text, limit=200):
+                    chunks = []
+                    remainder = (text or "").strip()
+                    while len(remainder) > limit:
+                        # พยายามแยกที่เว้นวรรค/จบประโยค ไม่ตัดคำกลางคันถ้าเลี่ยงได้
+                        candidates = [remainder.rfind(char, 0, limit + 1) for char in (" ", ".", ",", "!", "?", "。", "！", "？")]
+                        cut = max(candidates)
+                        if cut < max(40, limit // 2):
+                            cut = limit
+                        elif remainder[cut] in ".,!??。！？":
+                            cut += 1
+                        piece = remainder[:cut].strip()
+                        if piece:
+                            chunks.append(piece)
+                        remainder = remainder[cut:].strip()
+                    if remainder:
+                        chunks.append(remainder)
+                    return chunks
+
+                chunks = split_at_pause(tts_text)
+                if not chunks:
+                    raise RuntimeError("ไม่มีข้อความสำหรับสร้างไฟล์เสียง") from exc
+
+                async def create_chunks():
+                    with temp_path.open("wb") as audio_file:
+                        for part in chunks:
+                            speech = edge_tts.Communicate(
+                                part,
+                                segment["voice"],
+                                rate=segment["rate"],
+                                volume=segment["volume"],
+                                pitch=segment["pitch"],
+                            )
+                            bytes_received = 0
+                            async for event in speech.stream():
+                                if event.get("type") == "audio":
+                                    audio_file.write(event["data"])
+                                    bytes_received += len(event["data"])
+                            if not bytes_received:
+                                raise RuntimeError("Edge TTS ไม่ส่งไฟล์เสียงสำหรับข้อความที่แบ่งแล้ว")
+
+                temp_path.unlink(missing_ok=True)
+                asyncio.run(create_chunks())
+
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
             os.replace(temp_path, output_path)
