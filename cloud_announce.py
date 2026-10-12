@@ -3,10 +3,6 @@ from flask import (Flask, request, render_template_string, send_from_directory, 
 from pathlib import Path
 import os
 import subprocess
-import logging
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
-from xml.sax.saxutils import escape, quoteattr
 import json
 import time
 import uuid
@@ -25,7 +21,11 @@ from datetime import datetime, date, time as dt_time, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
 from werkzeug.security import generate_password_hash, check_password_hash
-from concurrent.futures import ThreadPoolExecutor
+# ใช้เฉพาะกับ Render/Linux; บน Windows ยังคงป้องกันคำขอซ้อนด้วย threading.Lock
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
@@ -108,6 +108,111 @@ _AUDIO_CACHE_LOCKS_GUARD = threading.Lock()
 _AUDIO_CLEANUP_LOCK = threading.Lock()
 _LAST_AUDIO_CLEANUP = 0.0
 AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60))
+
+# จำกัดเฉพาะจำนวนคำขอส่งไปยัง Edge TTS; ไม่มีผลกับเสียง ความเร็ว หรือข้อความ
+EDGE_TTS_MIN_GAP_SECONDS = max(0.0, float(os.environ.get("EDGE_TTS_MIN_GAP_SECONDS", "2.0")))
+EDGE_TTS_403_COOLDOWN_SECONDS = max(30, int(os.environ.get("EDGE_TTS_403_COOLDOWN_SECONDS", "120")))
+EDGE_TTS_TIMEOUT_SECONDS = max(10, int(os.environ.get("EDGE_TTS_TIMEOUT_SECONDS", "20")))
+_EDGE_GATE_LOCK = threading.Lock()
+_EDGE_GATE_FILE = AUDIO_DIR / ".edge_tts_request.lock"
+_EDGE_CACHE_FILE = AUDIO_DIR / ".edge_tts_cache.lock"
+_EDGE_GATE_STATE = AUDIO_DIR / ".edge_tts_request_state.json"
+
+
+class EdgeTTSUnavailable(RuntimeError):
+    """แยกปัญหาบริการสร้างเสียงออกจากปัญหาโค้ด Flask"""
+
+    def __init__(self, message, retry_after=0):
+        super().__init__(message)
+        self.retry_after = max(0, int(retry_after))
+
+
+def _read_edge_gate_state():
+    try:
+        state = json.loads(_EDGE_GATE_STATE.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_edge_gate_state(state):
+    # อ่าน/เขียนขณะถือ file lock: รองรับ Gunicorn หลาย worker บน Render
+    tmp = AUDIO_DIR / f".edge_gate_tmp_{os.getpid()}_{threading.get_ident()}"
+    try:
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, _EDGE_GATE_STATE)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _edge_403(detail):
+    return any(pattern in detail.lower() for pattern in (
+        "403", "forbidden", "wssserverhandshakeerror", "invalid response status: 403"
+    ))
+
+
+def _edge_429(detail):
+    return "429" in detail or "too many requests" in detail.lower()
+
+
+def _run_edge_tts(command):
+    """กันคำขอซ้อน + เว้นช่วงระหว่างคำขอ + หยุดชั่วคราวเมื่อถูก 403/429"""
+    with _EDGE_GATE_LOCK:
+        with open(_EDGE_GATE_FILE, "a+b") as gate:
+            if fcntl is not None:
+                fcntl.flock(gate.fileno(), fcntl.LOCK_EX)
+            try:
+                state = _read_edge_gate_state()
+                now = time.time()
+                remaining = max(0, int(state.get("blocked_until", 0) - now + 0.999))
+                if remaining:
+                    raise EdgeTTSUnavailable(
+                        f"Microsoft Edge TTS ยังปฏิเสธการเชื่อมต่อ (403/429) "
+                        f"กรุณารอประมาณ {remaining} วินาที แล้วลองสร้างเสียงอีกครั้ง",
+                        retry_after=remaining,
+                    )
+
+                # เว้นช่วงต่อจากคำขอที่เพิ่งเสร็จ ไม่ได้แทรกความเงียบลงในไฟล์เสียง
+                gap = EDGE_TTS_MIN_GAP_SECONDS - (now - float(state.get("last_finished_at", 0)))
+                if gap > 0:
+                    time.sleep(gap)
+                try:
+                    result = subprocess.run(
+                        command, check=True, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace",
+                        timeout=EDGE_TTS_TIMEOUT_SECONDS,
+                    )
+                    return result
+                except subprocess.CalledProcessError as exc:
+                    detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                    if _edge_403(detail) or _edge_429(detail):
+                        state["blocked_until"] = time.time() + EDGE_TTS_403_COOLDOWN_SECONDS
+                        app.logger.warning(
+                            "Edge TTS refused request (403/429). Cooling down for %s seconds.",
+                            EDGE_TTS_403_COOLDOWN_SECONDS,
+                        )
+                        raise EdgeTTSUnavailable(
+                            "Microsoft Edge TTS ปฏิเสธการเชื่อมต่อ (403/429) "
+                            f"ระบบพักการเชื่อมต่อ {EDGE_TTS_403_COOLDOWN_SECONDS} วินาที "
+                            "แล้วสามารถลองสร้างเสียงใหม่ได้ โดยยังใช้เสียงเดิม",
+                            retry_after=EDGE_TTS_403_COOLDOWN_SECONDS,
+                        ) from exc
+                    app.logger.warning("Edge TTS subprocess failed (exit code %s).", exc.returncode)
+                    raise EdgeTTSUnavailable(
+                        "สร้างเสียงผ่าน Edge TTS ไม่สำเร็จ กรุณารอสักครู่แล้วลองใหม่ "
+                        "หากยังไม่สำเร็จให้ตรวจ Render Logs"
+                    ) from exc
+                except subprocess.TimeoutExpired as exc:
+                    app.logger.warning("Edge TTS synthesis timed out after %s seconds.", EDGE_TTS_TIMEOUT_SECONDS)
+                    raise EdgeTTSUnavailable(
+                        "การสร้างเสียงผ่าน Edge TTS ใช้เวลานานเกินกำหนด กรุณาลองใหม่อีกครั้ง"
+                    ) from exc
+                finally:
+                    state["last_finished_at"] = time.time()
+                    _write_edge_gate_state(state)
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(gate.fileno(), fcntl.LOCK_UN)
 
 
 # ------------------------------------------------------------
@@ -994,40 +1099,21 @@ def add_history_event(history_id, event_type, details=None):
     return event_at
 
 
-_HEALTH_CACHE = {"at": 0.0, "tts": None}
-
-
 def backend_health_checks():
     chime = BASE_DIR / CHIME_FILENAME
     disk = shutil.disk_usage(BASE_DIR)
     used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0
     audio_writable = os.access(AUDIO_DIR, os.W_OK)
-    edge_available = shutil.which("edge-tts") is not None
-    azure_ready = _azure_configured()
-    tts_available = azure_ready if TTS_PROVIDER == "azure" else edge_available or azure_ready
-    tts_connected = False
-    tts_detail = "ยังไม่ได้ตั้งค่า Azure Speech"
-    now_ts = time.time()
-    if TTS_PROVIDER in {"edge", "auto"} and edge_available:
-        if now_ts - _HEALTH_CACHE["at"] > 60 or _HEALTH_CACHE["tts"] is None:
-            try:
-                result = subprocess.run(
-                    ["edge-tts", "--list-voices"], capture_output=True, text=True,
-                    timeout=8, encoding="utf-8", errors="replace",
-                )
-                _HEALTH_CACHE["tts"] = (result.returncode == 0, (result.stderr or "").strip())
-            except Exception as exc:
-                _HEALTH_CACHE["tts"] = (False, str(exc))
-            _HEALTH_CACHE["at"] = now_ts
-        tts_connected, error = _HEALTH_CACHE["tts"]
-        tts_detail = "เรียกรายชื่อ Edge TTS ได้ (ยังไม่ยืนยันการสร้างเสียง)" if tts_connected else (error or "Edge TTS ไม่สำเร็จ")
-    if TTS_PROVIDER == "azure":
-        tts_connected = azure_ready
-        tts_detail = ("ตั้งค่า Azure Speech แล้ว (ทดสอบเสียงจริงเพื่อยืนยัน Key / Region)" if azure_ready
-                      else "ยังไม่ได้ตั้งค่า AZURE_SPEECH_KEY หรือ AZURE_SPEECH_REGION ใน Render")
-    elif TTS_PROVIDER == "auto" and azure_ready:
-        tts_connected = True
-        tts_detail = "Azure Speech เป็นหลัก / Edge สำรอง (ยังไม่ยืนยันการสร้างเสียงจริง)"
+    tts_available = shutil.which("edge-tts") is not None
+    state = _read_edge_gate_state()
+    waiting = max(0, int(float(state.get("blocked_until", 0)) - time.time() + 0.999))
+    tts_connected = tts_available and not waiting
+    if not tts_available:
+        tts_detail = "ไม่พบโปรแกรม edge-tts"
+    elif waiting:
+        tts_detail = f"Edge TTS ตอบ 403/429 ล่าสุด · พักคำขออีกประมาณ {waiting} วินาที"
+    else:
+        tts_detail = "พบโปรแกรม Edge TTS · ไม่ส่งคำขอทดสอบซ้ำ (การเชื่อมต่อจริงตรวจตอนสร้างเสียง)"
 
     database_ok = False
     database_detail = ""
@@ -1043,7 +1129,7 @@ def backend_health_checks():
         {"key": "backend", "label": "Backend", "ok": True, "detail": "Flask ตอบสนองตามปกติ"},
         {"key": "chime", "label": "ไฟล์เสียงเตือน", "ok": chime.exists() and chime.stat().st_size > 0,
          "detail": "พบ chime.mp3" if chime.exists() else "ไม่พบ chime.mp3 ในโฟลเดอร์โปรแกรม"},
-        {"key": "tts", "label": "การเชื่อมต่อ TTS", "ok": tts_available and tts_connected, "detail": tts_detail},
+        {"key": "tts", "label": "ตัวสร้างเสียง Edge TTS", "ok": tts_connected, "detail": tts_detail},
         {"key": "storage", "label": "พื้นที่จัดเก็บ", "ok": used_percent < 85,
          "detail": f"ใช้งาน {used_percent}% · เหลือ {round(disk.free / (1024**3), 2)} GB"},
         {"key": "audio_dir", "label": "โฟลเดอร์ไฟล์เสียง", "ok": AUDIO_DIR.exists() and audio_writable,
@@ -1841,6 +1927,7 @@ HTML_PAGE = r"""
                         <button type="button" class="pause-btn" id="pauseButton" onclick="pauseAudio()" disabled>⏸ พักเสียง</button>
                         <button type="button" class="danger" id="stopButton" onclick="stopAudio()" disabled>■ หยุดเสียง</button>
                     </div>
+                    <button type="button" class="secondary hidden" id="retryAudioButton" onclick="retryPreparedAudio()">↻ ลองสร้างเสียงอีกครั้ง</button>
                     <div class="utility-controls">
                         <button type="button" class="secondary" onclick="testMainSpeaker()">🔊 ทดสอบลำโพง</button>
                         <button type="button" class="secondary" onclick="clearData()">ล้างข้อมูล</button>
@@ -1863,6 +1950,8 @@ HTML_PAGE = r"""
     let preparedAudioPromise = null;
     let preparedAudioData = null;
     let prepareTimer = null;
+    // ต่อคิวคำขอในแท็บเดียวกัน ไม่สร้างเสียงหลายชุดซ้อนขณะกำลังแก้ไขข้อมูล
+    let audioRequestQueue = Promise.resolve();
     let playbackState = "idle"; // idle | loading | playing | paused
     let playbackRunId = 0;
     let activePlaybackCancel = null;
@@ -2204,6 +2293,7 @@ HTML_PAGE = r"""
     function setAudioBuildState(state) {
         const box = byId("selectedType");
         if (!box || selectedAnnouncement === null) return;
+        byId("retryAudioButton")?.classList.toggle("hidden", state !== "error");
         const title = document.querySelector(".announce-option.active")?.dataset.title || "ประเภทประกาศ";
         box.classList.remove("is-preparing", "is-ready", "is-error");
         if (state === "preparing") {
@@ -2268,6 +2358,12 @@ HTML_PAGE = r"""
         refreshPlaybackControls();
     }
 
+    function retryPreparedAudio() {
+        if (isBusy || selectedAnnouncement === null) return;
+        invalidatePreparedAudio();
+        schedulePrepareAnnouncement(1200);
+    }
+
     function requestAnnouncementData(tabIndex, background = false) {
         const payload = collectPayload(tabIndex);
         const key = payloadKey(payload);
@@ -2282,18 +2378,21 @@ HTML_PAGE = r"""
         preparedAudioKey = key;
         preparedAudioData = null;
 
-        const requestPromise = fetch("/announce", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        }).then(async response => {
+        const requestPromise = audioRequestQueue.then(async () => {
+            // ถ้าระหว่างรอคิวมีการแก้ข้อมูลแล้ว ไม่ต้องยิงคำขอเก่าไปที่เซิร์ฟเวอร์
+            if (preparedAudioKey !== key) return null;
+            const response = await fetch("/announce", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
             const data = await response.json();
             if (!response.ok || data.status !== "success") {
                 throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
             }
             return data;
         }).then(data => {
-            if (preparedAudioKey === key) {
+            if (data && preparedAudioKey === key) {
                 preparedAudioData = data;
                 preparedAudioPromise = null;
                 refreshPlaybackControls();
@@ -2316,13 +2415,16 @@ HTML_PAGE = r"""
         });
 
         preparedAudioPromise = requestPromise;
+        audioRequestQueue = requestPromise.catch(() => null);
         return requestPromise;
     }
 
-    function schedulePrepareAnnouncement(delay = 320) {
+    function schedulePrepareAnnouncement(delay = 1350) {
         if (prepareTimer) clearTimeout(prepareTimer);
         if (selectedAnnouncement === null) return;
 
+        // แม้เมนูเดิมจะเรียก 80/120/180ms ก็ให้รออย่างน้อย 1.2 วินาที
+        // เพื่อรวบการเปลี่ยนหลายช่องเป็นคำขอเดียว
         prepareTimer = setTimeout(() => {
             prepareTimer = null;
             if (validateSelection()) {
@@ -2331,13 +2433,16 @@ HTML_PAGE = r"""
             }
             setAudioBuildState("preparing");
             if (!isBusy) setStatus("กำลังเตรียมเสียงล่วงหน้า...", "work");
+            const requestKey = payloadKey(collectPayload(selectedAnnouncement));
             requestAnnouncementData(selectedAnnouncement, true).catch(error => {
+                if (preparedAudioKey !== requestKey) return;
                 console.warn("Background audio preparation failed:", error);
                 setAudioBuildState("error");
-                byId("previewBox").innerHTML = "<b>สร้างไฟล์เสียงไม่สำเร็จ</b><br><br>" + escapeHtml(error.message || String(error));
+                const detail = error.message || "สร้างไฟล์เสียงไม่สำเร็จ";
+                byId("previewBox").innerHTML = `<b>เสียงยังไม่พร้อม</b><br><br>${escapeHtml(detail)}`;
                 if (!isBusy) setStatus("สร้างไฟล์เสียงไม่สำเร็จ", "error");
             });
-        }, delay);
+        }, Math.max(1200, delay));
     }
 
     function validateSelection() {
@@ -2909,184 +3014,72 @@ def _cache_lock(cache_key):
         return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
 
 
-# ความคงเดิมของเสียงสำคัญ: ใช้ Azure Neural เสียงเดิมเป็นค่าเริ่มต้น
-# "azure" = Azure อย่างเดียว (ไม่เปลี่ยนไปใช้เสียง Google/gTTS)
-# "edge" = Edge เดิมสำหรับกรณีไม่ถูก 403
-# "auto" = Azure ก่อน; ถ้า Azure มีปัญหาลอง Edge ชื่อเสียงเดิม (อาจถูก 403 เช่นกัน)
-TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "azure").strip().lower()
-if TTS_PROVIDER not in {"azure", "edge", "auto"}:
-    TTS_PROVIDER = "azure"
-_EDGE_BLOCKED_LOCK = threading.Lock()
-_EDGE_BLOCKED_UNTIL = 0.0
-
-
-def _azure_configured():
-    return bool(os.environ.get("AZURE_SPEECH_KEY", "").strip() and
-                os.environ.get("AZURE_SPEECH_REGION", "").strip())
-
-
-def _audio_provider_order():
-    if TTS_PROVIDER == "azure":
-        return ["azure"]
-    if TTS_PROVIDER == "edge":
-        return ["edge"]
-    return ["azure", "edge"] if _azure_configured() else ["edge"]
-
-
-def _audio_provider_for_filename(filename):
-    return "azure" if filename.endswith("_azure.mp3") else "edge"
-
-
-def _edge_is_blocked():
-    with _EDGE_BLOCKED_LOCK:
-        return time.monotonic() < _EDGE_BLOCKED_UNTIL
-
-
-def _synthesize_edge(segment, text, path):
-    global _EDGE_BLOCKED_UNTIL
-    command = [
-        "edge-tts", f"--voice={segment['voice']}",
-        f"--rate={segment['rate']}", f"--volume={segment['volume']}",
-        f"--pitch={segment['pitch']}", "--text", text,
-        "--write-media", str(path),
-    ]
-    for attempt in range(2):
-        try:
-            subprocess.run(
-                command, check=True, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=25,
-            )
-            return
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or exc.stdout or str(exc)).strip()
-            app.logger.warning("Edge TTS error: %s", detail[-1500:])
-            if "403" in detail or "Forbidden" in detail:
-                with _EDGE_BLOCKED_LOCK:
-                    _EDGE_BLOCKED_UNTIL = time.monotonic() + 600
-                raise RuntimeError("Edge TTS 403 Forbidden") from exc
-            if attempt == 1:
-                raise RuntimeError("Edge TTS ไม่สำเร็จ: " + detail[-250:]) from exc
-        except subprocess.TimeoutExpired as exc:
-            app.logger.warning("Edge TTS timed out (attempt %s)", attempt + 1)
-            if attempt == 1:
-                raise RuntimeError("Edge TTS ใช้เวลานานเกินไป") from exc
-        if attempt == 0:
-            time.sleep(0.5)
-
-
-def _synthesize_azure(segment, text, path):
-    """ใช้ Azure Speech REST API (ทางการ); คงเสียง/คำอ่าน/rate/pitch/volume เดิมของ Edge."""
-    key = os.environ.get("AZURE_SPEECH_KEY", "").strip()
-    region = os.environ.get("AZURE_SPEECH_REGION", "").strip().lower()
-    if not key or not region:
-        raise RuntimeError("ยังไม่ได้กำหนด AZURE_SPEECH_KEY และ AZURE_SPEECH_REGION ใน Render")
-    if not re.fullmatch(r"[a-z0-9-]{2,40}", region):
-        raise RuntimeError("AZURE_SPEECH_REGION ไม่ถูกต้อง (ต้องเป็นชื่อ Region เช่น southeastasia)")
-
-    language = "th-TH" if segment["voice"].startswith("th-") else "en-US"
-    # ใช้ข้อความที่ผ่าน prepare_tts_text / prepare_english_tts_text เดิมมาแล้ว
-    # escape ป้องกันอักขระ &, <, > ทำให้ SSML เสีย
-    ssml = (
-        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
-        f'xml:lang="{language}">'
-        f'<voice name={quoteattr(segment["voice"])}>'
-        f'<prosody rate={quoteattr(segment["rate"])} '
-        f'volume={quoteattr(segment["volume"])} '
-        f'pitch={quoteattr(segment["pitch"])}>'
-        f'{escape(text)}</prosody></voice></speak>'
-    )
-    req = Request(
-        f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
-        data=ssml.encode("utf-8"), method="POST",
-        headers={
-            "Ocp-Apim-Subscription-Key": key,
-            "Content-Type": "application/ssml+xml; charset=utf-8",
-            "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
-            "User-Agent": "BangphraStationPA/1.0",
-        },
-    )
-    try:
-        with urlopen(req, timeout=35) as response:
-            audio = response.read()
-    except HTTPError as exc:
-        error_descriptions = {
-            400: "รูปแบบ SSML หรือพารามิเตอร์เสียงไม่ถูกต้อง",
-            401: "Azure Speech Key ไม่ถูกต้อง",
-            403: "ไม่มีสิทธิ์ใช้งาน Azure Speech หรือ Resource ไม่อนุญาต",
-            404: "Azure Speech Region หรือ Endpoint ไม่ถูกต้อง",
-            429: "เกินโควตาหรือมีคำขอมากเกินไป",
-        }
-        detail = error_descriptions.get(exc.code, "บริการ Azure Speech ตอบกลับข้อผิดพลาด")
-        app.logger.warning("Azure Speech HTTP %s voice=%s region=%s", exc.code, segment["voice"], region)
-        raise RuntimeError(f"Azure Speech HTTP {exc.code}: {detail}; ตรวจสอบ Key, Region และโควตา") from exc
-    except (URLError, TimeoutError) as exc:
-        app.logger.warning("Azure Speech connection timeout/error: voice=%s", segment["voice"])
-        raise RuntimeError("เชื่อมต่อ Azure Speech ไม่สำเร็จหรือหมดเวลา") from exc
-    if len(audio) < 100 or not (audio[:3] == b"ID3" or audio[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
-        raise RuntimeError("Azure Speech ไม่ได้ส่งข้อมูล MP3 ที่ถูกต้องกลับมา")
-    path.write_bytes(audio)
-
-
 def generate_cached_audio(segment):
-    """Cache แยกตามผู้ให้บริการ ป้องกันเสียงสำรองค้างทับเสียงต้นฉบับ"""
+    """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
     prepare_func = segment.get("prepare") or (lambda value: value)
     tts_text = prepare_func(segment.get("text", ""))
     cache_payload = json.dumps(
-        {"voice": segment["voice"], "rate": segment["rate"],
-         "volume": segment["volume"], "pitch": segment["pitch"], "text": tts_text},
-        ensure_ascii=False, sort_keys=True,
+        {
+            "voice": segment["voice"],
+            "rate": segment["rate"],
+            "volume": segment["volume"],
+            "pitch": segment["pitch"],
+            "text": tts_text,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
     )
     cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:28]
-    base = f"announce_cache_{segment['code']}_{cache_key}"
+    filename = f"announce_cache_{segment['code']}_{cache_key}.mp3"
+    output_path = AUDIO_DIR / filename
+
+    if output_path.exists() and output_path.stat().st_size > 0:
+        try:
+            os.utime(output_path, None)
+        except OSError:
+            pass
+        return filename
+
     lock = _cache_lock(cache_key)
     with lock:
-        errors = []
-        for provider in _audio_provider_order():
-            if provider == "edge" and _edge_is_blocked():
-                errors.append("Edge: ปิดการลองชั่วคราวหลังถูกปฏิเสธ 403")
-                continue
-            suffix = "" if provider == "edge" else f"_{provider}"
-            filename = f"{base}{suffix}.mp3"
-            output_path = AUDIO_DIR / filename
-            if output_path.exists() and output_path.stat().st_size > 0:
-                try:
-                    os.utime(output_path, None)
-                except OSError:
-                    pass
-                return filename
-
-            temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
+        # กัน worker หลายตัวสร้าง MP3 เดียวกันซ้ำ โดยเช็กแคชอีกครั้งหลังได้ file lock
+        with open(_EDGE_CACHE_FILE, "a+b") as cache_gate:
+            if fcntl is not None:
+                fcntl.flock(cache_gate.fileno(), fcntl.LOCK_EX)
             try:
-                if provider == "edge":
-                    _synthesize_edge(segment, tts_text, temp_path)
-                elif provider == "azure":
-                    _synthesize_azure(segment, tts_text, temp_path)
-                else:
-                    raise RuntimeError("ผู้ให้บริการเสียงไม่รองรับ")
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    try:
+                        os.utime(output_path, None)
+                    except OSError:
+                        pass
+                    return filename
 
-                if not temp_path.exists() or temp_path.stat().st_size < 100:
-                    raise RuntimeError("ไฟล์ MP3 ไม่ถูกสร้างหรือมีขนาดเล็กผิดปกติ")
-                os.replace(temp_path, output_path)
-                app.logger.info("TTS generated with provider=%s voice=%s", provider, segment["voice"])
-                return filename
-            except Exception as exc:
-                errors.append(f"{provider}: {str(exc)[:220]}")
-                app.logger.warning("TTS provider failed: provider=%s error=%s", provider, str(exc)[:300])
+                temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
+                try:
+                    _run_edge_tts([
+                        "edge-tts",
+                        f"--voice={segment['voice']}",
+                        f"--rate={segment['rate']}",
+                        f"--volume={segment['volume']}",
+                        f"--pitch={segment['pitch']}",
+                        "--text", tts_text,
+                        "--write-media", str(temp_path),
+                    ])
+                    if not temp_path.exists() or temp_path.stat().st_size == 0:
+                        raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
+                    os.replace(temp_path, output_path)
+                finally:
+                    temp_path.unlink(missing_ok=True)
+
             finally:
-                temp_path.unlink(missing_ok=True)
-
-    raise RuntimeError("บริการสร้างเสียงทุกช่องทางไม่สำเร็จ: " + " | ".join(errors)[-850:])
+                if fcntl is not None:
+                    fcntl.flock(cache_gate.fileno(), fcntl.LOCK_UN)
+    return filename
 
 
 def generate_audio_segments(segments):
-    """สร้างไทยและอังกฤษพร้อมกัน ลดเวลาของโหมดสองภาษาเกือบครึ่งหนึ่ง"""
-    if not segments:
-        return []
-    if len(segments) == 1:
-        return [generate_cached_audio(segments[0])]
-
-    with ThreadPoolExecutor(max_workers=min(2, len(segments))) as executor:
-        return list(executor.map(generate_cached_audio, segments))
+    """สร้างทีละภาษา ไม่ส่งคำขอไทย/อังกฤษพร้อมกัน (คงลำดับการเล่นเดิม)"""
+    return [generate_cached_audio(segment) for segment in segments]
 
 
 def spaced_train_number(number_text):
@@ -4449,6 +4442,11 @@ def test_station_voice():
         for segment, filename in zip(segments, filenames):
             audio_urls.append(f"/audio/{filename}")
             audio_labels.append(segment["label"])
+    except EdgeTTSUnavailable as exc:
+        return jsonify({
+            "status": "error", "message": str(exc),
+            "tts_code": "edge_tts_unavailable", "retry_after_seconds": exc.retry_after,
+        }), 503
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts"}), 500
     except subprocess.CalledProcessError as exc:
@@ -4469,7 +4467,6 @@ def test_station_voice():
         "audio_url": audio_urls[0] if audio_urls else "",
         "audio_urls": audio_urls,
         "audio_labels": audio_labels,
-        "tts_providers": [_audio_provider_for_filename(f) for f in filenames],
         "text_preview": preview,
         "thai_voice": thai_voice,
         "english_voice": english_voice,
@@ -4544,6 +4541,12 @@ def announce():
             audio_urls.append(f"/audio/{filename}")
             audio_labels.append(segment["display_label"])
 
+    except EdgeTTSUnavailable as exc:
+        return jsonify({
+            "status": "error", "message": str(exc),
+            "tts_code": "edge_tts_unavailable", "retry_after_seconds": exc.retry_after,
+            "text_preview": thai_text or english_text,
+        }), 503
     except FileNotFoundError:
         return jsonify({
             "status": "error",
@@ -4558,12 +4561,11 @@ def announce():
             "text_preview": thai_text or english_text,
         }), 500
     except Exception as exc:
-        app.logger.exception("Announcement audio generation failed")
         return jsonify({
             "status": "error",
             "message": str(exc),
             "text_preview": thai_text or english_text,
-        }), 503
+        }), 500
 
     if not audio_urls:
         return jsonify({
@@ -4584,7 +4586,6 @@ def announce():
         "audio_url": audio_urls[0],
         "audio_urls": audio_urls,
         "audio_labels": audio_labels,
-        "tts_providers": [_audio_provider_for_filename(f) for f in filenames],
         "announce_mode": mode,
         "text_preview": preview,
         "generation_ms": int((time.perf_counter() - generation_started) * 1000),
