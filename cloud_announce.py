@@ -106,6 +106,9 @@ _AUDIO_CACHE_LOCKS_GUARD = threading.Lock()
 _AUDIO_CLEANUP_LOCK = threading.Lock()
 _LAST_AUDIO_CLEANUP = 0.0
 AUDIO_CACHE_MAX_AGE = int(os.environ.get("AUDIO_CACHE_MAX_AGE", 7 * 24 * 60 * 60))
+# A separate size budget for persistent MP3 files stored in Supabase (not Render disk).
+# Keep this conservative on the Supabase Free database's 500 MB quota.
+AUDIO_DB_CACHE_MAX_MB = max(10, min(200, int(os.environ.get("AUDIO_DB_CACHE_MAX_MB", "80"))))
 
 # Windows Edge TTS bridge: does not alter voices, text or speed.
 STATION_AGENT_TOKEN = os.environ.get("STATION_AGENT_TOKEN", "").strip()
@@ -1116,12 +1119,45 @@ def init_station_tts_database():
           last_seen TEXT NOT NULL
         );
         """)
-        older_than = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(timespec="seconds")
-        conn.execute("DELETE FROM station_tts_jobs WHERE updated_at<?", (older_than,))
+        # Do not delete completed MP3 files during a Render restart.
+        # An old cleanup rule removed every job older than 5 days, including backups.
+        _station_prune_cache_in_connection(conn)
 
 
 _STATION_TTS_LAST_PRUNE = 0.0
 _STATION_TTS_PRUNE_LOCK = threading.Lock()
+
+
+def _station_prune_cache_in_connection(conn):
+    """Keep completed MP3s, clean stale unfinished jobs, and bound database usage.
+
+    Repeated announcements are kept using updated_at as a last-used timestamp.
+    Only when the MP3 library exceeds the size cap do we evict oldest-used items.
+    """
+    incomplete_cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(timespec="seconds")
+    conn.execute("""DELETE FROM station_tts_jobs
+                    WHERE (state!='complete' OR mp3 IS NULL) AND updated_at<?""",
+                 (incomplete_cutoff,))
+
+    size_row = conn.execute("""SELECT COALESCE(SUM(LENGTH(mp3)),0) AS total_bytes
+                               FROM station_tts_jobs
+                               WHERE state='complete' AND mp3 IS NOT NULL""").fetchone()
+    total_bytes = int(size_row["total_bytes"] or 0)
+    maximum_bytes = AUDIO_DB_CACHE_MAX_MB * 1024 * 1024
+    if total_bytes <= maximum_bytes:
+        return
+
+    # Leave headroom. Do not modify announcement history, train schedules or users.
+    target_bytes = int(maximum_bytes * 0.85)
+    oldest = conn.execute("""SELECT id, LENGTH(mp3) AS byte_count
+                             FROM station_tts_jobs
+                             WHERE state='complete' AND mp3 IS NOT NULL
+                             ORDER BY updated_at ASC""").fetchall()
+    for item in oldest:
+        if total_bytes <= target_bytes:
+            break
+        conn.execute("DELETE FROM station_tts_jobs WHERE id=?", (item["id"],))
+        total_bytes -= int(item["byte_count"] or 0)
 
 
 def _station_prune_old_jobs():
@@ -1132,8 +1168,7 @@ def _station_prune_old_jobs():
         if time.monotonic() - _STATION_TTS_LAST_PRUNE < 3600:
             return
         with get_db() as conn:
-            old = (datetime.now(timezone.utc)-timedelta(days=5)).isoformat(timespec="seconds")
-            conn.execute("DELETE FROM station_tts_jobs WHERE updated_at<?", (old,))
+            _station_prune_cache_in_connection(conn)
         _STATION_TTS_LAST_PRUNE = time.monotonic()
 
 
@@ -3262,11 +3297,21 @@ def generate_cloudflare_cached_audio(segment):
     if not speech_text.strip():
         raise ValueError("ไม่มีข้อความสำหรับสร้างเสียง")
     with _cache_lock(cache_key):
-        # Audio already made (including previous Windows Agent recordings): reuse it.
+        # Check persistent DB metadata without downloading the whole MP3 just
+        # to discover whether the announcement has been prepared already.
         with get_db() as conn:
-            row = conn.execute("SELECT mp3 FROM station_tts_jobs WHERE cache_key=? AND state='complete'",(cache_key,)).fetchone()
-        if row is not None and row["mp3"] is not None:
-            return filename
+            row = conn.execute("""SELECT updated_at FROM station_tts_jobs
+                                 WHERE cache_key=? AND state='complete' AND mp3 IS NOT NULL""",
+                               (cache_key,)).fetchone()
+            if row is not None:
+                # This announcement is popular: keep it ahead of unused entries
+                # if the database ever approaches the free-tier size budget.
+                refresh_before = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat(timespec="seconds")
+                if row["updated_at"] < refresh_before:
+                    conn.execute("UPDATE station_tts_jobs SET updated_at=? WHERE cache_key=?",
+                                 (_station_utc(), cache_key))
+                return filename
+
 
         data = json.dumps({
             "text": speech_text, "voice": segment["voice"],
@@ -3307,6 +3352,8 @@ def generate_cloudflare_cached_audio(segment):
             os.replace(temp_path,AUDIO_DIR / filename)
         except OSError:
             pass
+        # Cleanup is infrequent; retains the most frequently reused voices.
+        _station_prune_old_jobs()
     return filename
 
 
@@ -4647,6 +4694,23 @@ def serve_audio(filename):
                              download_name=filename,as_attachment=False,max_age=86400)
     return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg", as_attachment=False, conditional=True, max_age=604800)
 
+
+
+@app.route("/api/audio-library/status", methods=["GET"])
+@roles_required("admin")
+def audio_library_status():
+    """Read-only health check: never expose MP3 content or authentication keys."""
+    with get_db() as conn:
+        summary = conn.execute("""SELECT COUNT(*) AS total_files,
+                COALESCE(SUM(LENGTH(mp3)),0) AS total_bytes
+            FROM station_tts_jobs WHERE state='complete' AND mp3 IS NOT NULL""").fetchone()
+    count = int(summary["total_files"] or 0)
+    size = int(summary["total_bytes"] or 0)
+    return jsonify(status="ok", files=count,
+                   stored_mb=round(size / (1024 * 1024), 2),
+                   limit_mb=AUDIO_DB_CACHE_MAX_MB,
+                   storage="Supabase PostgreSQL",
+                   note="เสียงเดิมจะใช้ซ้ำอัตโนมัติ; เมื่อเกินเพดานจึงลบเสียงที่ไม่ได้ใช้นานที่สุด")
 
 @app.route("/test-station-voice", methods=["POST"])
 @roles_required("announcer", "admin")
