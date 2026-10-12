@@ -1003,16 +1003,12 @@ def backend_health_checks():
     used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0
     audio_writable = os.access(AUDIO_DIR, os.W_OK)
     edge_available = shutil.which("edge-tts") is not None
-    gtts_available = shutil.which("gtts-cli") is not None
     azure_ready = _azure_configured()
-    tts_available = (edge_available if TTS_PROVIDER == "edge" else
-                     gtts_available if TTS_PROVIDER == "gtts" else
-                     azure_ready if TTS_PROVIDER == "azure" else
-                     edge_available or gtts_available or azure_ready)
+    tts_available = azure_ready if TTS_PROVIDER == "azure" else edge_available or azure_ready
     tts_connected = False
-    tts_detail = "ยังไม่ได้ตั้งค่าหรือติดตั้งผู้ให้บริการสร้างเสียง"
+    tts_detail = "ยังไม่ได้ตั้งค่า Azure Speech"
     now_ts = time.time()
-    if edge_available and TTS_PROVIDER in {"edge", "auto"}:
+    if TTS_PROVIDER in {"edge", "auto"} and edge_available:
         if now_ts - _HEALTH_CACHE["at"] > 60 or _HEALTH_CACHE["tts"] is None:
             try:
                 result = subprocess.run(
@@ -1024,17 +1020,14 @@ def backend_health_checks():
                 _HEALTH_CACHE["tts"] = (False, str(exc))
             _HEALTH_CACHE["at"] = now_ts
         tts_connected, error = _HEALTH_CACHE["tts"]
-        tts_detail = "เรียกรายการเสียง Edge ได้ (ยังไม่ได้ทดสอบสร้างเสียงจริง)" if tts_connected else (error or "Edge TTS เชื่อมต่อไม่สำเร็จ")
-    if TTS_PROVIDER == "gtts":
-        tts_connected = gtts_available
-        tts_detail = "gTTS สำรองติดตั้งแล้ว · ยังไม่ได้ยืนยันการเชื่อมต่อภายนอก" if tts_connected else "ยังไม่ได้ติดตั้ง gTTS"
-    elif TTS_PROVIDER == "azure":
+        tts_detail = "เรียกรายชื่อ Edge TTS ได้ (ยังไม่ยืนยันการสร้างเสียง)" if tts_connected else (error or "Edge TTS ไม่สำเร็จ")
+    if TTS_PROVIDER == "azure":
         tts_connected = azure_ready
-        tts_detail = "ตั้งค่า Azure Speech แล้ว · ยังไม่ได้ยืนยัน key และการสร้างเสียง" if tts_connected else "ยังไม่ตั้งค่า AZURE_SPEECH_KEY / AZURE_SPEECH_REGION"
-    elif TTS_PROVIDER == "auto" and (azure_ready or gtts_available):
-        tts_connected = tts_connected or azure_ready or gtts_available
-        fallback_names = ("Azure Speech, " if azure_ready else "") + ("gTTS" if gtts_available else "")
-        tts_detail += f" · มีผู้ให้บริการสำรอง: {fallback_names} (ยังไม่ได้ทดสอบสร้างเสียงจริง)"
+        tts_detail = ("ตั้งค่า Azure Speech แล้ว (ทดสอบเสียงจริงเพื่อยืนยัน Key / Region)" if azure_ready
+                      else "ยังไม่ได้ตั้งค่า AZURE_SPEECH_KEY หรือ AZURE_SPEECH_REGION ใน Render")
+    elif TTS_PROVIDER == "auto" and azure_ready:
+        tts_connected = True
+        tts_detail = "Azure Speech เป็นหลัก / Edge สำรอง (ยังไม่ยืนยันการสร้างเสียงจริง)"
 
     database_ok = False
     database_detail = ""
@@ -2208,14 +2201,6 @@ HTML_PAGE = r"""
         byId("previewBox").innerHTML = safe;
     }
 
-    function appendProviderWarning(data) {
-        const providers = data?.tts_providers || [];
-        if (providers.includes("gtts")) {
-            byId("previewBox").insertAdjacentHTML("afterbegin",
-                '<div style="padding:10px; margin-bottom:10px; border:1px solid #d49e4a; border-radius:10px; background:#fff1cb; color:#704f00">⚠️ กำลังใช้เสียงสำรอง gTTS: เพศเสียง ความเร็ว และจังหวะอาจไม่ตรงกับที่เลือก กรุณาทดลองฟังก่อนประกาศจริง</div>');
-        }
-    }
-
     function setAudioBuildState(state) {
         const box = byId("selectedType");
         if (!box || selectedAnnouncement === null) return;
@@ -2315,7 +2300,6 @@ HTML_PAGE = r"""
                 if (background) {
                     setAudioBuildState("ready");
                     renderServerPreview(data.text_preview || "-");
-                    appendProviderWarning(data);
                     byId("previewBox").insertAdjacentHTML("afterbegin", "<b>ตัวอย่างข้อความก่อนประกาศ</b><br><br>");
                     if (!isBusy) setStatus("✅ เสียงพร้อมแล้ว", "ok");
                 }
@@ -2510,7 +2494,6 @@ HTML_PAGE = r"""
             }
             if (runId !== playbackRunId) throw makePlaybackStoppedError();
             renderServerPreview(data.text_preview || "-");
-            appendProviderWarning(data);
             setStatus("ทดสอบเสียงเสร็จแล้ว", "ok");
         } catch (err) {
             if (err?.name !== "PlaybackStoppedError" && runId === playbackRunId) {
@@ -2754,7 +2737,6 @@ HTML_PAGE = r"""
             });
 
             renderServerPreview(data.text_preview || "-");
-            appendProviderWarning(data);
             setAudioBuildState("ready");
             const audioUrls = (data.audio_urls && data.audio_urls.length) ? data.audio_urls : [data.audio_url].filter(Boolean);
             const audioLabels = data.audio_labels || [];
@@ -2927,38 +2909,32 @@ def _cache_lock(cache_key):
         return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
 
 
-# เสียงหลัก/เสียงสำรอง (ตัวเลือก: auto, edge, azure, gtts)
-# auto: ใช้ Azure เป็นหลักถ้าตั้งค่าไว้ มิฉะนั้นลอง Edge แล้วเปลี่ยนเป็น gTTS เมื่อมีปัญหา
-# gTTS ใช้บริการ Google Translate แบบไม่เป็นทางการ เสียงชาย/หญิงปรับไม่ได้
-TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "auto").strip().lower()
-if TTS_PROVIDER not in {"auto", "edge", "azure", "gtts"}:
-    TTS_PROVIDER = "auto"
+# ความคงเดิมของเสียงสำคัญ: ใช้ Azure Neural เสียงเดิมเป็นค่าเริ่มต้น
+# "azure" = Azure อย่างเดียว (ไม่เปลี่ยนไปใช้เสียง Google/gTTS)
+# "edge" = Edge เดิมสำหรับกรณีไม่ถูก 403
+# "auto" = Azure ก่อน; ถ้า Azure มีปัญหาลอง Edge ชื่อเสียงเดิม (อาจถูก 403 เช่นกัน)
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "azure").strip().lower()
+if TTS_PROVIDER not in {"azure", "edge", "auto"}:
+    TTS_PROVIDER = "azure"
 _EDGE_BLOCKED_LOCK = threading.Lock()
 _EDGE_BLOCKED_UNTIL = 0.0
 
 
 def _azure_configured():
-    return bool(os.environ.get("AZURE_SPEECH_KEY") and os.environ.get("AZURE_SPEECH_REGION"))
+    return bool(os.environ.get("AZURE_SPEECH_KEY", "").strip() and
+                os.environ.get("AZURE_SPEECH_REGION", "").strip())
 
 
 def _audio_provider_order():
-    if TTS_PROVIDER == "edge":
-        return ["edge"]
-    if TTS_PROVIDER == "gtts":
-        return ["gtts"]
     if TTS_PROVIDER == "azure":
         return ["azure"]
-    if _azure_configured():
-        return ["azure", "edge", "gtts"]
-    return ["edge", "gtts"]
+    if TTS_PROVIDER == "edge":
+        return ["edge"]
+    return ["azure", "edge"] if _azure_configured() else ["edge"]
 
 
 def _audio_provider_for_filename(filename):
-    if filename.endswith("_gtts.mp3"):
-        return "gtts"
-    if filename.endswith("_azure.mp3"):
-        return "azure"
-    return "edge"
+    return "azure" if filename.endswith("_azure.mp3") else "edge"
 
 
 def _edge_is_blocked():
@@ -2999,13 +2975,17 @@ def _synthesize_edge(segment, text, path):
 
 
 def _synthesize_azure(segment, text, path):
+    """ใช้ Azure Speech REST API (ทางการ); คงเสียง/คำอ่าน/rate/pitch/volume เดิมของ Edge."""
     key = os.environ.get("AZURE_SPEECH_KEY", "").strip()
     region = os.environ.get("AZURE_SPEECH_REGION", "").strip().lower()
     if not key or not region:
         raise RuntimeError("ยังไม่ได้กำหนด AZURE_SPEECH_KEY และ AZURE_SPEECH_REGION ใน Render")
     if not re.fullmatch(r"[a-z0-9-]{2,40}", region):
-        raise RuntimeError("AZURE_SPEECH_REGION ไม่ถูกต้อง")
+        raise RuntimeError("AZURE_SPEECH_REGION ไม่ถูกต้อง (ต้องเป็นชื่อ Region เช่น southeastasia)")
+
     language = "th-TH" if segment["voice"].startswith("th-") else "en-US"
+    # ใช้ข้อความที่ผ่าน prepare_tts_text / prepare_english_tts_text เดิมมาแล้ว
+    # escape ป้องกันอักขระ &, <, > ทำให้ SSML เสีย
     ssml = (
         '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
         f'xml:lang="{language}">'
@@ -3026,34 +3006,25 @@ def _synthesize_azure(segment, text, path):
         },
     )
     try:
-        with urlopen(req, timeout=25) as response:
+        with urlopen(req, timeout=35) as response:
             audio = response.read()
     except HTTPError as exc:
-        # ไม่บันทึก URL พร้อม key และไม่แสดงข้อมูลลับต่อผู้ใช้
-        raise RuntimeError(f"Azure Speech ส่ง HTTP {exc.code} กรุณาตรวจสอบ key/region/quota") from exc
+        error_descriptions = {
+            400: "รูปแบบ SSML หรือพารามิเตอร์เสียงไม่ถูกต้อง",
+            401: "Azure Speech Key ไม่ถูกต้อง",
+            403: "ไม่มีสิทธิ์ใช้งาน Azure Speech หรือ Resource ไม่อนุญาต",
+            404: "Azure Speech Region หรือ Endpoint ไม่ถูกต้อง",
+            429: "เกินโควตาหรือมีคำขอมากเกินไป",
+        }
+        detail = error_descriptions.get(exc.code, "บริการ Azure Speech ตอบกลับข้อผิดพลาด")
+        app.logger.warning("Azure Speech HTTP %s voice=%s region=%s", exc.code, segment["voice"], region)
+        raise RuntimeError(f"Azure Speech HTTP {exc.code}: {detail}; ตรวจสอบ Key, Region และโควตา") from exc
     except (URLError, TimeoutError) as exc:
+        app.logger.warning("Azure Speech connection timeout/error: voice=%s", segment["voice"])
         raise RuntimeError("เชื่อมต่อ Azure Speech ไม่สำเร็จหรือหมดเวลา") from exc
-    if len(audio) < 100:
-        raise RuntimeError("Azure Speech ส่งไฟล์เสียงว่างหรือสั้นผิดปกติ")
+    if len(audio) < 100 or not (audio[:3] == b"ID3" or audio[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+        raise RuntimeError("Azure Speech ไม่ได้ส่งข้อมูล MP3 ที่ถูกต้องกลับมา")
     path.write_bytes(audio)
-
-
-def _synthesize_gtts(segment, text, path):
-    """ทางเลือกฉุกเฉิน ไม่ต้องใช้ API Key แต่ไม่รับประกันเพศเสียงหรือความเสถียร"""
-    if not shutil.which("gtts-cli"):
-        raise RuntimeError("ยังไม่ได้ติดตั้ง gTTS โปรดเพิ่ม gTTS ใน requirements.txt")
-    lang = "th" if segment["voice"].startswith("th-") else "en"
-    try:
-        subprocess.run(
-            ["gtts-cli", "--lang", lang, "--output", str(path), text],
-            check=True, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=35,
-        )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or str(exc)).strip()
-        raise RuntimeError("gTTS สำรองไม่สำเร็จ: " + detail[-250:]) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("gTTS สำรองใช้เวลานานเกินไป") from exc
 
 
 def generate_cached_audio(segment):
@@ -3091,7 +3062,7 @@ def generate_cached_audio(segment):
                 elif provider == "azure":
                     _synthesize_azure(segment, tts_text, temp_path)
                 else:
-                    _synthesize_gtts(segment, tts_text, temp_path)
+                    raise RuntimeError("ผู้ให้บริการเสียงไม่รองรับ")
 
                 if not temp_path.exists() or temp_path.stat().st_size < 100:
                     raise RuntimeError("ไฟล์ MP3 ไม่ถูกสร้างหรือมีขนาดเล็กผิดปกติ")
