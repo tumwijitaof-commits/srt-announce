@@ -17,6 +17,8 @@ except ImportError:
 import csv
 import io
 import shutil
+import sys
+from importlib.metadata import version as package_version, PackageNotFoundError
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.error import HTTPError, URLError
 from datetime import datetime, date, time as dt_time, timedelta
@@ -119,6 +121,13 @@ WINDOWS_TTS_MODE = bool(STATION_AGENT_TOKEN)
 CLOUDFLARE_TTS_URL = os.environ.get("CLOUDFLARE_TTS_URL", "").strip()
 TTS_SHARED_SECRET = os.environ.get("TTS_SHARED_SECRET", "").strip()
 CLOUDFLARE_TTS_MODE = bool(CLOUDFLARE_TTS_URL and TTS_SHARED_SECRET)
+
+# Leave time for a direct synthesis attempt within a normal web request.
+CLOUDFLARE_TTS_TIMEOUT = max(1, float(os.environ.get("CLOUDFLARE_TTS_TIMEOUT", "8")))
+DIRECT_TTS_TIMEOUT = max(1, float(os.environ.get("DIRECT_TTS_TIMEOUT", "18")))
+_CLOUDFLARE_RETRY_AT = 0.0
+_CLOUDFLARE_LAST_ERROR = ""
+_CLOUDFLARE_RECOVERY_LOCK = threading.Lock()
 
 
 
@@ -2606,10 +2615,13 @@ HTML_PAGE = r"""
             }
             if (!data) return null;
             if (!response.ok || data.status !== "success") {
-                throw new Error(data.message || "สร้างเสียงไม่สำเร็จ");
+                const error = new Error(data.message || "สร้างเสียงไม่สำเร็จ");
+                error.detail = data.detail || "";
+                throw error;
             }
             return data;
         }).then(data => {
+            if (!data || preparedAudioKey !== key) return null;
             if (preparedAudioKey === key) {
                 preparedAudioData = data;
                 preparedAudioPromise = null;
@@ -2623,6 +2635,7 @@ HTML_PAGE = r"""
             }
             return data;
         }).catch(error => {
+            error.announcementKey = key;
             if (preparedAudioKey === key) {
                 preparedAudioPromise = null;
                 preparedAudioData = null;
@@ -2649,9 +2662,11 @@ HTML_PAGE = r"""
             setAudioBuildState("preparing");
             if (!isBusy) setStatus("กำลังเตรียมเสียงล่วงหน้า...", "work");
             requestAnnouncementData(selectedAnnouncement, true).catch(error => {
+                if (error.announcementKey !== preparedAudioKey) return;
                 console.warn("Background audio preparation failed:", error);
+                if (error.detail) console.warn("Audio generation detail:", error.detail);
                 setAudioBuildState("error");
-                if (!isBusy) setStatus("สร้างไฟล์เสียงไม่สำเร็จ", "error");
+                if (!isBusy) setStatus(error.message || "สร้างไฟล์เสียงไม่สำเร็จ", "error");
             });
         }, Math.max(850, delay));
     }
@@ -3226,6 +3241,29 @@ def _cache_lock(cache_key):
         return _AUDIO_CACHE_LOCKS.setdefault(cache_key, threading.Lock())
 
 
+class CloudflareTTSError(RuntimeError):
+    """A synthesis/transport failure, distinct from a database failure."""
+
+
+class AudioGenerationError(RuntimeError):
+    def __init__(self, detail):
+        super().__init__(
+            "บริการสร้างเสียงใหม่ยังไม่พร้อม กรุณาลองอีกครั้ง "
+            "หากยังไม่ได้ ให้ตรวจว่า Render ติดตั้ง edge-tts รุ่น 7.3.1 ขึ้นไปแล้ว"
+        )
+        self.detail = detail
+
+
+def _require_current_edge_tts():
+    try:
+        installed = package_version("edge-tts")
+    except PackageNotFoundError as exc:
+        raise RuntimeError("ยังไม่ได้ติดตั้ง edge-tts==7.3.1 ใน Python ที่ใช้รันเว็บ") from exc
+    numbers = tuple(int(n) for n in re.findall(r"\d+", installed)[:3])
+    if numbers < (7, 3, 1):
+        raise RuntimeError(f"พบ edge-tts {installed}; กรุณาอัปเดต requirements.txt เป็น edge-tts==7.3.1 แล้ว Deploy ใหม่")
+
+
 def generate_cached_audio(segment):
     """สร้างไฟล์ TTS ครั้งเดียว แล้วใช้ซ้ำจากแคชตามข้อความและเสียงที่ตรงกัน"""
     prepare_func = segment.get("prepare") or (lambda value: value)
@@ -3263,9 +3301,10 @@ def generate_cached_audio(segment):
 
         temp_path = AUDIO_DIR / f"announce_tmp_{uuid.uuid4().hex}.mp3"
         try:
+            _require_current_edge_tts()
             subprocess.run(
                 [
-                    "edge-tts",
+                    sys.executable, "-m", "edge_tts",
                     f"--voice={segment['voice']}",
                     f"--rate={segment['rate']}",
                     f"--volume={segment['volume']}",
@@ -3278,6 +3317,7 @@ def generate_cached_audio(segment):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                timeout=DIRECT_TTS_TIMEOUT,
             )
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError(f"ระบบสร้างไฟล์เสียงช่วง {segment['code']} ไม่สำเร็จ หรือไฟล์เสียงว่าง")
@@ -3288,12 +3328,30 @@ def generate_cached_audio(segment):
     return filename
 
 
+def _store_station_audio(segment, sound):
+    """Persist every successful fallback so all Render workers can serve it."""
+    if (len(sound) < 200 or len(sound) > 5 * 1024 * 1024 or
+            not (sound[:3] == b"ID3" or
+                 (sound[0] == 0xff and (sound[1] & 0xe0) == 0xe0))):
+        raise ValueError("ไม่ได้รับไฟล์ MP3 ที่สมบูรณ์ จึงยังไม่บันทึกเข้าคลังเสียง")
+    speech_text, cache_key, filename = _station_segment_details(segment)
+    now = _station_utc()
+    with get_db() as conn:
+        conn.execute("""INSERT INTO station_tts_jobs
+            (id,cache_key,filename,speech_text,voice,rate,volume,pitch,state,mp3,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(cache_key) DO UPDATE SET state='complete',mp3=excluded.mp3,
+                error=NULL,worker_id=NULL,lease_until=NULL,updated_at=excluded.updated_at""",
+            (uuid.uuid4().hex,cache_key,filename,speech_text,segment["voice"],
+             segment["rate"],segment["volume"],segment["pitch"],"complete",sound,now,now))
+
+
 def generate_cloudflare_cached_audio(segment):
     """Keep original text-preparation and cache key; only outsource MP3 synthesis."""
     from urllib.parse import urlparse
     address = urlparse(CLOUDFLARE_TTS_URL)
     if address.scheme != "https" or not address.hostname or address.path != "/api/tts":
-        raise RuntimeError("CLOUDFLARE_TTS_URL ต้องเป็น HTTPS และลงท้าย /api/tts")
+        raise CloudflareTTSError("CLOUDFLARE_TTS_URL ต้องเป็น HTTPS และลงท้าย /api/tts")
     speech_text, cache_key, filename = _station_segment_details(segment)
     if not speech_text.strip():
         raise ValueError("ไม่มีข้อความสำหรับสร้างเสียง")
@@ -3313,6 +3371,10 @@ def generate_cloudflare_cached_audio(segment):
                                  (_station_utc(), cache_key))
                 return filename
 
+        # Keep serving exact cached announcements even while Cloudflare is down.
+        with _CLOUDFLARE_RECOVERY_LOCK:
+            if time.monotonic() < _CLOUDFLARE_RETRY_AT:
+                raise CloudflareTTSError(_CLOUDFLARE_LAST_ERROR)
 
         data = json.dumps({
             "text": speech_text, "voice": segment["voice"],
@@ -3323,29 +3385,21 @@ def generate_cloudflare_cached_audio(segment):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
         })
         try:
-            with urlopen(req, timeout=43) as reply:
+            with urlopen(req, timeout=CLOUDFLARE_TTS_TIMEOUT) as reply:
                 if reply.status != 200 or not reply.headers.get("Content-Type", "").lower().startswith("audio/mpeg"):
-                    raise RuntimeError("Cloudflare ส่งผลลัพธ์ที่ไม่ใช่ MP3")
+                    raise CloudflareTTSError("Cloudflare ส่งผลลัพธ์ที่ไม่ใช่ MP3")
                 sound = reply.read(5*1024*1024+1)
         except HTTPError as exc:
             error_info = exc.read(300).decode("utf-8", "replace")
-            raise RuntimeError(f"Cloudflare TTS HTTP {exc.code}: {error_info}") from exc
+            raise CloudflareTTSError(f"Cloudflare TTS HTTP {exc.code}: {error_info}") from exc
         except (URLError, TimeoutError) as exc:
-            raise RuntimeError(f"ติดต่อ Cloudflare TTS ไม่สำเร็จ: {exc}") from exc
+            raise CloudflareTTSError(f"ติดต่อ Cloudflare TTS ไม่สำเร็จ: {exc}") from exc
 
         if (len(sound)<200 or len(sound)>5*1024*1024 or
                 not (sound[:3] == b"ID3" or (sound[0] == 0xff and (sound[1] & 0xe0) == 0xe0))):
-            raise RuntimeError("Cloudflare ไม่ได้ส่งไฟล์ MP3 ที่สมบูรณ์")
+            raise CloudflareTTSError("Cloudflare ไม่ได้ส่งไฟล์ MP3 ที่สมบูรณ์")
 
-        now = _station_utc()
-        with get_db() as conn:
-            conn.execute("""INSERT INTO station_tts_jobs
-                (id,cache_key,filename,speech_text,voice,rate,volume,pitch,state,mp3,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(cache_key) DO UPDATE SET state='complete',mp3=excluded.mp3,
-                    error=NULL,worker_id=NULL,lease_until=NULL,updated_at=excluded.updated_at""",
-                (uuid.uuid4().hex,cache_key,filename,speech_text,segment["voice"],
-                 segment["rate"],segment["volume"],segment["pitch"],"complete",sound,now,now))
+        _store_station_audio(segment, sound)
         # Optional local copy for serving; database remains authoritative across Render workers.
         try:
             temp_path = AUDIO_DIR / ("cf_tmp_" + uuid.uuid4().hex + ".mp3")
@@ -3358,15 +3412,45 @@ def generate_cloudflare_cached_audio(segment):
     return filename
 
 
+def _generate_cloudflare_with_fallback(segment):
+    global _CLOUDFLARE_RETRY_AT, _CLOUDFLARE_LAST_ERROR
+    try:
+        return generate_cloudflare_cached_audio(segment)
+    except CloudflareTTSError as exc:
+        with _CLOUDFLARE_RECOVERY_LOCK:
+            first_failure = time.monotonic() >= _CLOUDFLARE_RETRY_AT
+            if first_failure:
+                _CLOUDFLARE_RETRY_AT = time.monotonic() + 60
+                _CLOUDFLARE_LAST_ERROR = str(exc)
+        if first_failure:
+            app.logger.warning("Cloudflare synthesis unavailable; trying direct Edge TTS: %s", exc)
+        cloudflare_error = str(exc)
+
+    try:
+        filename = generate_cached_audio(segment)
+    except subprocess.TimeoutExpired as exc:
+        raise AudioGenerationError(
+            f"Cloudflare: {cloudflare_error}; Edge TTS: เกินเวลา {DIRECT_TTS_TIMEOUT:g} วินาที"
+        ) from exc
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        detail = (getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or str(exc)).strip()
+        raise AudioGenerationError(f"Cloudflare: {cloudflare_error}; Edge TTS: {detail[-1500:]}") from exc
+
+    # Database errors must remain visible, rather than be misreported as TTS errors.
+    _store_station_audio(segment, (AUDIO_DIR / filename).read_bytes())
+    _station_prune_old_jobs()
+    return filename
+
+
 def generate_audio_segments(segments):
-    """Use original prepared speech data; Cloudflare mode has priority when configured."""
+    """Reuse the same voices/cache, with direct TTS recovery after upstream failures."""
     if CLOUDFLARE_TTS_MODE:
         if not segments:
             return []
         if len(segments) == 1:
-            return [generate_cloudflare_cached_audio(segments[0])]
+            return [_generate_cloudflare_with_fallback(segments[0])]
         with ThreadPoolExecutor(max_workers=min(2, len(segments))) as executor:
-            return list(executor.map(generate_cloudflare_cached_audio, segments))
+            return list(executor.map(_generate_cloudflare_with_fallback, segments))
     if WINDOWS_TTS_MODE:
         return _station_generate_segments(segments)
     """สร้างไทยและอังกฤษพร้อมกัน ลดเวลาของโหมดสองภาษาเกือบครึ่งหนึ่ง"""
@@ -5019,6 +5103,9 @@ def test_station_voice():
                    f"🇬🇧 {english_text}" if mode == "english_only" else f"🇹🇭 {thai_text}")
         return jsonify(status="pending",job_ids=exc.job_ids,audio_labels=[x["label"] for x in segments],
                        text_preview=preview,thai_voice=thai_voice,english_voice=english_voice),202
+    except AudioGenerationError as exc:
+        app.logger.warning("Voice generation failed: %s", exc.detail)
+        return jsonify(status="error", error_code="tts_unavailable", message=str(exc), detail=exc.detail), 503
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "ยังไม่ได้ติดตั้ง edge-tts ให้รันคำสั่ง: pip install edge-tts"}), 500
     except subprocess.CalledProcessError as exc:
@@ -5062,6 +5149,7 @@ def announce():
     thai_voice = (data.get("thai_voice") or VOICE_NAME).strip()
     if thai_voice not in THAI_VOICE_OPTIONS:
         thai_voice = VOICE_NAME
+    english_voice = english_voice_for(thai_voice)
 
     if mode in {"thai_only", "bilingual"}:
         try:
@@ -5097,7 +5185,7 @@ def announce():
             "code": "en",
             "display_label": "ภาษาอังกฤษ",
             "text": english_text,
-            "voice": english_voice_for(thai_voice),
+            "voice": english_voice,
             "rate": TTS_EN_RATE,
             "volume": TTS_EN_VOLUME,
             "pitch": TTS_EN_PITCH,
@@ -5115,9 +5203,13 @@ def announce():
     except RemoteAudioPending as exc:
         preview = (f"🇹🇭 {thai_text}<br><br>🇬🇧 {english_text}" if mode == "bilingual" else
                    f"🇬🇧 {english_text}" if mode == "english_only" else f"🇹🇭 {thai_text}")
-        return jsonify(status="pending",job_ids=exc.job_ids,audio_labels=[x["label"] for x in segments],
+        return jsonify(status="pending",job_ids=exc.job_ids,audio_labels=[x["display_label"] for x in segments],
                        text_preview=preview,thai_voice=thai_voice,english_voice=english_voice),202
 
+    except AudioGenerationError as exc:
+        app.logger.warning("Announcement generation failed: %s", exc.detail)
+        return jsonify(status="error", error_code="tts_unavailable", message=str(exc),
+                       detail=exc.detail, text_preview=thai_text or english_text), 503
     except FileNotFoundError:
         return jsonify({
             "status": "error",
